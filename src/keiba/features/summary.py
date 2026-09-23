@@ -249,3 +249,9 @@ def build_horse_state(ctx: PredictionContext, umaban: str, *,
     if race_context is not None:
         state["race_context"] = race_context
     return state
+
+
+# features/dossier.py が同じ書式で出すための公開名。書式はここ1箇所で持つ。
+ability_dict = _ability_dict
+running_style_dict = _running_style_dict
+race_dict = _race_dict
