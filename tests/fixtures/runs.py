@@ -5,6 +5,10 @@ ability.py が見る項目に加えて、Task 10 が必要とする tozai_cd（�
 jyuni_3c / jyuni_2c（脚質のフォールバック元）・ba_taijyu_kg（前走の馬体重）も
 パラメータ化した。型を通すために RaceRow / ResultRow / EntryRow の全項目を
 埋める。計算に関係ない項目は固定のダミー値にしてある。
+
+Task 4 が必要とする track_cd（コース識別）・race_id・jyuni_1c（1コーナー通過順）も
+追加した。いずれも None のときは既存の振る舞い（track_kind から引く / hasso_at と
+jyo_cd から組み立てる / None）を保つので、既存の呼び出しは影響を受けない。
 """
 
 from __future__ import annotations
@@ -35,6 +39,9 @@ def make_past_run(
     futan_kg: float | None = 57.0,
     tozai_cd: str = "1",
     ba_taijyu_kg: int | None = None,
+    track_cd: str | None = None,
+    race_id: str | None = None,
+    jyuni_1c: int | None = None,
 ) -> PastRun:
     entry = EntryRow(
         umaban="1",
@@ -49,11 +56,11 @@ def make_past_run(
         chokyosi_code="00001",
     )
     race = RaceRow(
-        race_id=f"{hasso_at:%Y%m%d%H%M}{jyo_cd}",
+        race_id=race_id if race_id is not None else f"{hasso_at:%Y%m%d%H%M}{jyo_cd}",
         hasso_at=hasso_at,
         jyo_cd=jyo_cd,
         kyori_m=kyori_m,
-        track_cd=_TRACK_CD.get(track_kind or "", "17"),
+        track_cd=track_cd if track_cd is not None else _TRACK_CD.get(track_kind or "", "17"),
         track_kind=track_kind,
         baba_cd=baba_cd,
         class_level=class_level,
@@ -73,7 +80,7 @@ def make_past_run(
         dochaku_tosu=None,
         time_sec=None,
         margin_sec=margin_sec,
-        jyuni_1c=None,
+        jyuni_1c=jyuni_1c,
         jyuni_2c=jyuni_2c,
         jyuni_3c=jyuni_3c,
         jyuni_4c=jyuni_4c,

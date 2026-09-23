@@ -72,6 +72,16 @@ EXCEPTION_RULES_VERSION = "1"
 TIE_BAND = 0.03
 
 # --- 既定値 -----------------------------------------------------------------
+
+# 資料（features/dossier.py）の形の版。キーや中身の定義が変わったら上げる。
+DOSSIER_VERSION = "1"
+# 「3着以内」の 3。表示頭数（DEFAULT_TOP_N）とは別物なので分けて持つ。
+TOP3_PLACE = 3
+# 見つかった最古の過去走がデータ版の収録開始からこの日数以内なら、それより前の
+# 出走が版の外にある可能性がある。中央の出走間隔はおおむね3〜8週なので、
+# 90日以内なら「さらに前にも走っていた」ことを否定できない。
+HISTORY_TRUNCATION_MARGIN_DAYS = 90
+
 DEFAULT_TOP_N = 3
 DEFAULT_RECENT_RUNS = 5          # 直近何走を集計に使うか。仕様の初期案は 5〜10
 SAME_DISTANCE_TOLERANCE_M = 200  # 「同距離」とみなす幅
