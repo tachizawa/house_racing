@@ -66,6 +66,18 @@ def test_pace_questions_reuse_existing_bands():
     assert set(qs["pace"].model_dump()["criteria"]) == {"fast", "standard", "slow"}
 
 
+def test_rules_reference_condition_definitions_not_per_horse_definition():
+    # state の definition は各馬の conditions から condition_definitions へ移した
+    # （state サイズ削減）。文言もそちらを指す（statesize-fix-brief.md）。
+    for q in tq.top3_questions(DOSSIER, with_pace_forecast=False).values():
+        assert "condition_definitions" in q.instructions
+        assert "（definition）" not in q.instructions
+
+
+def test_prompt_version_bumped_for_statesize_fix():
+    assert tq.TOP3_PROMPT_VERSION == "2"
+
+
 def test_rules_warn_that_truncated_history_may_be_partial():
     # found_may_be_truncated は取得期間が短いと頻出する（final review I-3a）。
     for q in tq.top3_questions(DOSSIER, with_pace_forecast=False).values():

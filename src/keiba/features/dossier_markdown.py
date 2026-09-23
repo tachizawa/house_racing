@@ -56,9 +56,17 @@ _RUN_COLS = ("date", "jyo", "track_label", "kyori_m", "baba", "class_level",
              "syusso_tosu", "kakutei_jyuni", "margin_sec", "corner_positions", "last_3f_sec")
 
 
-def _horse(umaban: str, h: dict) -> list[str]:
+def _condition_definitions_table(definitions: dict) -> list[str]:
+    lines = ["### 条件別実績の比較条件", "", "| 区分 | 比較条件 |", "|---|---|"]
+    for key, definition in definitions.items():
+        lines.append(f"| {key} | {definition} |")
+    return lines + [""]
+
+
+def _horse(umaban: str, h: dict, status_notes: dict) -> list[str]:
+    note = status_notes[h["history"]["status"]]
     lines = [f"### {umaban} {h['bamei']}（{_v(h['sex_age'])} / {_v(h['futan_kg'])}kg / 枠{_v(h['waku'])}）",
-             "", f"履歴: {h['history']['status']} — {h['history']['note']}"
+             "", f"履歴: {h['history']['status']} — {note}"
              f"（{h['history']['runs_found']}走）", ""]
     if h["recent_runs"]:
         lines += ["| " + " | ".join(_RUN_COLS) + " |",
@@ -91,7 +99,8 @@ def render(dossier: dict) -> str:
     lines += _course(dossier["course"])
     lines += _race(dossier["race"], dossier["prediction_cutoff"])
     lines += ["## 出走馬", ""]
+    lines += _condition_definitions_table(dossier["condition_definitions"])
     for umaban, h in dossier["horses"].items():
-        lines += _horse(umaban, h)
+        lines += _horse(umaban, h, dossier["history_status_notes"])
     lines += _quality(dossier["data_quality"], dossier["field_summary"])
     return "\n".join(lines)

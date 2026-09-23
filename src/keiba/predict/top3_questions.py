@@ -15,7 +15,12 @@ from keiba.predict.questions import LAYER1_PACE_INSTRUCTIONS, PACE_CHOICES
 
 __all__ = ["TOP3_PROMPT_VERSION", "pace_questions", "question_name", "top3_questions"]
 
-TOP3_PROMPT_VERSION = "1"
+# "2": state の definition が各馬の conditions から top-level の
+#      condition_definitions へ移った（statesize-fix-brief.md）。文言が
+#      「比較条件（definition）」から「比較条件（condition_definitions）」へ
+#      変わったので版を上げる。"1" の記録は実在する（Task 14 の案A試行、
+#      plan_a 記録9件、data/top3/predictions/202609.jsonl）。
+TOP3_PROMPT_VERSION = "2"
 
 _MATERIALS = (
     "判断材料：\n"
@@ -38,7 +43,7 @@ def _rules(whose_runs: str) -> str:
     return (
         "\n"
         f"今回のコース条件、{whose_runs}の過去走、出走全頭との能力比較を判断材料にしてください。\n"
-        "条件別実績は出走数（starts）と比較条件（definition）を併せて参照してください。\n"
+        "条件別実績は出走数（starts）と比較条件（condition_definitions）を併せて参照してください。\n"
         "未経験の条件や欠損情報を、不適性の証拠として扱わないでください。"
         "history.status が debut / not_in_window / unknown / unmatched の馬は、"
         "過去走が無いことを能力が低い証拠として扱わないでください。"

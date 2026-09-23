@@ -74,19 +74,26 @@ TIE_BAND = 0.03
 # --- 既定値 -----------------------------------------------------------------
 
 # 資料（features/dossier.py）の形の版。キーや中身の定義が変わったら上げる。
-DOSSIER_VERSION = "1"
+# "2": 条件別実績の definition と履歴の note を各馬から top-level
+#      （condition_definitions / history_status_notes）へ集約し、直近走の既定を
+#      5走から4走に減らした（state size fix。実測 100レースのドライランで
+#      17/100 が旧上限 48,000 文字を超えていた）。
+DOSSIER_VERSION = "2"
 # 「3着以内」の 3。表示頭数（DEFAULT_TOP_N）とは別物なので分けて持つ。
 TOP3_PLACE = 3
 # 3着内の採点規則（evaluate/top3_metrics.py の docstring）の版。同着・取消・
 # 失格の扱いを変えたら上げる。版が違う報告どうしは比べない。
 TOP3_EVAL_RULES_VERSION = "1"
 # 資料に載せる直近の過去走の件数。多いほど state が大きくなる（STATE_MAX_CHARS）。
-DEFAULT_DOSSIER_RECENT_RUNS = 5
+# 5 -> 4: 実測サイズ（Task 14）を踏まえた見直し。1頭あたり recent_runs は約1.5k文字
+# （5走）で、定義文・注記の集約と合わせて上限内に収める。
+DEFAULT_DOSSIER_RECENT_RUNS = 4
 # state の上限（json.dumps(state, ensure_ascii=False) の文字数）。
-# 実測: 18頭の第1層 state が 31,868 文字 / 17,735 トークン（約0.56トークン/文字）。
-# 48,000 文字 ≈ 27,000 トークンで、Jev の「state + 最長の質問 ≤ 32k」に質問ぶんの
-# 余裕を残す。案Aの実行（Task 14）で得た実測の比で見直すこと。
-STATE_MAX_CHARS = 48_000
+# 実測: input_tokens / (state_chars + question_chars) = 0.583〜0.590
+# （Task 14、9リクエスト、2026-09-23）。Jev の制約は「state + 最長の質問 ≤ 32k
+# トークン」で、3着内の最長の質問は1,000文字未満。
+# (32,000 - 1,000) / 0.59 ≈ 52,500 なので 52,000 に切り下げる。
+STATE_MAX_CHARS = 52_000
 # field_summary で「先行型」と数える4角の相対位置（corner_pos_mean）の上限。
 FRONT_RUNNER_MAX_CORNER_POS = 1 / 3
 # 見つかった最古の過去走がデータ版の収録開始からこの日数以内なら、それより前の

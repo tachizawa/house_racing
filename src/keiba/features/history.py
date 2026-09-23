@@ -17,8 +17,9 @@ from keiba.features.derive import BABA_UNKNOWN_REASON, ConditionRecord, eligible
 from keiba.models import PastRun
 
 __all__ = [
-    "RUN_LINE_KEYS", "COMBINED_CONDITION_KEYS", "HistoryStatus", "TodayConditions",
-    "combined_condition_records", "history_status", "recent_run_lines", "run_line",
+    "RUN_LINE_KEYS", "COMBINED_CONDITION_KEYS", "STATUS_NOTES", "HistoryStatus",
+    "TodayConditions", "combined_condition_records", "history_status", "recent_run_lines",
+    "run_line",
 ]
 
 RUN_LINE_KEYS: tuple[str, ...] = (
@@ -68,7 +69,10 @@ class HistoryStatus:
     period_to: date | None
 
 
-_NOTES = {
+#: status -> 注記文。dossier.py は馬ごとに埋め込まず、出現した status ぶんだけ
+#: top-level の history_status_notes に集約する（state の重複を減らす。
+#: statesize-fix-brief.md）。HistoryStatus.note は互換のため今まで通り持つ。
+STATUS_NOTES = {
     "found": "締切前の出走記録がデータ版にある。",
     "found_may_be_truncated": (
         "締切前の出走記録はあるが、最古の記録がデータ版の収録開始に近く、"
@@ -88,7 +92,7 @@ def history_status(runs: Sequence[PastRun], *, matched: bool, race_class_level: 
                    coverage_from: datetime | None) -> HistoryStatus:
     def make(status: str, found: Sequence[PastRun] = ()) -> HistoryStatus:
         dates = [run.race.hasso_at.date() for run in found]
-        return HistoryStatus(status=status, note=_NOTES[status], runs_found=len(found),
+        return HistoryStatus(status=status, note=STATUS_NOTES[status], runs_found=len(found),
                              period_from=min(dates) if dates else None,
                              period_to=max(dates) if dates else None)
 

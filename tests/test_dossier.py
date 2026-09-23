@@ -8,7 +8,7 @@ import pytest
 from keiba import config
 from keiba.data.repository import Repository
 from keiba.data.store import DataStore
-from keiba.features import dossier
+from keiba.features import dossier, history
 from keiba.models import HorseEntry, RaceInput
 from tests.fixtures import csv_data as fx
 
@@ -57,8 +57,36 @@ def _race_input(**kw):
 def test_top_level_keys(tmp_path):
     d = dossier.build_dossier(_race_input(), _dataset(tmp_path))
     assert tuple(d) == ("dossier_version", "prediction_cutoff", "course", "race",
-                        "horses", "field_summary", "data_quality")
+                        "horses", "condition_definitions", "history_status_notes",
+                        "field_summary", "data_quality")
     assert d["dossier_version"] == config.DOSSIER_VERSION
+
+
+def test_condition_definitions_are_hoisted_once_and_absent_per_horse(tmp_path):
+    """定義文は state の重複の主因の1つ（brief: 各馬の conditions 5区分に同じ
+    definition 文が繰り返される）。top-level に1回だけ持つ。"""
+    d = dossier.build_dossier(_race_input(), _dataset(tmp_path))
+    assert tuple(d["condition_definitions"]) == history.COMBINED_CONDITION_KEYS
+    for key in history.COMBINED_CONDITION_KEYS:
+        assert isinstance(d["condition_definitions"][key], str)
+        assert d["condition_definitions"][key]
+    for h in d["horses"].values():
+        for cond in h["conditions"].values():
+            assert "definition" not in cond
+
+
+def test_history_status_notes_present_only_for_occurring_statuses(tmp_path):
+    """注記文も馬ごとに繰り返さない。出現した status ぶんだけ、ソート済みで持つ
+    （brief: history.note が全頭に固定文言を繰り返す）。"""
+    d = dossier.build_dossier(_race_input(), _dataset(tmp_path))
+    assert d["field_summary"]["history_status_counts"] == {"found": 1, "not_in_window": 1}
+    assert d["history_status_notes"] == {
+        "found": history.STATUS_NOTES["found"],
+        "not_in_window": history.STATUS_NOTES["not_in_window"],
+    }
+    assert tuple(d["history_status_notes"]) == tuple(sorted(d["history_status_notes"]))
+    for h in d["horses"].values():
+        assert "note" not in h["history"]
 
 
 def test_every_horse_has_same_keys(tmp_path):

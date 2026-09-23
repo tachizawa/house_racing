@@ -8,13 +8,13 @@ def _dossier():
            "track_label": "芝・右外", "track_kind": "turf", "kyori_m": 2000, "baba": "良",
            "class_level": 3, "syusso_tosu": 12, "kakutei_jyuni": 2, "margin_sec": 0.1,
            "corner_positions": [None, None, 3, 3], "last_3f_sec": 34.1, "futan_kg": 57.0}
-    cond = {"definition": "定義", "starts": 1, "wins": 0, "top3": 1, "margin_sec_mean": 0.1,
+    cond = {"starts": 1, "wins": 0, "top3": 1, "margin_sec_mean": 0.1,
             "period": {"from": "2026-09-06", "to": "2026-09-06"}, "inapplicable_reason": None}
     undefined = dict(cond, starts=None, wins=None, top3=None,
                      inapplicable_reason="今回の馬場状態が未入力のため比較できない")
     horse = {"bamei": "テストウマ", "sex_age": "牡4", "futan_kg": 57.0, "waku": "1",
              "kisyu": None,
-             "history": {"status": "found", "note": "締切前の出走記録がデータ版にある。",
+             "history": {"status": "found",
                          "runs_found": 1, "period": {"from": "2026-09-06", "to": "2026-09-06"}},
              "recent_runs": [run],
              "vs_last_run": {"days_since_last_run": 14, "distance_change_m": 0,
@@ -22,13 +22,16 @@ def _dossier():
              "conditions": {"surface_exact_distance": cond, "surface_same_going": undefined},
              "ability": {}, "running_style": {"corner_pos_mean": 0.25}}
     return {
-        "dossier_version": "1", "prediction_cutoff": "2026-09-19T21:25:00+09:00",
+        "dossier_version": "2", "prediction_cutoff": "2026-09-19T21:25:00+09:00",
         "course": {"identified": False, "reason": "トラックコードが無い", "facts": None,
                    "track_label": None, "kyori_m": 2000, "start_note": None,
                    "facts_source": None, "course_kubun_cd": None},
         "race": {"jyo": "中山", "track_kind": "turf", "kyori_m": 2000, "baba": None,
                  "class_name": None, "class_level": 3, "entry_count": 1},
         "horses": {"01": horse},
+        "condition_definitions": {"surface_exact_distance": "芝・ダートと距離が今回と同じ過去走",
+                                  "surface_same_going": "芝・ダートと馬場状態が今回と同じ過去走"},
+        "history_status_notes": {"found": "締切前の出走記録がデータ版にある。"},
         "field_summary": {"n_horses": 1, "n_with_history": 1,
                           "history_status_counts": {"found": 1}, "n_front_runners": 1,
                           "front_runner_definition": "定義"},
@@ -57,6 +60,17 @@ def test_render_shows_missing_as_dash_not_zero():
 def test_render_lists_recent_run():
     text = dossier_markdown.render(_dossier())
     assert "2026-09-06" in text and "芝・右外" in text
+
+
+def test_render_shows_condition_definitions_once():
+    text = dossier_markdown.render(_dossier())
+    assert text.count("芝・ダートと距離が今回と同じ過去走") == 1
+    assert text.count("芝・ダートと馬場状態が今回と同じ過去走") == 1
+
+
+def test_render_shows_history_note_per_horse_from_top_level_map():
+    text = dossier_markdown.render(_dossier())
+    assert "締切前の出走記録がデータ版にある。" in text
 
 
 def test_render_shows_rail_basis_in_source_when_present():

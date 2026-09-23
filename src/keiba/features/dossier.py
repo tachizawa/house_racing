@@ -60,9 +60,11 @@ def _course_dict(identification, facts) -> dict:
 
 
 def _conditions_dict(records) -> dict:
+    """definition は含めない——5区分ぶん、馬ごとに同じ文が繰り返され state を
+    膨らませるため、top-level の condition_definitions に1回だけ持つ
+    （statesize-fix-brief.md）。"""
     return {
         key: {
-            "definition": definition,
             "starts": record.starts,
             "wins": record.wins,
             "top3": record.top3,
@@ -72,6 +74,13 @@ def _conditions_dict(records) -> dict:
         }
         for key, (definition, record) in records.items()
     }
+
+
+def _condition_definitions(today: history.TodayConditions) -> dict[str, str]:
+    """5区分の比較条件の定義文。過去走（runs）には依らず今回の条件だけで決まるので、
+    レースにつき1回だけ作る（馬ごとに同じ文を持たせない）。"""
+    records = history.combined_condition_records((), today=today)
+    return {key: definition for key, (definition, _) in records.items()}
 
 
 def _threshold_text(value: float) -> str:
@@ -129,7 +138,9 @@ def build_dossier(race_input: RaceInput, repo: Repository, *,
             "waku": hf.entry.wakuban,
             "kisyu": hf.entry.kisyu,
             "history": {
-                "status": status.status, "note": status.note,
+                # note はここに置かない。出現した status ぶんだけ top-level の
+                # history_status_notes に集約する（statesize-fix-brief.md）。
+                "status": status.status,
                 "runs_found": status.runs_found,
                 "period": {"from": _iso(status.period_from), "to": _iso(status.period_to)},
             },
@@ -155,6 +166,9 @@ def build_dossier(race_input: RaceInput, repo: Repository, *,
         "course": _course_dict(identification, facts),
         "race": race,
         "horses": horses,
+        "condition_definitions": _condition_definitions(today),
+        "history_status_notes": {status: history.STATUS_NOTES[status]
+                                 for status in sorted(statuses)},
         "field_summary": {
             "n_horses": len(horses),
             "n_with_history": sum(1 for h in horses.values() if h["history"]["runs_found"] > 0),
