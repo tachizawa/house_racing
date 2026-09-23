@@ -46,6 +46,11 @@ class DataStore:
     races: pd.DataFrame
     race_horses: pd.DataFrame
     horses: pd.DataFrame
+    #: manifest の coverage.first_hasso_at。データ版に入っている最も早い発走。
+    #: 「この日より前の出走は版に無い」という境界で、過去走が見つからない理由を
+    #: 「取得期間外」と「本当に無い」に分けるのに使う。古い manifest には無いので
+    #: None になりうる（None は「境界が分からない」であって「境界が無い」ではない）。
+    coverage_from: datetime | None = None
 
     @classmethod
     def open_current(cls, data_dir: Path) -> "DataStore":
@@ -77,6 +82,7 @@ class DataStore:
             races=_read_csv(path / "races.csv"),
             race_horses=_read_csv(path / "race_horses.csv"),
             horses=_read_csv(path / "horses.csv"),
+            coverage_from=_coverage_from(manifest),
         )
 
     @cached_property
@@ -127,3 +133,8 @@ class DataStore:
             if key:
                 index[key].append(ketto_num)
         return dict(index)
+
+
+def _coverage_from(manifest: dict) -> datetime | None:
+    value = (manifest.get("coverage") or {}).get("first_hasso_at")
+    return datetime.fromisoformat(value) if value else None

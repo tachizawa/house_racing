@@ -263,6 +263,11 @@ class Repository:
     def data_fetched_at(self) -> datetime:
         return self._store.fetched_at
 
+    @property
+    def coverage_from(self) -> datetime | None:
+        """データ版に入っている最も早い発走（manifest 由来）。不明なら None。"""
+        return self._store.coverage_from
+
     def past_runs(self, ketto_num: str, *, as_of: datetime,
                   limit: int | None = None) -> list[PastRun]:
         """as_of より前に発走した平地の走を、新しい順に返す。
