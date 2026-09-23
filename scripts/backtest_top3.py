@@ -142,6 +142,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--n", type=int, default=config.DEFAULT_TOP_N)
     p.add_argument("--limit", type=int, default=20)
     p.add_argument("--max-recent-runs", type=int, default=config.DEFAULT_DOSSIER_RECENT_RUNS)
+    # jev_failed が連続したら打ち切る（原因不明の持続的失敗に費用の読めない
+    # リクエストを送り続けないため）。0 は無効化（tbt.run() には None を渡す）。
+    p.add_argument("--max-consecutive-jev-failures", type=int, default=5)
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--final", action="store_true")
     p.add_argument("--final-rerun-reason", default=None)
@@ -206,19 +209,41 @@ def main(argv: list[str] | None = None) -> int:
         with rows_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(_to_jsonable(row), ensure_ascii=False) + "\n")
 
-    rows = tbt.run(races, repo, results, client, methods=methods, n=args.n,
-                   tuning_until=tuning_until, allow_final=args.final,
-                   max_recent_runs=args.max_recent_runs, save_records=args.save_records,
-                   data_dir=args.data_dir, pace_definition_for=pace_definition_for,
-                   on_row=write_row)
-    rep = tbt.report(rows, n=args.n, run_info={
+    max_consecutive_failures = (None if args.max_consecutive_jev_failures == 0
+                                else args.max_consecutive_jev_failures)
+    run_info = {
         "data_version": store.version_id, "from": args.date_from, "to": args.date_to,
         "tuning_until": args.tuning_until, "limit": args.limit, "methods": methods,
-        "final": args.final, "max_recent_runs": args.max_recent_runs})
-    (out_dir / "report.json").write_text(
-        json.dumps(_to_jsonable(rep), ensure_ascii=False, indent=2), encoding="utf-8")
+        "final": args.final, "max_recent_runs": args.max_recent_runs}
+
+    def write_report(rows) -> dict:
+        rep = tbt.report(rows, n=args.n, run_info=run_info)
+        (out_dir / "report.json").write_text(
+            json.dumps(_to_jsonable(rep), ensure_ascii=False, indent=2), encoding="utf-8")
+        return rep
+
+    try:
+        rows = tbt.run(races, repo, results, client, methods=methods, n=args.n,
+                       tuning_until=tuning_until, allow_final=args.final,
+                       max_recent_runs=args.max_recent_runs, save_records=args.save_records,
+                       data_dir=args.data_dir, pace_definition_for=pace_definition_for,
+                       on_row=write_row, max_consecutive_jev_failures=max_consecutive_failures)
+    except tbt.ConsecutiveJevFailures as breaker:
+        # rows.jsonl には打ち切りまでの行がすでに書かれている（on_row）。
+        # report.json もここまでの行（breaker.rows）から書く——一発勝負の
+        # 最終評価で、原因不明の連続失敗に気づかず課金し続けないため。
+        rep = write_report(breaker.rows)
+        print(f"jev_failed が {args.max_consecutive_jev_failures} 回連続したため、"
+              f"打ち切りました。直前の失敗: {breaker.skip_detail}")
+        print(f"スキップ: {rep['skip_breakdown']}")
+        print(f"skip_details: {rep['skip_details']}")
+        print(f"保存: {out_dir}")
+        return 3
+
+    rep = write_report(rows)
     print(json.dumps(_to_jsonable(rep["by_period"]), ensure_ascii=False, indent=2))
     print(f"スキップ: {rep['skip_breakdown']}")
+    print(f"skip_details: {rep['skip_details']}")
     print(f"使用量: {rep['usage']}")
     print(f"保存: {out_dir}")
     return 0

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from jev_client import describe_error
 from keiba.data.repository import Repository, ResultRepository
 from keiba.data.store import DataStore
 from keiba.evaluate import top3_backtest as tbt
@@ -81,6 +82,43 @@ class PlanBClient:
             nouls=nouls, choices={"winner": types.SimpleNamespace(
                 choice=umabans[0], probabilities=probs, confidence=0.5)},
             model="jev-1.13.0", usage=types.SimpleNamespace(input_tokens=100))
+
+
+def _sdk_error():
+    """課金の理由になる SDK 例外。レート制限が構成できない環境なら
+    タイムアウトにフォールバックする（既存テストと同じ方針）。"""
+    import typesafe_sdk as ts
+    try:
+        return ts.TypeSafeRateLimitError(429, {"error": "rate limited"}, {},
+                                         message="rate limited", endpoint="/v1/systemone")
+    except TypeError:
+        return ts.TypeSafeAPITimeoutError(10.0)
+
+
+class FailingClient:
+    """常に SDK 例外を送出する（jev_failed が連続する状況の再現用）。"""
+
+    def __init__(self):
+        self.calls = 0
+
+    def system_one(self, state, questions, **kw):
+        self.calls += 1
+        raise _sdk_error()
+
+
+def _many_races(n: int, *, start_day: int = 1):
+    """発走日を1日ずつずらした n レース分の races.csv / race_horses.csv の行。
+    すべて同じ月内・別日にして、時系列順を保ったまま複数レースを作る。"""
+    races, race_horses = [], []
+    for i in range(n):
+        day = start_day + i
+        race_id = f"202603{day:02d}06010101"
+        for h in range(1, 4):
+            race_horses.append(fx.make_race_horse(
+                race_id=race_id, umaban=f"{h:02d}", ketto_num=f"{race_id}{h}",
+                bamei=f"ウマ{day}{h}", result_kakutei_jyuni=str(h)))
+        races.append(fx.make_race(race_id=race_id, hasso_at=f"2026-03-{day:02d}T15:00:00+09:00"))
+    return races, race_horses
 
 
 def _run(tmp_path, *, methods=("python", "plan_a"), allow_final=False, client=None):
@@ -193,6 +231,96 @@ def test_report_has_per_series_metrics_and_skips(tmp_path):
     assert "plan_a_vs_python" in rep["by_period"]["tuning"]["comparisons"]
     assert rep["usage"]["plan_a"]["input_tokens"] == 100
     assert rep["versions"]["eval_rules_version"] == "1"
+
+
+def test_report_skip_details_counts(tmp_path):
+    rows = _run(tmp_path, methods=("plan_a",), client=FailingClient())
+    rep = tbt.report(rows, n=3, run_info={"note": "test"})
+    # final_period_locked（FINAL_RACE）は例外由来ではないので detail が無く、
+    # skip_details には現れない。jev_failed（TUNING_RACE）だけが1件。
+    assert sum(rep["skip_details"].values()) == 1
+    key = next(iter(rep["skip_details"]))
+    assert key.startswith("plan_a: ")
+    assert len(key) <= len(f"plan_a: {type(_sdk_error()).__name__}: ") + 80
+
+
+# ===============================================================================
+# 連続失敗のサーキットブレーカー
+# ===============================================================================
+
+
+def _race_rows(repo, results, races):
+    return [results.race(r["race_id"]) for r in races]
+
+
+def test_breaker_stops_after_n_consecutive_failures(tmp_path):
+    races, race_horses = _many_races(7)
+    data_dir = fx.write_dataset(tmp_path, races, race_horses, [])
+    store = DataStore.open_current(data_dir)
+    repo, results = Repository(store), ResultRepository(store)
+    race_rows = _race_rows(repo, results, races)
+    client = FailingClient()
+
+    with pytest.raises(tbt.ConsecutiveJevFailures) as excinfo:
+        tbt.run(race_rows, repo, results, client, methods=("plan_a",), n=3,
+               tuning_until=date(2026, 3, 31), allow_final=False, max_recent_runs=5,
+               save_records=False, data_dir=tmp_path, max_consecutive_jev_failures=3)
+
+    breaker = excinfo.value
+    assert len(breaker.rows) == 3
+    assert [r.skipped for r in breaker.rows] == ["jev_failed"] * 3
+    assert client.calls == 3  # 4レース目以降には送っていない
+    assert breaker.skip_detail == breaker.rows[-1].skip_detail
+
+
+def test_breaker_resets_after_a_success(tmp_path):
+    races, race_horses = _many_races(5)
+    data_dir = fx.write_dataset(tmp_path, races, race_horses, [])
+    store = DataStore.open_current(data_dir)
+    repo, results = Repository(store), ResultRepository(store)
+    race_rows = _race_rows(repo, results, races)
+
+    class ScriptedClient:
+        """1・2・4・5回目は失敗、3回目だけ成功する。
+
+        ``Client`` を継承すると ``system_one`` 自身も ``self.calls`` を数える
+        ため、委譲するとここでの加算と二重になる。数える主体をこのクラス
+        だけにするため、成功時は使い捨ての ``Client()`` に委譲する。
+        """
+
+        def __init__(self):
+            self.calls = 0
+
+        def system_one(self, state, questions, **kw):
+            self.calls += 1
+            if self.calls in (1, 2, 4, 5):
+                raise _sdk_error()
+            return Client().system_one(state, questions, **kw)
+
+    client = ScriptedClient()
+    rows = tbt.run(race_rows, repo, results, client, methods=("plan_a",), n=3,
+                   tuning_until=date(2026, 3, 31), allow_final=False, max_recent_runs=5,
+                   save_records=False, data_dir=tmp_path, max_consecutive_jev_failures=3)
+
+    # 3回目の成功で連続数が0に戻るので、limit=3 に達する前に5レースとも終わる。
+    assert [r.skipped for r in rows] == ["jev_failed", "jev_failed", None,
+                                         "jev_failed", "jev_failed"]
+
+
+def test_breaker_disabled_with_none(tmp_path):
+    races, race_horses = _many_races(6)
+    data_dir = fx.write_dataset(tmp_path, races, race_horses, [])
+    store = DataStore.open_current(data_dir)
+    repo, results = Repository(store), ResultRepository(store)
+    race_rows = _race_rows(repo, results, races)
+    client = FailingClient()
+
+    rows = tbt.run(race_rows, repo, results, client, methods=("plan_a",), n=3,
+                   tuning_until=date(2026, 3, 31), allow_final=False, max_recent_runs=5,
+                   save_records=False, data_dir=tmp_path, max_consecutive_jev_failures=None)
+
+    assert len(rows) == 6
+    assert all(r.skipped == "jev_failed" for r in rows)
 
 
 def test_dry_run_reports_state_sizes_without_client(tmp_path):
@@ -342,6 +470,17 @@ def test_plan_b_partial_failure_keeps_pace_usage(tmp_path):
     assert usage["failed_requests"] == 1
 
 
+def test_jev_failed_skip_detail_has_sdk_exception_class(tmp_path):
+    # Task: 失敗の理由を記録する。JevRequestError は original（SDK の元例外）の
+    # クラス名を使う（jev_client.JevRequestError.original 経由）。
+    error = _sdk_error()
+    rows = _run(tmp_path, methods=("plan_a",), client=FailingClient())
+    tuning = {r.race_id: r for r in rows}[TUNING_RACE]
+    assert tuning.skipped == "jev_failed"
+    assert tuning.skip_detail == f"plan_a: {type(error).__name__}: {describe_error(error)}"
+    assert len(tuning.skip_detail) <= 300
+
+
 def test_plan_b_partial_failure_maps_jev_error(tmp_path):
     import typesafe_sdk as ts
 
@@ -470,3 +609,30 @@ def test_final_race_count_ignores_jump_races(tmp_path):
     until = date(2026, 3, 10)
     assert backtest_top3_cli._count_final_races([tuning, final], until) == 1
     assert backtest_top3_cli._count_final_races([tuning, jump], until) == 0
+
+
+def test_cli_stops_and_writes_report_on_breaker(tmp_path, monkeypatch):
+    # ConsecutiveJevFailures が飛んでも、そこまでの行から report.json を書き、
+    # exit code 3 で終わる（rows.jsonl は on_row ですでに書かれている）。
+    races, race_horses = _many_races(5, start_day=5)
+    data_dir = fx.write_dataset(tmp_path / "data", races, race_horses, [])
+    out_dir = tmp_path / "out"
+    monkeypatch.setattr(backtest_top3_cli, "create_client", lambda: FailingClient())
+    args = ["--data-dir", str(data_dir), "--from", "20260301", "--to", "20260315",
+            "--tuning-until", "20260401", "--methods", "plan_a",
+            "--out", str(out_dir), "--no-save-records",
+            "--max-consecutive-jev-failures", "2", "--limit", "5"]
+
+    rc = backtest_top3_cli.main(args)
+
+    assert rc == 3
+    report_files = list(out_dir.glob("*/report.json"))
+    assert len(report_files) == 1
+    report = json.loads(report_files[0].read_text(encoding="utf-8"))
+    assert report["skip_breakdown"]["jev_failed"] == 2
+    assert sum(report["skip_details"].values()) == 2
+    rows_files = list(out_dir.glob("*/rows.jsonl"))
+    assert len(rows_files) == 1
+    written_rows = [json.loads(line) for line in
+                    rows_files[0].read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(written_rows) == 2  # 打ち切り時点までの行がすでに書かれている

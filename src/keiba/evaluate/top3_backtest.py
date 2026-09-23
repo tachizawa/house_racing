@@ -29,7 +29,8 @@ from keiba.models import RaceInput, RaceRow
 from keiba.predict import top3, top3_baselines
 from keiba.store import top3_records
 
-__all__ = ["METHODS", "SERIES", "Top3Row", "dry_run", "pace_accuracy", "report", "run"]
+__all__ = ["METHODS", "SERIES", "ConsecutiveJevFailures", "Top3Row", "dry_run",
+           "pace_accuracy", "report", "run"]
 
 METHODS: tuple[str, ...] = ("python", "plan_a", "plan_b")
 SERIES: tuple[str, ...] = ("python", "plan_a", "winner_same_state_a",
@@ -58,6 +59,13 @@ class Top3Row:
     #: winner_same_state_{a|b} は series に入れない（全頭 0.0 を馬番順に並べた
     #: 順位を採点しないため。final review I-5）。
     winner_missing_methods: tuple[str, ...] = ()
+    #: skipped が例外由来のとき "{method}: {例外クラス名}: {メッセージ}"
+    #: （300文字で切り詰め）。method は失敗した方式名、match_ambiguous のように
+    #: 方式に紐づかない失敗は "dossier"。例外に由来しないスキップ（jump /
+    #: no_entries / no_result / final_period_locked や、pace_definition_for が
+    #: 例外なしで None を返した pace_unavailable）は None のまま
+    #: （Task: 失敗の理由を記録する）。
+    skip_detail: str | None = None
 
 
 def _period(race: RaceRow, tuning_until: date) -> str:
@@ -88,8 +96,48 @@ def _partial_failure_skip(cause: Exception) -> str:
     raise TypeError(f"想定していない失敗: {cause!r}") from cause
 
 
-def _skip(race: RaceRow, period: str, reason: str) -> Top3Row:
-    return Top3Row(race.race_id, period, reason, None, {}, {}, None)
+def _skip(race: RaceRow, period: str, reason: str, *, detail: str | None = None) -> Top3Row:
+    return Top3Row(race.race_id, period, reason, None, {}, {}, None, skip_detail=detail)
+
+
+def _skip_detail(method: str, error: Exception) -> str:
+    """スキップの理由になった例外を短い1行にする。
+
+    ``JevRequestError`` はラップ用の例外なので、クラス名は ``original``
+    （SDK が投げた元の例外）から取る。メッセージは ``str(error)``——
+    ``JevRequestError`` は ``jev_client.describe_error()`` 済みの日本語を
+    そのまま持っているので、それを使う。それ以外の例外は自分自身が
+    ``original`` でありメッセージでもある。300文字を超える分は切り詰める
+    （レポート・ログを肥大化させないため）。
+    """
+    original = error.original if isinstance(error, JevRequestError) else error
+    return f"{method}: {type(original).__name__}: {error}"[:300]
+
+
+def _skip_detail_prefix(detail: str) -> str:
+    """report() の ``skip_details`` のキー。
+
+    ``skip_detail`` は "{method}: {例外クラス名}: {メッセージ}" 形式なので、
+    最初の2つの ": " で区切り、メッセージだけ先頭80文字に切り詰める
+    （例外ごとに1文字も違わない請求 request_id などでキーが分裂しないように）。
+    """
+    method, _, rest = detail.partition(": ")
+    cls, _, message = rest.partition(": ")
+    return f"{method}: {cls}: {message[:80]}"
+
+
+class ConsecutiveJevFailures(RuntimeError):
+    """jev_failed が連続で規定回数に達したため ``run()`` が打ち切った。
+
+    ``rows`` は打ち切りまでに確定した行（最後の jev_failed 行を含む）。
+    ``skip_detail`` はその最後の行の理由。呼び出し側（scripts/backtest_top3.py）
+    はここまでの ``rows`` から report.json を書ける。
+    """
+
+    def __init__(self, rows: list[Top3Row], skip_detail: str | None) -> None:
+        super().__init__(f"jev_failed が連続したため打ち切りました: {skip_detail}")
+        self.rows = rows
+        self.skip_detail = skip_detail
 
 
 def _record(race_input: RaceInput, dossier: dict, method: str, *, ranking, answer=None,
@@ -119,11 +167,20 @@ def run(races: Sequence[RaceRow], repo: Repository, results: ResultRepository, c
         methods: Sequence[str], n: int, tuning_until: date, allow_final: bool,
         max_recent_runs: int, save_records: bool, data_dir: Path,
         pace_definition_for: Callable[[RaceInput], dict | None] | None = None,
-        on_row: Callable[[Top3Row], None] | None = None) -> list[Top3Row]:
+        on_row: Callable[[Top3Row], None] | None = None,
+        max_consecutive_jev_failures: int | None = 5) -> list[Top3Row]:
+    """``max_consecutive_jev_failures``: jev_failed が連続でこの回数に達したら
+    ``ConsecutiveJevFailures`` で打ち切る（rate limit・キー失効などの持続的な
+    失敗に、費用の読めないリクエストを送り続けないため）。数えるのは
+    jev_failed のスキップだけ——Jev 呼び出しが成功したレースで 0 に戻り、
+    python のみのレース・jev_failed 以外のスキップ（state_too_large など）は
+    連続数を変えない。``None`` で無効化する。
+    """
     unknown = set(methods) - set(METHODS)
     if unknown:
         raise ValueError(f"未知の方式: {sorted(unknown)}")
     rows: list[Top3Row] = []
+    consecutive_jev_failures = 0
 
     def emit(row: Top3Row) -> None:
         rows.append(row)
@@ -151,8 +208,10 @@ def run(races: Sequence[RaceRow], repo: Repository, results: ResultRepository, c
         race_input = race_input_from_history(race, entries, top_n=n)
         try:
             dossier = dossier_mod.build_dossier(race_input, repo, max_recent_runs=max_recent_runs)
-        except AmbiguousMatchError:
-            emit(_skip(race, period, "match_ambiguous"))
+        except AmbiguousMatchError as error:
+            # 方式のループに入る前（どの方式にも紐づかない）失敗なので
+            # method 欄は "dossier" にする。
+            emit(_skip(race, period, "match_ambiguous", detail=_skip_detail("dossier", error)))
             continue
 
         # 案Bの pace_definition はレースごとに1回、どの方式も Jev に送る前に
@@ -171,6 +230,7 @@ def run(races: Sequence[RaceRow], repo: Repository, results: ResultRepository, c
         pace_pair = None
         winner_missing_methods: list[str] = []
         skipped = None
+        skip_detail = None
         for method in methods:
             try:
                 if method == "python":
@@ -217,20 +277,23 @@ def run(races: Sequence[RaceRow], repo: Repository, results: ResultRepository, c
                                  "seconds": failure.seconds, "state_chars": None,
                                  "failed_requests": 1 if failure.requests_sent == 2 else 0}
                 skipped = _partial_failure_skip(failure.cause)
+                skip_detail = _skip_detail(method, failure.cause)
                 break
-            except dossier_mod.StateTooLargeError:
+            except dossier_mod.StateTooLargeError as error:
                 # state を送る前に弾いているので、この方式の課金は発生していない
                 # （この方式の usage には何も足さない。同じレースで先に回った方式の
                 # 課金は usage に残る）。案Bは2回目の state も pace を聞く前に検査して
                 # いる。pace を聞いた後に弾いた場合は PlanBPartialFailure で来る。
                 skipped = "state_too_large"
+                skip_detail = _skip_detail(method, error)
                 break
-            except top3.PaceUnavailableError:
+            except top3.PaceUnavailableError as error:
                 # 通常は方式のループの前に pace_unavailable で飛ばしている。
                 # 何も送っていないので課金は発生していない（usage には足さない）。
                 skipped = "pace_unavailable"
+                skip_detail = _skip_detail(method, error)
                 break
-            except top3.Top3IncompleteError:
+            except top3.Top3IncompleteError as error:
                 # 応答は返ってきている＝課金は発生した（トークン数は例外側が
                 # 持っていないので不明のまま 0 にする。案Bの2回目の欠けは
                 # PlanBPartialFailure で来る）。failed_requests で
@@ -239,21 +302,33 @@ def run(races: Sequence[RaceRow], repo: Repository, results: ResultRepository, c
                 usage[method] = {"input_tokens": 0, "requests": 0, "seconds": 0.0,
                                  "state_chars": None, "failed_requests": 1}
                 skipped = "incomplete_answer"
+                skip_detail = _skip_detail(method, error)
                 break
-            except JevRequestError:
+            except JevRequestError as error:
                 # タイムアウト・接続不能なども課金が発生した可能性があるので
                 # 同様に failed_requests で見えるようにする。
                 usage[method] = {"input_tokens": 0, "requests": 0, "seconds": 0.0,
                                  "state_chars": None, "failed_requests": 1}
                 skipped = "jev_failed"
+                skip_detail = _skip_detail(method, error)
                 break
             if save_records:
                 top3_records.save(record, sent=sent, data_dir=data_dir)
         if skipped is not None:
-            emit(Top3Row(race.race_id, period, skipped, None, {}, usage, None))
+            emit(Top3Row(race.race_id, period, skipped, None, {}, usage, None,
+                         skip_detail=skip_detail))
+            if skipped == "jev_failed":
+                consecutive_jev_failures += 1
+                if (max_consecutive_jev_failures is not None
+                        and consecutive_jev_failures >= max_consecutive_jev_failures):
+                    raise ConsecutiveJevFailures(rows, skip_detail)
             continue
         emit(Top3Row(race.race_id, period, None, outcome, series, usage,
                      python_all_tied, pace_pair, tuple(winner_missing_methods)))
+        if any(method != "python" for method in methods):
+            # Jev を呼んで成功したレース。連続失敗数を0に戻す
+            # （python のみのレースは Jev を呼んでいないので変えない）。
+            consecutive_jev_failures = 0
     return rows
 
 
@@ -305,6 +380,16 @@ def _period_block(rows: Sequence[Top3Row], n: int) -> dict:
     }
 
 
+def _skip_detail_counts(rows: Sequence[Top3Row]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        if row.skip_detail is None:
+            continue
+        key = _skip_detail_prefix(row.skip_detail)
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
 def report(rows: Sequence[Top3Row], *, n: int, run_info: dict) -> dict:
     usage: dict[str, dict] = {}
     for row in rows:
@@ -328,6 +413,10 @@ def report(rows: Sequence[Top3Row], *, n: int, run_info: dict) -> dict:
                                               model=None),
         "skip_breakdown": {reason: sum(1 for r in rows if r.skipped == reason)
                            for reason in _ALL_SKIPS},
+        # {"method: 例外クラス名: メッセージ先頭80文字": 件数}。例外に由来しない
+        # スキップ（jump など）は skip_detail が無いので数えない
+        # （skip_breakdown の方に既に出ている）。
+        "skip_details": _skip_detail_counts(rows),
         "by_period": {period: _period_block([r for r in rows if r.period == period], n)
                       for period in ("tuning", "final")},
         "usage": usage,
