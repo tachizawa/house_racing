@@ -7,16 +7,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 
 from keiba import config
 from keiba.features.course import decode_track_cd
+from keiba.features.derive import BABA_UNKNOWN_REASON, ConditionRecord, summarize_runs
 from keiba.models import PastRun
 
 __all__ = [
-    "RUN_LINE_KEYS", "HistoryStatus", "history_status", "recent_run_lines", "run_line",
+    "RUN_LINE_KEYS", "COMBINED_CONDITION_KEYS", "HistoryStatus", "TodayConditions",
+    "combined_condition_records", "history_status", "recent_run_lines", "run_line",
 ]
 
 RUN_LINE_KEYS: tuple[str, ...] = (
@@ -103,3 +105,66 @@ def history_status(runs: Sequence[PastRun], *, matched: bool, race_class_level: 
     if race_class_level is not None and race_class_level >= 2:
         return make("not_in_window")
     return make("unknown")
+
+
+@dataclass(frozen=True)
+class TodayConditions:
+    """今回のレースの条件のうち、組み合わせ集計に要るもの。不明は None。"""
+
+    track_kind: str
+    kyori_m: int
+    jyo_cd: str | None
+    track_cd: str | None
+    baba_cd: str | None
+    class_level: int | None
+
+
+_TOL = config.SAME_DISTANCE_TOLERANCE_M
+
+# (キー, 定義文, 定義できない理由を返す関数, 一致判定)
+_COMBINED: tuple[tuple[str, str,
+                       Callable[[TodayConditions], str | None],
+                       Callable[[PastRun, TodayConditions], bool]], ...] = (
+    ("surface_exact_distance",
+     "芝・ダートが今回と同じで、距離が今回と同じ過去走",
+     lambda t: None,
+     lambda r, t: r.race.track_kind == t.track_kind and r.race.kyori_m == t.kyori_m),
+    ("surface_near_distance",
+     f"芝・ダートが今回と同じで、距離が今回の±{_TOL}m以内の過去走",
+     lambda t: None,
+     lambda r, t: r.race.track_kind == t.track_kind and abs(r.race.kyori_m - t.kyori_m) <= _TOL),
+    ("course_exact_distance",
+     "競馬場・コース（トラックコード）・距離がすべて今回と同じ過去走",
+     lambda t: None if t.track_cd else "今回のコース（トラックコード）が特定できないため比較できない",
+     lambda r, t: (r.race.jyo_cd == t.jyo_cd and r.race.track_cd == t.track_cd
+                   and r.race.kyori_m == t.kyori_m)),
+    ("surface_same_going",
+     "芝・ダートが今回と同じで、馬場状態が今回と同じ過去走",
+     lambda t: None if t.baba_cd else BABA_UNKNOWN_REASON,
+     lambda r, t: r.race.track_kind == t.track_kind and r.race.baba_cd == t.baba_cd),
+    ("surface_near_distance_near_class",
+     f"芝・ダートが今回と同じで、距離が±{_TOL}m以内、クラスが今回の±1段階以内の過去走",
+     lambda t: None if t.class_level is not None else "今回のクラスが不明のため比較できない",
+     lambda r, t: (r.race.track_kind == t.track_kind
+                   and abs(r.race.kyori_m - t.kyori_m) <= _TOL
+                   and r.race.class_level is not None
+                   and abs(r.race.class_level - t.class_level) <= 1)),
+)
+
+COMBINED_CONDITION_KEYS: tuple[str, ...] = tuple(key for key, *_ in _COMBINED)
+
+
+def combined_condition_records(runs: Sequence[PastRun], *,
+                               today: TodayConditions) -> dict[str, tuple[str, ConditionRecord]]:
+    """5区分すべてを常に返す。区分は排他ではない（同じ走が複数に入りうる）。"""
+    eligible = [run for run in runs if run.race.is_flat and run.result.counts_as_starter]
+    records: dict[str, tuple[str, ConditionRecord]] = {}
+    for key, definition, why_undefined, matches in _COMBINED:
+        reason = why_undefined(today)
+        if reason is not None:
+            records[key] = (definition, ConditionRecord(
+                starts=None, wins=None, top3=None, margin_sec_mean=None,
+                period_from=None, period_to=None, inapplicable_reason=reason))
+            continue
+        records[key] = (definition, summarize_runs([r for r in eligible if matches(r, today)]))
+    return records

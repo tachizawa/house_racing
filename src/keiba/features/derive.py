@@ -32,6 +32,7 @@ __all__ = [
     "condition_records",
     "recent_form",
     "running_style",
+    "summarize_runs",
     "transport",
 ]
 
@@ -148,6 +149,15 @@ def _build_condition_record(matched: list[PastRun]) -> ConditionRecord:
         period_from=min(dates),
         period_to=max(dates),
     )
+
+
+def summarize_runs(matched: list[PastRun]) -> ConditionRecord:
+    """条件で絞り終えた過去走を1つの ConditionRecord に集計する。
+
+    features/history.py の組み合わせ集計が同じ集計規則（top3 は can_win の
+    1〜3着、着差は時計のある走だけ）を使うための公開口。規則はここ1箇所に置く。
+    """
+    return _build_condition_record(matched)
 
 
 def condition_records(runs: Sequence[PastRun], *, race: RaceInput) -> dict[str, ConditionRecord]:

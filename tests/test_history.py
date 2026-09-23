@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 
 from keiba.features import history
+from keiba.features.derive import BABA_UNKNOWN_REASON
 from tests.fixtures.runs import make_past_run
 
 JST = timezone(timedelta(hours=9))
@@ -89,3 +90,64 @@ def test_status_found_without_coverage_info_does_not_claim_truncation():
     status = history.history_status([run_at(8, 10)], matched=True, race_class_level=2,
                                     coverage_from=None)
     assert status.status == "found"
+
+
+def today(**kw):
+    base = dict(track_kind="turf", kyori_m=2000, jyo_cd="04", track_cd="11",
+                baba_cd="1", class_level=3)
+    base.update(kw)
+    return history.TodayConditions(**base)
+
+
+def test_combined_keys_are_fixed_and_ordered():
+    records = history.combined_condition_records([], today=today())
+    assert tuple(records) == history.COMBINED_CONDITION_KEYS
+
+
+def test_surface_exact_distance_does_not_mix_dirt():
+    runs = [run_at(9, 6, track_kind="turf", kyori_m=2000),
+            run_at(8, 23, track_kind="dirt", kyori_m=2000)]
+    definition, record = history.combined_condition_records(runs, today=today())["surface_exact_distance"]
+    assert record.starts == 1
+    assert "芝・ダート" in definition
+
+
+def test_course_exact_distance_separates_inner_and_outer():
+    runs = [run_at(9, 6, jyo_cd="04", track_cd="11", kyori_m=2000),
+            run_at(8, 23, jyo_cd="04", track_cd="12", kyori_m=2000)]
+    _, record = history.combined_condition_records(runs, today=today())["course_exact_distance"]
+    assert record.starts == 1
+
+
+def test_course_exact_distance_inapplicable_without_track_cd():
+    _, record = history.combined_condition_records(
+        [run_at(9, 6)], today=today(track_cd=None))["course_exact_distance"]
+    assert record.starts is None
+    assert record.inapplicable_reason is not None
+
+
+def test_same_going_inapplicable_without_baba():
+    _, record = history.combined_condition_records(
+        [run_at(9, 6)], today=today(baba_cd=None))["surface_same_going"]
+    assert record.starts is None
+    assert record.inapplicable_reason == BABA_UNKNOWN_REASON
+
+
+def test_near_class_window():
+    runs = [run_at(9, 6, class_level=2), run_at(8, 30, class_level=4),
+            run_at(8, 23, class_level=5)]
+    _, record = history.combined_condition_records(
+        runs, today=today(class_level=3))["surface_near_distance_near_class"]
+    assert record.starts == 2
+
+
+def test_near_class_inapplicable_without_class():
+    _, record = history.combined_condition_records(
+        [run_at(9, 6)], today=today(class_level=None))["surface_near_distance_near_class"]
+    assert record.starts is None
+
+
+def test_zero_matches_is_zero_not_none():
+    _, record = history.combined_condition_records([], today=today())["surface_exact_distance"]
+    assert record.starts == 0
+    assert record.margin_sec_mean is None
