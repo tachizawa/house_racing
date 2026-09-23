@@ -1,0 +1,18 @@
+# API キーを含むため絶対にコミットしない
+.env
+
+# JRA-VAN の配布物とそこから取得したデータ。再配布不可なのでコミットしない。
+# **先頭スラッシュを外さないこと。** 先頭スラッシュの無い "data/" は任意の
+# 深さの data/ に一致するので、src/keiba/data/（Repository と DataStore の
+# ソース3本）まで黙って除外される。
+/vendor/
+/data/
+
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+/tmp/
+
+# SDD の作業領域（台帳・ブリーフ・レビュー資料）
+.superpowers/

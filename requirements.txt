@@ -1,0 +1,14 @@
+typesafe-sdk>=0.7.0
+python-dotenv>=1.0.0
+
+# JRA-VAN Data Lab（JV-Link の COM を叩くため。Windows 専用）
+pywin32>=311; sys_platform == "win32"
+
+# 予想コア
+numpy>=1.26
+scipy>=1.11
+pandas>=2.1
+scikit-learn>=1.4
+
+# 開発用
+pytest>=8.0.0
