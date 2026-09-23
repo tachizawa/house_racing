@@ -30,6 +30,7 @@ __all__ = [
     "RunningStyle",
     "Transport",
     "condition_records",
+    "eligible_runs",
     "recent_form",
     "running_style",
     "summarize_runs",
@@ -47,6 +48,14 @@ def _eligible_runs(runs: Sequence[PastRun]) -> list[PastRun]:
     （_transported_runs を参照）。
     """
     return [run for run in runs if run.race.is_flat and run.result.counts_as_starter]
+
+
+def eligible_runs(runs: Sequence[PastRun]) -> list[PastRun]:
+    """`_eligible_runs` の公開口。features/history.py から使うための入口で、
+    平地・出走集合の基準をここ1箇所に置く（他モジュールで同じフィルタを
+    書き直さない）。
+    """
+    return _eligible_runs(runs)
 
 
 # === 条件別成績 ==============================================================

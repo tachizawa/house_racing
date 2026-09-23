@@ -13,7 +13,7 @@ from datetime import date, datetime
 
 from keiba import config
 from keiba.features.course import decode_track_cd
-from keiba.features.derive import BABA_UNKNOWN_REASON, ConditionRecord, summarize_runs
+from keiba.features.derive import BABA_UNKNOWN_REASON, ConditionRecord, eligible_runs, summarize_runs
 from keiba.models import PastRun
 
 __all__ = [
@@ -54,7 +54,7 @@ def run_line(run: PastRun, *, as_of: datetime) -> dict:
 
 def recent_run_lines(runs: Sequence[PastRun], *, as_of: datetime, limit: int) -> list[dict]:
     """平地・出走集合に入る過去走の新しい順 ``limit`` 件。取消・除外は走っていないので除く。"""
-    usable = [run for run in runs if run.race.is_flat and run.result.counts_as_starter]
+    usable = eligible_runs(runs)
     usable.sort(key=lambda run: run.race.hasso_at, reverse=True)
     return [run_line(run, as_of=as_of) for run in usable[:limit]]
 
@@ -157,7 +157,7 @@ COMBINED_CONDITION_KEYS: tuple[str, ...] = tuple(key for key, *_ in _COMBINED)
 def combined_condition_records(runs: Sequence[PastRun], *,
                                today: TodayConditions) -> dict[str, tuple[str, ConditionRecord]]:
     """5区分すべてを常に返す。区分は排他ではない（同じ走が複数に入りうる）。"""
-    eligible = [run for run in runs if run.race.is_flat and run.result.counts_as_starter]
+    eligible = eligible_runs(runs)
     records: dict[str, tuple[str, ConditionRecord]] = {}
     for key, definition, why_undefined, matches in _COMBINED:
         reason = why_undefined(today)
