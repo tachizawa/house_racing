@@ -397,7 +397,7 @@ class Repository:
     def race_conditions(self, race_id: str, *, as_of: datetime) -> RaceConditions | None:
         """レース前に確定する条件だけを返す。行が無ければ None。
 
-        **返すのは ``class_level`` の1列だけ。この列は発走前に確定するので、
+        **返すのは発走前に確定する列だけ。この列は発走前に確定するので、
         結果行から読んでも漏洩にならない。返す列を増やすときは、その列が発走前に
         確定することを確かめ、``RaceConditions`` の allow-list テストも更新する
         こと。** 確かめられない列は ``RaceRow``（``race()`` が as_of でゲートする）
@@ -424,7 +424,12 @@ class Repository:
             picked = _pick_by_data_kubun(rows, config.DATA_KUBUN_RESULT_PRIORITY)
         if picked.empty:
             return None
-        return RaceConditions(class_level=_int_or_none(picked.iloc[0]["class_level"]))
+        row = picked.iloc[0]
+        return RaceConditions(
+            class_level=_int_or_none(row["class_level"]),
+            track_cd=(row["track_cd"] or "").strip() or None,
+            course_kubun_cd=(row.get("course_kubun_cd", "") or "").strip() or None,
+        )
 
     def race(self, race_id: str, *, as_of: datetime) -> RaceRow | None:
         """race_id のレース条件を返す。
