@@ -13,6 +13,7 @@ JV-Data仕様書_4.9.0.1.xlsx「コード表」2009 から写した。略名も�
 
 from __future__ import annotations
 
+import copy
 import json
 from dataclasses import dataclass
 from datetime import date
@@ -114,6 +115,10 @@ class CourseFacts:
     retrieved_at: str
     valid_from: str
     valid_to: str | None
+    #: 数値がどの馬場（Aコースなど）のものか。ページが馬場替え後の複数系統の数値を
+    #: 出していて、その中の1系統を選んだ場合だけ書く。判断できないときは None
+    #: （黙って「代表値」を騙らない）。
+    rail_basis: str | None = None
 
 
 @lru_cache(maxsize=1)
@@ -123,7 +128,7 @@ def _load() -> tuple[dict, ...]:
 
 
 def load_facts_table() -> list[dict]:
-    return [dict(entry) for entry in _load()]
+    return [copy.deepcopy(entry) for entry in _load()]
 
 
 def facts_for(identification: CourseIdentification, on: date, *,
@@ -146,5 +151,6 @@ def facts_for(identification: CourseIdentification, on: date, *,
             retrieved_at=entry["source"]["retrieved_at"],
             valid_from=entry["valid_from"],
             valid_to=entry["valid_to"],
+            rail_basis=entry.get("rail_basis"),
         )
     return None

@@ -6,6 +6,7 @@
       "track_cd": "17",
       "valid_from": "2000-01-01",
       "valid_to": null,
+      "rail_basis": "Aコース",
       "facts": {
         "straight_m": 266.1,
         "elevation_note": "高低差0.7m"
@@ -68,6 +69,7 @@
       "track_cd": "17",
       "valid_from": "2000-01-01",
       "valid_to": null,
+      "rail_basis": "Aコース",
       "facts": {
         "layout": "内回り",
         "circumference_m": 1667.1
@@ -80,6 +82,7 @@
       "track_cd": "18",
       "valid_from": "2000-01-01",
       "valid_to": null,
+      "rail_basis": "Aコース",
       "facts": {
         "layout": "外回り",
         "circumference_m": 1839.7
@@ -94,8 +97,7 @@
       "valid_to": null,
       "facts": {
         "circumference_m": 1493,
-        "straight_m": 308,
-        "elevation_note": "芝コースに比べ緩やかな高低差"
+        "straight_m": 308
       },
       "starts": {},
       "source": {"url": "https://www.jra.go.jp/facilities/race/nakayama/course/", "retrieved_at": "2026-09-23"}
@@ -106,8 +108,7 @@
       "valid_from": "2012-03-01",
       "valid_to": null,
       "facts": {
-        "circumference_m": 1705.9,
-        "elevation_note": "最大勾配2.24%"
+        "circumference_m": 1705.9
       },
       "starts": {},
       "source": {"url": "https://www.jra.go.jp/facilities/race/chukyo/course/", "retrieved_at": "2026-09-23"}
@@ -168,6 +169,7 @@
       "track_cd": "17",
       "valid_from": "2000-01-01",
       "valid_to": null,
+      "rail_basis": "Aコース",
       "facts": {
         "layout": "内回り",
         "circumference_m": 1689,
@@ -182,6 +184,7 @@
       "track_cd": "18",
       "valid_from": "2000-01-01",
       "valid_to": null,
+      "rail_basis": "Aコース",
       "facts": {
         "layout": "外回り",
         "circumference_m": 2089,

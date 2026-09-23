@@ -25,6 +25,9 @@ TABLE = [
      "facts": {"layout": "内回り", "straight_m": 359},
      "starts": {"2000": "スタンド前"},
      "source": {"url": "https://www.jra.go.jp/b", "retrieved_at": "2026-09-23"}},
+    {"jyo_cd": "09", "track_cd": "17", "valid_from": "2000-01-01", "valid_to": None,
+     "rail_basis": "Aコース", "facts": {"straight_m": 356.5}, "starts": {},
+     "source": {"url": "https://www.jra.go.jp/c", "retrieved_at": "2026-09-23"}},
 ]
 
 
@@ -50,6 +53,16 @@ def test_facts_for_unidentified_course_is_none():
 
 def test_facts_for_missing_entry_is_none():
     assert course.facts_for(_ident(jyo_cd="05"), date(2026, 8, 1), table=TABLE) is None
+
+
+def test_facts_for_reports_rail_basis_when_present():
+    facts = course.facts_for(_ident(jyo_cd="09", track_cd="17"), date(2026, 8, 1), table=TABLE)
+    assert facts.rail_basis == "Aコース"
+
+
+def test_facts_for_rail_basis_is_none_when_absent():
+    facts = course.facts_for(_ident(), date(2026, 8, 1), table=TABLE)
+    assert facts.rail_basis is None
 
 
 # --- 同梱の表そのものの検査 ------------------------------------------------------
