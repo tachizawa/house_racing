@@ -21,13 +21,19 @@ from keiba import config
 from keiba.features.dossier import check_state_size, to_state
 from keiba.predict import top3_questions as tq
 
-__all__ = ["Top3Answer", "Top3IncompleteError", "run_plan_a"]
+__all__ = ["PaceUnavailableError", "Top3Answer", "Top3IncompleteError",
+           "run_plan_a", "run_plan_b"]
 
 
 class Top3IncompleteError(RuntimeError):
     def __init__(self, missing: list[str]) -> None:
         super().__init__(f"3着内の答えが欠けています: {missing}")
         self.missing = missing
+
+
+class PaceUnavailableError(RuntimeError):
+    """ペース区分の定義が作れない。pace の質問文は state の pace_definition を
+    名指しするので、定義が無いまま送ってはいけない（既存 spec §8.2 と同じ理由）。"""
 
 
 @dataclass(frozen=True)
@@ -80,4 +86,37 @@ def run_plan_a(client: Any, dossier: dict) -> Top3Answer:
         model=response.model, input_tokens=response.usage.input_tokens or 0,
         requests=1, state_chars=chars,
         sent={"requests": [{"state": state, "questions": sent_q}]},
+        seconds=time.perf_counter() - started)
+
+
+_PACE_NOTE = "前段で予測した展開。確定した事実ではない。"
+
+
+def run_plan_b(client: Any, dossier: dict, *, pace_definition: dict | None) -> Top3Answer:
+    if pace_definition is None:
+        raise PaceUnavailableError("ペース区分の定義（pace_definition）が作れないため案Bを実行しない。")
+    started = time.perf_counter()
+
+    pace_state = to_state(dossier)
+    pace_state["pace_definition"] = pace_definition
+    check_state_size(pace_state, limit=config.STATE_MAX_CHARS)
+    pace_q = tq.pace_questions()
+    pace_response = ask(client, pace_state, pace_q)
+    if "pace" not in pace_response.choices:
+        raise Top3IncompleteError(["pace"])
+    pace_probs = {k: float(v) for k, v in pace_response.choices["pace"].probabilities.items()}
+
+    # 最尤区分だけでなく分布のまま渡す（確定した事実として扱わせない）。
+    state = to_state(dossier, pace_forecast={
+        "probabilities": pace_probs, "definition": pace_definition, "note": _PACE_NOTE})
+    response, top3, winner_probs, winner_missing, chars, sent_q = _ask_top3(
+        client, dossier, state, with_pace_forecast=True)
+    return Top3Answer(
+        top3_probabilities=top3, winner_probabilities=winner_probs,
+        winner_missing=winner_missing, pace_probabilities=pace_probs,
+        model=response.model,
+        input_tokens=(pace_response.usage.input_tokens or 0) + (response.usage.input_tokens or 0),
+        requests=2, state_chars=chars,
+        sent={"requests": [{"state": pace_state, "questions": _dump(pace_q)},
+                           {"state": state, "questions": sent_q}]},
         seconds=time.perf_counter() - started)

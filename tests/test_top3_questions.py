@@ -49,6 +49,13 @@ def test_instructions_reference_only_existing_state_keys():
             assert named <= allowed, named - allowed
 
 
+def test_winner_pace_forecast_mentioned_only_when_present():
+    without = tq.top3_questions(DOSSIER, with_pace_forecast=False)["winner"].instructions
+    with_ = tq.top3_questions(DOSSIER, with_pace_forecast=True)["winner"].instructions
+    assert "pace_forecast" not in without
+    assert "pace_forecast" in with_
+
+
 def test_winner_criteria_are_umaban():
     qs = tq.top3_questions(DOSSIER, with_pace_forecast=False)
     assert set(qs["winner"].model_dump()["criteria"]) == {"01", "02"}

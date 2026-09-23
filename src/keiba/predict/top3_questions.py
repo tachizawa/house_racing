@@ -64,12 +64,14 @@ def _top3_instructions(umaban: str, *, with_pace_forecast: bool) -> str:
     )
 
 
-_WINNER_INSTRUCTIONS = (
-    "予想締切時点の情報に基づき、今回のレースの1着馬を予測してください。\n"
-    "\n"
-    + _MATERIALS
-    + _RULES
-)
+def _winner_instructions(*, with_pace_forecast: bool) -> str:
+    return (
+        "予想締切時点の情報に基づき、今回のレースの1着馬を予測してください。\n"
+        "\n"
+        + _MATERIALS
+        + (_PACE_LINE if with_pace_forecast else "")
+        + _RULES
+    )
 
 
 def _winner_criteria(dossier: dict) -> dict[str, str]:
@@ -96,8 +98,9 @@ def top3_questions(dossier: dict, *, with_pace_forecast: bool) -> dict:
             criteria=_CRITERIA)
         for umaban in dossier["horses"]
     }
-    questions["winner"] = Choice(instructions=_WINNER_INSTRUCTIONS,
-                                 criteria=_winner_criteria(dossier))
+    questions["winner"] = Choice(
+        instructions=_winner_instructions(with_pace_forecast=with_pace_forecast),
+        criteria=_winner_criteria(dossier))
     return questions
 
 

@@ -23,22 +23,23 @@ from keiba.data.repository import Repository, ResultRepository
 from keiba.evaluate import top3_metrics as tm
 from keiba.evaluate.backtest import prediction_cutoff_for, race_input_from_history
 from keiba.features import dossier as dossier_mod
+from keiba.features.pace import classify_pace
 from keiba.input.match import AmbiguousMatchError
 from keiba.models import RaceInput, RaceRow
 from keiba.predict import top3, top3_baselines
 from keiba.store import top3_records
 
-__all__ = ["METHODS", "SERIES", "Top3Row", "dry_run", "report", "run"]
+__all__ = ["METHODS", "SERIES", "Top3Row", "dry_run", "pace_accuracy", "report", "run"]
 
 METHODS: tuple[str, ...] = ("python", "plan_a", "plan_b")
 SERIES: tuple[str, ...] = ("python", "plan_a", "winner_same_state_a",
                            "plan_b", "winner_same_state_b")
 Top3SkipReason = Literal["jump", "no_entries", "no_result", "match_ambiguous",
                          "state_too_large", "jev_failed", "incomplete_answer",
-                         "final_period_locked"]
+                         "final_period_locked", "pace_unavailable"]
 _ALL_SKIPS: tuple[str, ...] = ("jump", "no_entries", "no_result", "match_ambiguous",
                                "state_too_large", "jev_failed", "incomplete_answer",
-                               "final_period_locked")
+                               "final_period_locked", "pace_unavailable")
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,8 @@ class Top3Row:
     series: dict
     usage: dict
     python_all_tied: bool | None
+    #: 案Bの (予測の最尤区分, 実際の区分)。案Bを回していない行は None。
+    pace_pair: tuple | None = None
 
 
 def _period(race: RaceRow, tuning_until: date) -> str:
@@ -130,6 +133,7 @@ def run(races: Sequence[RaceRow], repo: Repository, results: ResultRepository, c
         series: dict[str, dict] = {}
         usage: dict[str, dict] = {}
         python_all_tied = None
+        pace_pair = None
         skipped = None
         for method in methods:
             try:
@@ -148,6 +152,14 @@ def run(races: Sequence[RaceRow], repo: Repository, results: ResultRepository, c
                                            if pace_definition_for else None)
                         answer = top3.run_plan_b(client, dossier,
                                                  pace_definition=pace_definition)
+                        # 前半3Fは結果なので評価側（ResultRepository）からだけ読む。
+                        actual_race = results.race(race.race_id)
+                        actual = classify_pace(
+                            actual_race.first_3f_sec if actual_race else None,
+                            pace_definition)
+                        predicted = max(answer.pace_probabilities,
+                                        key=answer.pace_probabilities.get)
+                        pace_pair = (predicted, actual)
                     suffix = method[-1]
                     ranking = _rank(answer.top3_probabilities)
                     series[method] = {"ranking": ranking,
@@ -163,6 +175,11 @@ def run(races: Sequence[RaceRow], repo: Repository, results: ResultRepository, c
                 # state を送る前に弾いているので、課金は発生していない
                 # （usage には何も足さない）。
                 skipped = "state_too_large"
+                break
+            except top3.PaceUnavailableError:
+                # pace_definition が作れないと分かった時点で止めており、
+                # 何も送っていないので課金は発生していない（usage には足さない）。
+                skipped = "pace_unavailable"
                 break
             except top3.Top3IncompleteError:
                 # 応答は返ってきている＝課金は発生した（トークン数は例外側が
@@ -185,8 +202,17 @@ def run(races: Sequence[RaceRow], repo: Repository, results: ResultRepository, c
         if skipped is not None:
             emit(Top3Row(race.race_id, period, skipped, None, {}, usage, None))
             continue
-        emit(Top3Row(race.race_id, period, None, outcome, series, usage, python_all_tied))
+        emit(Top3Row(race.race_id, period, None, outcome, series, usage,
+                     python_all_tied, pace_pair))
     return rows
+
+
+def pace_accuracy(pairs: Sequence[tuple[str, str | None]]) -> dict:
+    """(予測の最尤区分, 実際の区分) の組。実際が None（前半3Fが無い）は数えない。"""
+    scored = [(p, a) for p, a in pairs if a is not None]
+    return {"n_scored": len(scored), "n_unscorable": len(pairs) - len(scored),
+            "argmax_accuracy": (sum(1 for p, a in scored if p == a) / len(scored)
+                                if scored else float("nan"))}
 
 
 def _series_scores(rows: Sequence[Top3Row], name: str, n: int) -> dict[str, dict]:
@@ -250,6 +276,7 @@ def report(rows: Sequence[Top3Row], *, n: int, run_info: dict) -> dict:
         "by_period": {period: _period_block([r for r in rows if r.period == period], n)
                       for period in ("tuning", "final")},
         "usage": usage,
+        "pace_accuracy": pace_accuracy([r.pace_pair for r in rows if r.pace_pair is not None]),
         "run": run_info,
     }
 

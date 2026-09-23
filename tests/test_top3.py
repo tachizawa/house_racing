@@ -99,3 +99,41 @@ def test_api_error_is_wrapped():
         raise ts.TypeSafeAPITimeoutError(10.0)
     with pytest.raises(JevRequestError):
         top3.run_plan_a(Client(handler), DOSSIER)
+
+
+PACE_DEF = {"fast_max": 35.0, "standard_max": 36.0, "stratum": {"track_kind": "turf"},
+            "race_count": 40, "note": "n"}
+
+
+def plan_b_handler(state, questions):
+    if "pace" in questions:
+        assert "pace_definition" in state
+        return Resp(choices={"pace": types.SimpleNamespace(
+            choice="fast", probabilities={"fast": 0.5, "standard": 0.3, "slow": 0.2},
+            confidence=0.4)}, tokens=300)
+    assert state["pace_forecast"]["probabilities"] == {"fast": 0.5, "standard": 0.3, "slow": 0.2}
+    assert "pace_definition" not in state
+    return full_handler(state, questions)
+
+
+def test_plan_b_two_requests_and_passes_distribution():
+    client = Client(plan_b_handler)
+    answer = top3.run_plan_b(client, DOSSIER, pace_definition=PACE_DEF)
+    assert len(client.calls) == 2
+    assert answer.requests == 2
+    assert answer.input_tokens == 800
+    assert answer.pace_probabilities == {"fast": 0.5, "standard": 0.3, "slow": 0.2}
+    assert len(answer.sent["requests"]) == 2
+
+
+def test_plan_b_second_request_mentions_pace_forecast():
+    client = Client(plan_b_handler)
+    top3.run_plan_b(client, DOSSIER, pace_definition=PACE_DEF)
+    assert "pace_forecast" in client.calls[1][1]["top3_01"].instructions
+
+
+def test_plan_b_without_pace_definition_does_not_send():
+    client = Client(plan_b_handler)
+    with pytest.raises(top3.PaceUnavailableError):
+        top3.run_plan_b(client, DOSSIER, pace_definition=None)
+    assert client.calls == []

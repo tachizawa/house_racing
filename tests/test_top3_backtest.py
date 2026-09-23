@@ -55,6 +55,34 @@ class Client:
             model="jev-1.13.0", usage=types.SimpleNamespace(input_tokens=100))
 
 
+PACE_DEF = {"fast_max": 35.0, "standard_max": 36.0, "stratum": {"track_kind": "turf"},
+            "race_count": 40, "note": "n"}
+
+
+class PlanBClient:
+    """案B: 1回目（pace）と2回目（top3/winner）で違う応答を返す。"""
+
+    def __init__(self):
+        self.calls = 0
+
+    def system_one(self, state, questions, **kw):
+        self.calls += 1
+        if "pace" in questions:
+            return types.SimpleNamespace(
+                nouls={}, choices={"pace": types.SimpleNamespace(
+                    choice="fast", probabilities={"fast": 0.5, "standard": 0.3, "slow": 0.2},
+                    confidence=0.4)},
+                model="jev-1.13.0", usage=types.SimpleNamespace(input_tokens=100))
+        umabans = list(state["horses"])
+        nouls = {f"top3_{u}": types.SimpleNamespace(noul=0.9 - 0.1 * i)
+                 for i, u in enumerate(umabans)}
+        probs = {u: 1 / len(umabans) for u in umabans}
+        return types.SimpleNamespace(
+            nouls=nouls, choices={"winner": types.SimpleNamespace(
+                choice=umabans[0], probabilities=probs, confidence=0.5)},
+            model="jev-1.13.0", usage=types.SimpleNamespace(input_tokens=100))
+
+
 def _run(tmp_path, *, methods=("python", "plan_a"), allow_final=False, client=None):
     repo, results = _repos(tmp_path)
     races = [results.race(TUNING_RACE), results.race(FINAL_RACE)]
@@ -110,6 +138,51 @@ def test_incomplete_answer_is_skipped_with_reason(tmp_path):
     # （fix round 1 Minor 5）。
     rep = tbt.report(rows, n=3, run_info={"note": "test"})
     assert rep["usage"]["plan_a"]["failed_requests"] == 1
+
+
+def test_plan_b_skips_when_pace_definition_unavailable(tmp_path):
+    repo, results = _repos(tmp_path)
+    rows = tbt.run([results.race(TUNING_RACE)], repo, results, Client(),
+                   methods=("plan_b",), n=3, tuning_until=date(2026, 3, 10),
+                   allow_final=False, max_recent_runs=5, save_records=False,
+                   data_dir=tmp_path, pace_definition_for=lambda ri: None)
+    assert rows[0].skipped == "pace_unavailable"
+
+
+def test_plan_b_incomplete_top3_answer_is_skipped_with_failed_request(tmp_path):
+    # pace の答えは正常に返るが、top3 の答えが1頭分欠ける
+    # （pace のリクエストは送信済み＝課金は発生している）。
+    class PartialPlanB(PlanBClient):
+        def system_one(self, state, questions, **kw):
+            response = super().system_one(state, questions, **kw)
+            if "pace" not in questions:
+                response.nouls.pop(next(iter(response.nouls)))
+            return response
+    repo, results = _repos(tmp_path)
+    rows = tbt.run([results.race(TUNING_RACE)], repo, results, PartialPlanB(),
+                   methods=("plan_b",), n=3, tuning_until=date(2026, 3, 10),
+                   allow_final=False, max_recent_runs=5, save_records=False,
+                   data_dir=tmp_path, pace_definition_for=lambda ri: PACE_DEF)
+    assert rows[0].skipped == "incomplete_answer"
+    rep = tbt.report(rows, n=3, run_info={"note": "test"})
+    assert rep["usage"]["plan_b"]["failed_requests"] == 1
+
+
+def test_plan_b_records_pace_pair(tmp_path):
+    repo, results = _repos(tmp_path)
+    rows = tbt.run([results.race(TUNING_RACE)], repo, results, PlanBClient(),
+                   methods=("plan_b",), n=3, tuning_until=date(2026, 3, 10),
+                   allow_final=False, max_recent_runs=5, save_records=False,
+                   data_dir=tmp_path, pace_definition_for=lambda ri: PACE_DEF)
+    assert rows[0].skipped is None
+    assert rows[0].pace_pair == ("fast", "standard")  # 実測 first_3f_sec=35.2 は standard
+
+
+def test_report_pace_accuracy_for_plan_b(tmp_path):
+    from keiba.evaluate.top3_backtest import pace_accuracy
+    rows_pace = [("fast", "fast"), ("slow", "fast"), ("standard", None)]
+    result = pace_accuracy(rows_pace)
+    assert result == {"n_scored": 2, "n_unscorable": 1, "argmax_accuracy": 0.5}
 
 
 def test_report_has_per_series_metrics_and_skips(tmp_path):
