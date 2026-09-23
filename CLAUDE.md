@@ -20,7 +20,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `src/keiba/learn/` | 条件付きロジットの最尤推定と isotonic 較正 |
 | `src/keiba/evaluate/` | 指標・時系列分割・バックテスト |
 | `src/keiba/store/` | 予想記録の保存と利用者向けビュー（**列挙方式**で生データを漏らさない） |
-| `scripts/` | `update_data` / `predict` / `fit_weights` / `backtest` / `smoke_test` |
+| `src/keiba/features/{course,history,dossier,dossier_markdown}.py` | 3着内系統の予想用資料。API を呼ばない |
+| `src/keiba/predict/{top3,top3_questions,top3_baselines}.py` | 案A・案B と Python 基準 |
+| `src/keiba/evaluate/{top3_metrics,top3_backtest,coverage}.py` | 3着内の採点・比較・データ充足度 |
+| `src/keiba/store/top3_records.py` | 3着内予想の記録（`data/top3/`） |
+| `scripts/` | `update_data` / `predict` / `fit_weights` / `backtest` / `smoke_test` / `dossier` / `backtest_top3` / `data_coverage` |
 | `vendor/jravan-sdk-500-64bit/` | JRA-VAN SDK 5.0.0（64bit）の展開物。再配布不可のため `.gitignore` 済み |
 | `data/` | 取得したデータ版・予想記録・重み。再配布不可のため `.gitignore` 済み |
 | `.env` | `TYPESAFE_API_KEY`。コミットしない（`.env.example` が雛形） |
@@ -107,6 +111,37 @@ scripts/update_data.py --dataspec RACE --fromdate 20230801000000
 含めた推定は **約 76,430,000 トークン / $3.21**（記録ぶんの 1.63 倍）。
 **`--no-save-records` でも課金は発生する**（`predict()` が保存判定より前に走る）。
 同じ 238 レースに平均 3.34 回投げている。内訳と根拠は `tmp/keiba-report/`。
+
+### 3着以内予想（2026-09-23）
+
+上位n頭（勝率）とは別に、**実際の上位3着に入る馬**を選ぶ系統（案A・案B、`src/keiba/predict/top3*.py`
+ほか）を実装し、調整期間・最終評価期間で比較した。設計と結果は
+`docs/superpowers/specs/2026-09-23-top3-prediction-design.md` §11〜14（**拘束力のある仕様の続き**）。
+
+- **データ版**は `20260923T115107Z`。`--fromdate 20230801000000` を指定しても
+  **option 1 では実際には 2025-09-27〜2026-09-22 の約1年ぶんしか返らない**（3,504レース）。
+  それより古いデータが要る場合は JV-Link 側の追加設定（セットアップ系データの取得など）が
+  要るが**未検証**——`scripts/update_data.py --dataspec RACE --fromdate 20230801000000` を
+  実行すれば2023年から取れる、という上の書き方は誤りなので読み替えること。
+- 版: `DOSSIER_VERSION` 2 / `TOP3_PROMPT_VERSION` 2 / `TOP3_EVAL_RULES_VERSION` 1。
+  `n = 3`（`config.DEFAULT_TOP_N`）。
+- **最終評価期間 2026-07-01〜09-22 は使用済み**（境界は `data/top3/final_runs.jsonl` に
+  固定。最初の `--final` 実行 2026-09-23T13:10:16Z）。同じ境界より後の日付を指定する
+  再評価には `--final-rerun-reason` が要り、理由が同ファイルに残る。
+- 最終評価100レースの結果（`mean_hits`、的中数の差の95%区間はレース単位・開催日クラスタの
+  ブートストラップ）: plan_a − python +0.08 [−0.02, 0.18]（**差は確認できなかった**）、
+  **plan_a − winner_same_state_a +0.14 [+0.04, +0.24]**（区間が0を含まない。馬ごとに
+  「3着以内か」を聞く方式が、同じリクエストのwinner確率から選ぶより的中数が多かった）、
+  plan_b − plan_a −0.07 [−0.15, 0.00]（**差は確認できなかった**、案Bはplan_aの約1.7倍の
+  費用）。案B（展開予測を先に聞く）の1段目の的中率は0.30で偶然（≈0.33）と区別できず、
+  **展開予測に検出可能な信号は無い**。plan_aのBrierは一様分布の基準を下回る（較正前の値、
+  確率の合計は入着頭数より過大）。多重比較の補正はしていない5比較の1つなので示唆にとどまる。
+  詳細・調整期間の数値は spec §13〜14。
+- **「判断材料不足が減った」と「予測が正しくなった」は別**。今回測ったのは的中数・Brierなど
+  後者だけで、`insufficient` 回答の割合そのものはこの評価の対象にしていない。
+- 所有者に残っている項目: コース事実テーブル（`src/keiba/features/course_facts.json`）は
+  **6競馬場・15エントリぶんしか確認していない**（JRA10場のうち函館・福島・東京・小倉の
+  4場が未収載）。案Bの展開予測ステージは上記のとおり信号なし——使うかどうかの判断が残る。
 
 ## 何を作るのか
 
@@ -399,7 +434,7 @@ venv は `.venv`（Python 3.13.3 / 64bit）。コマンドは `.venv` の python
 # 依存（初回のみ）
 .venv/Scripts/python.exe -m pip install -r requirements.txt
 
-# テスト全体（2026-09-21 実行: 16 passed）
+# テスト全体（2026-09-23 実行: 1263 passed）
 .venv/Scripts/python.exe -m pytest
 
 # テスト1件だけ
@@ -407,7 +442,21 @@ venv は `.venv`（Python 3.13.3 / 64bit）。コマンドは `.venv` の python
 
 # Jev への疎通確認（.env に TYPESAFE_API_KEY が必要）
 .venv/Scripts/python.exe scripts/smoke_test.py
+
+# 3着内予想: 1レース分の資料を書き出す（課金なし。API を呼ばない）
+.venv/Scripts/python.exe scripts/dossier.py --race-id <race_id>
+
+# 3着内予想: state の大きさを測るだけ（課金なし）
+.venv/Scripts/python.exe scripts/backtest_top3.py --from <YYYYMMDD> --to <YYYYMMDD> \
+    --tuning-until <YYYYMMDD> --dry-run
+
+# 3着内予想: 課金あり（所有者の承認を得てから）。--methods は明示する
+.venv/Scripts/python.exe scripts/backtest_top3.py --from <YYYYMMDD> --to <YYYYMMDD> \
+    --tuning-until <YYYYMMDD> --methods python,plan_a,plan_b --limit 100
 ```
+
+`--methods` を省略すると既定は `python`（Jev を使わない基準）のみで、**課金は発生しない**。
+案A・案Bを走らせるときは `--methods` に `plan_a` / `plan_b` を明示すること。
 
 PowerShell ではパス区切りが `.venv\Scripts\python.exe`。
 
