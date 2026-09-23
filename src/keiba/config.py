@@ -77,6 +77,9 @@ TIE_BAND = 0.03
 DOSSIER_VERSION = "1"
 # 「3着以内」の 3。表示頭数（DEFAULT_TOP_N）とは別物なので分けて持つ。
 TOP3_PLACE = 3
+# 3着内の採点規則（evaluate/top3_metrics.py の docstring）の版。同着・取消・
+# 失格の扱いを変えたら上げる。版が違う報告どうしは比べない。
+TOP3_EVAL_RULES_VERSION = "1"
 # 資料に載せる直近の過去走の件数。多いほど state が大きくなる（STATE_MAX_CHARS）。
 DEFAULT_DOSSIER_RECENT_RUNS = 5
 # state の上限（json.dumps(state, ensure_ascii=False) の文字数）。
