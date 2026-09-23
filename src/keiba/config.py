@@ -85,8 +85,9 @@ TOP3_PLACE = 3
 # 失格の扱いを変えたら上げる。版が違う報告どうしは比べない。
 TOP3_EVAL_RULES_VERSION = "1"
 # 資料に載せる直近の過去走の件数。多いほど state が大きくなる（STATE_MAX_CHARS）。
-# 5 -> 4: 実測サイズ（Task 14）を踏まえた見直し。1頭あたり recent_runs は約1.5k文字
-# （5走）で、定義文・注記の集約と合わせて上限内に収める。
+# 5 -> 4: 定義文・注記の集約（DOSSIER_VERSION "2"）と合わせて実施。4走・
+# STATE_MAX_CHARS=52,000 での実測（100レース、2026-01..09-22、--dry-run）は
+# max 51,397 文字・0/100 が上限超過（旧: 5走・48,000 文字上限で 17/100 超過）。
 DEFAULT_DOSSIER_RECENT_RUNS = 4
 # state の上限（json.dumps(state, ensure_ascii=False) の文字数）。
 # 実測: input_tokens / (state_chars + question_chars) = 0.583〜0.590

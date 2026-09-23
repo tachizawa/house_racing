@@ -10,7 +10,8 @@ DOSSIER = {"course": {}, "race": {}, "field_summary": {}, "data_quality": {},
            "horses": {"01": {"bamei": "イチ", "sex_age": "牡4", "futan_kg": 57.0},
                       "02": {"bamei": "ニ", "sex_age": "牝3", "futan_kg": 55.0}}}
 STATE_KEYS = {"course", "race", "horses", "field_summary", "data_quality",
-              "prediction_cutoff", "dossier_version"}
+              "prediction_cutoff", "dossier_version", "condition_definitions",
+              "history_status_notes"}
 
 
 def test_one_noul_per_horse_plus_winner():
@@ -76,6 +77,14 @@ def test_rules_reference_condition_definitions_not_per_horse_definition():
 
 def test_prompt_version_bumped_for_statesize_fix():
     assert tq.TOP3_PROMPT_VERSION == "2"
+
+
+def test_materials_enumerate_the_hoisted_top_level_keys():
+    # condition_definitions / history_status_notes は state に実在する top-level
+    # キー（statesize-fix）なので、判断材料の列挙にも入れる（コーディネータ指摘）。
+    for q in tq.top3_questions(DOSSIER, with_pace_forecast=False).values():
+        assert "condition_definitions：条件別実績（conditions）の各区分の定義" in q.instructions
+        assert "history_status_notes：history.status の各値の意味" in q.instructions
 
 
 def test_rules_warn_that_truncated_history_may_be_partial():

@@ -28,6 +28,8 @@ _MATERIALS = (
     "race：今回のレース条件\n"
     "horses：出走全頭の過去走（recent_runs）、条件別実績（conditions）、"
     "能力指標（ability）、脚質（running_style）、過去走の有無と理由（history）\n"
+    "condition_definitions：条件別実績（conditions）の各区分の定義\n"
+    "history_status_notes：history.status の各値の意味\n"
     "field_summary：出走全頭の概要\n"
     "data_quality：欠損とデータ版の情報\n"
 )
