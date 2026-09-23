@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
+import sys
 import types
 from datetime import date
+from pathlib import Path
 
 import pytest
 
@@ -10,11 +13,16 @@ from keiba.data.store import DataStore
 from keiba.evaluate import top3_backtest as tbt
 from tests.fixtures import csv_data as fx
 
+# scripts/ は keiba パッケージの外にあるため、tests/test_backtest.py と同じ方法
+# (sys.path への追加) で import する（backtest_top3.py 冒頭のコメント参照）。
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+import backtest_top3 as backtest_top3_cli  # noqa: E402
+
 TUNING_RACE = "2026030106010101"   # 締切 2026-02-28
 FINAL_RACE = "2026032106011101"    # 締切 2026-03-20
 
 
-def _repos(tmp_path):
+def _dataset_dir(tmp_path):
     races = [fx.make_race(race_id=TUNING_RACE, hasso_at="2026-03-01T15:00:00+09:00"),
              fx.make_race(race_id=FINAL_RACE, hasso_at="2026-03-21T15:25:00+09:00")]
     race_horses = []
@@ -23,7 +31,11 @@ def _repos(tmp_path):
             race_horses.append(fx.make_race_horse(
                 race_id=race_id, umaban=f"{i:02d}", ketto_num=f"{race_id}{i}",
                 bamei=f"ウマ{race_id[-4:]}{i}", result_kakutei_jyuni=str(i)))
-    store = DataStore.open_current(fx.write_dataset(tmp_path, races, race_horses, []))
+    return fx.write_dataset(tmp_path, races, race_horses, [])
+
+
+def _repos(tmp_path):
+    store = DataStore.open_current(_dataset_dir(tmp_path))
     return Repository(store), ResultRepository(store)
 
 
@@ -93,6 +105,11 @@ def test_incomplete_answer_is_skipped_with_reason(tmp_path):
             return response
     rows = _run(tmp_path, methods=("plan_a",), client=Partial())
     assert rows[0].skipped == "incomplete_answer"
+    # 応答は返ってきている＝課金は発生した。トークン数は不明のまま
+    # failed_requests で「請求額が読めない課金がある」ことを可視化する
+    # （fix round 1 Minor 5）。
+    rep = tbt.report(rows, n=3, run_info={"note": "test"})
+    assert rep["usage"]["plan_a"]["failed_requests"] == 1
 
 
 def test_report_has_per_series_metrics_and_skips(tmp_path):
@@ -112,3 +129,105 @@ def test_dry_run_reports_state_sizes_without_client(tmp_path):
     assert out["n_races"] == 1
     assert out["max_state_chars"] > 0
     assert out["over_limit"] == []
+
+
+# ===============================================================================
+# scripts/backtest_top3.py: --final のガード（fix round 1 Critical 1-3）
+#
+# すべて --methods python（Jev を呼ばない・client 不要）で main() を直接呼ぶ。
+# --data-dir は tmp_path/data、--out は tmp_path/out に分けて、CLI の argparse
+# を通した経路そのものを確認する（_final_guard_problem / _append_final_log を
+# 単体で呼ぶのではなく main() 経由にするのは、判定と記録の呼び出し順序――
+# クライアント生成の後、最終期間のレースが1件以上あるときだけ記録する――を
+# 配線ごと確認するため）。
+# ===============================================================================
+
+
+def _final_cli_args(data_dir, out_dir, *, tuning_until="20260310", final=True,
+                    reason=None):
+    args = ["--data-dir", str(data_dir), "--from", "20260201", "--to", "20260401",
+            "--tuning-until", tuning_until, "--methods", "python",
+            "--out", str(out_dir), "--no-save-records"]
+    if final:
+        args.append("--final")
+    if reason:
+        args += ["--final-rerun-reason", reason]
+    return args
+
+
+def test_final_run_writes_one_log_line(tmp_path):
+    data_dir = _dataset_dir(tmp_path / "data")
+    args = _final_cli_args(data_dir, tmp_path / "out")
+
+    rc = backtest_top3_cli.main(args)
+
+    assert rc == 0
+    log = data_dir / "top3" / "final_runs.jsonl"
+    lines = [line for line in log.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(lines) == 1
+    entry = json.loads(lines[0])
+    assert entry["tuning_until"] == "20260310"
+    assert entry["n_final_races"] == 1
+
+
+def test_second_final_run_without_reason_is_refused(tmp_path):
+    data_dir = _dataset_dir(tmp_path / "data")
+    backtest_top3_cli.main(_final_cli_args(data_dir, tmp_path / "out1"))
+    log = data_dir / "top3" / "final_runs.jsonl"
+    before = log.read_text(encoding="utf-8")
+
+    rc = backtest_top3_cli.main(_final_cli_args(data_dir, tmp_path / "out2"))
+
+    assert rc == 2
+    assert log.read_text(encoding="utf-8") == before
+
+
+def test_final_rerun_with_reason_appends(tmp_path):
+    data_dir = _dataset_dir(tmp_path / "data")
+    backtest_top3_cli.main(_final_cli_args(data_dir, tmp_path / "out1"))
+
+    rc = backtest_top3_cli.main(
+        _final_cli_args(data_dir, tmp_path / "out2", reason="再検証"))
+
+    assert rc == 0
+    log = data_dir / "top3" / "final_runs.jsonl"
+    lines = [line for line in log.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(lines) == 2
+
+
+def test_non_final_run_past_pinned_boundary_is_refused(tmp_path):
+    """--final を付けていなくても、境界（最初の --final の --tuning-until）
+    より後の --tuning-until を指定する実行は拒否される（fix round 1
+    Critical 2: --tuning-until をずらすだけの回避を防ぐ）。
+    """
+    data_dir = _dataset_dir(tmp_path / "data")
+    backtest_top3_cli.main(_final_cli_args(data_dir, tmp_path / "out1"))
+
+    rc = backtest_top3_cli.main(_final_cli_args(
+        data_dir, tmp_path / "out2", tuning_until="20260315", final=False))
+
+    assert rc == 2
+
+
+def test_dry_run_final_writes_no_log(tmp_path):
+    data_dir = _dataset_dir(tmp_path / "data")
+    args = _final_cli_args(data_dir, tmp_path / "out") + ["--dry-run"]
+
+    rc = backtest_top3_cli.main(args)
+
+    assert rc == 0
+    assert not (data_dir / "top3" / "final_runs.jsonl").exists()
+
+
+def test_final_run_with_no_final_races_writes_no_log(tmp_path):
+    """サンプルに最終期間のレースが1件も無い --final 実行は記録しない
+    （fix round 1 Critical 3）。tuning_until を両レースの締切より後にすると、
+    TUNING_RACE・FINAL_RACE ともに tuning 区分になる。
+    """
+    data_dir = _dataset_dir(tmp_path / "data")
+    args = _final_cli_args(data_dir, tmp_path / "out", tuning_until="20260401")
+
+    rc = backtest_top3_cli.main(args)
+
+    assert rc == 0
+    assert not (data_dir / "top3" / "final_runs.jsonl").exists()

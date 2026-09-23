@@ -156,16 +156,28 @@ def run(races: Sequence[RaceRow], repo: Repository, results: ResultRepository, c
                         "ranking": _rank(answer.winner_probabilities), "probabilities": None}
                     usage[method] = {"input_tokens": answer.input_tokens,
                                      "requests": answer.requests, "seconds": answer.seconds,
-                                     "state_chars": answer.state_chars}
+                                     "state_chars": answer.state_chars, "failed_requests": 0}
                     record, sent = _record(race_input, dossier, method, ranking=ranking,
                                            answer=answer), answer.sent
             except dossier_mod.StateTooLargeError:
+                # state を送る前に弾いているので、課金は発生していない
+                # （usage には何も足さない）。
                 skipped = "state_too_large"
                 break
             except top3.Top3IncompleteError:
+                # 応答は返ってきている＝課金は発生した（トークン数は例外側が
+                # 持っていないので不明のまま 0 にする）。failed_requests で
+                # 「請求額が読めない課金がある」ことを report() に見せる
+                # （Minor 5: 費用の可視性）。
+                usage[method] = {"input_tokens": 0, "requests": 0, "seconds": 0.0,
+                                 "state_chars": None, "failed_requests": 1}
                 skipped = "incomplete_answer"
                 break
             except JevRequestError:
+                # タイムアウト・接続不能なども課金が発生した可能性があるので
+                # 同様に failed_requests で見えるようにする。
+                usage[method] = {"input_tokens": 0, "requests": 0, "seconds": 0.0,
+                                 "state_chars": None, "failed_requests": 1}
                 skipped = "jev_failed"
                 break
             if save_records:
@@ -217,11 +229,16 @@ def report(rows: Sequence[Top3Row], *, n: int, run_info: dict) -> dict:
     for row in rows:
         for method, u in row.usage.items():
             total = usage.setdefault(method, {"input_tokens": 0, "requests": 0,
-                                              "seconds": 0.0, "races": 0})
+                                              "seconds": 0.0, "races": 0,
+                                              "failed_requests": 0})
             total["input_tokens"] += u["input_tokens"]
             total["requests"] += u["requests"]
             total["seconds"] += u["seconds"]
             total["races"] += 1
+            # 応答が欠けた／失敗したが課金は発生した可能性がある呼び出しの数
+            # （トークン数が読めないので input_tokens には足し込めない。
+            # Minor 5: このカウントを見て「usage の合計は下限」と読むこと）。
+            total["failed_requests"] += u.get("failed_requests", 0)
     for total in usage.values():
         total["usd"] = total["input_tokens"] / 1_000_000 * 0.042  # 入力 $0.042 / 1M（CLAUDE.md）
     return {

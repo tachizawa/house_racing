@@ -8,7 +8,9 @@
         --tuning-until 20260831 --methods python,plan_a --limit 10
 
 最終評価期間（--tuning-until より後）は --final を付けたときだけ予想する。
-一度 --final を実行した期間を再び評価するには --final-rerun-reason が要り、
+**一度 --final を実行したら最終評価の境界は固定される**——最初に記録された
+--tuning-until（data/top3/final_runs.jsonl の1行目）より後の日付をどの実行
+（--final の有無を問わない）に指定しても --final-rerun-reason が要り、
 理由は data/top3/final_runs.jsonl に残る（report3 §8）。
 """
 
@@ -29,7 +31,7 @@ from keiba import config  # noqa: E402
 from keiba.data.repository import Repository, ResultRepository  # noqa: E402
 from keiba.data.store import DataStore  # noqa: E402
 from keiba.evaluate import top3_backtest as tbt  # noqa: E402
-from keiba.evaluate.backtest import hasso_window_for_cutoff_window  # noqa: E402
+from keiba.evaluate.backtest import hasso_window_for_cutoff_window, prediction_cutoff_for  # noqa: E402
 from keiba.features.pace import fit_pace_definition  # noqa: E402
 from keiba.predict.top3_questions import TOP3_PROMPT_VERSION  # noqa: E402
 
@@ -53,14 +55,62 @@ def _to_jsonable(value):
     return value
 
 
-def _check_final_guard(args, data_dir: Path) -> str | None:
-    """--final の二度目以降は理由を要求する。問題があればメッセージを返す。"""
-    log = data_dir / "top3" / "final_runs.jsonl"
-    if not args.final:
+def _final_log_path(data_dir: Path) -> Path:
+    return data_dir / "top3" / "final_runs.jsonl"
+
+
+def _read_final_log(data_dir: Path) -> list[dict]:
+    log = _final_log_path(data_dir)
+    if not log.exists():
+        return []
+    return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()
+            if line.strip()]
+
+
+def _final_guard_problem(args, log_entries: list[dict]) -> str | None:
+    """最終評価期間の再利用を防ぐ。**ここでは書き込みをしない**（純粋な判定のみ）。
+
+    fix round 1 Critical 1: 元の実装は判定と同じ関数の中で即座にログへ1行
+    書いていたため、API キー未設定（JevConfigError）や対象レースが無いなど、
+    予想を1件も行わずに終わる実行でも「1回ぶんの --final 実行」を消費して
+    しまっていた。判定（この関数）と記録（_append_final_log）を分け、記録は
+    実際に最終期間のレースを1件以上予想した後（クライアント生成に成功した
+    後）にしか呼ばない。
+
+    fix round 1 Critical 2: --tuning-until を後ろへずらすだけで検査をすり抜け
+    られた（「一度 --final した期間」の定義が実行のたびの --tuning-until その
+    ものだったため）。**最初に記録した --tuning-until が最終評価の境界として
+    固定される**——それより後の --tuning-until を指定するその後のどの実行
+    （--final の有無を問わない）も、境界を超えたレースを調整期間として扱う
+    ことになり、すでに最終評価に使ったレースへもう一度（Jev 呼び出しを含めて）
+    触れてしまう。--dry-run はここへ来る前に main() が return しているので、
+    この関数を呼ぶ必要が無い（Jev を呼ばないので境界を侵さない）。
+    """
+    if not log_entries:
         return None
-    if log.exists() and log.read_text(encoding="utf-8").strip() and not args.final_rerun_reason:
+    pinned = log_entries[0]["tuning_until"]
+    if args.final and not args.final_rerun_reason:
         return ("最終評価期間はすでに評価済みです（data/top3/final_runs.jsonl）。"
                 "再評価するなら --final-rerun-reason に理由を書いてください。")
+    if args.tuning_until > pinned and not args.final_rerun_reason:
+        return (
+            f"最終評価の境界（tuning_until={pinned}）はすでに固定されています"
+            "（data/top3/final_runs.jsonl の1行目）。"
+            f"指定した --tuning-until（{args.tuning_until}）はそれより後なので、"
+            "境界を超えたレースはすでに最終評価に使われています。"
+            "意図的に境界を動かすなら --final-rerun-reason に理由を書いてください。"
+        )
+    return None
+
+
+def _append_final_log(args, data_dir: Path, n_final_races: int) -> None:
+    """--final の実行を記録する。
+
+    呼び出し側で「最終期間のレースが実際に1件以上あった」ことを確認して
+    から呼ぶこと（0件なら境界を動かしていないので記録しない。fix round 1
+    Critical 3 のテスト (f)）。
+    """
+    log = _final_log_path(data_dir)
     log.parent.mkdir(parents=True, exist_ok=True)
     with log.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps({
@@ -68,8 +118,8 @@ def _check_final_guard(args, data_dir: Path) -> str | None:
             "tuning_until": args.tuning_until, "to": args.date_to,
             "methods": args.methods, "top3_prompt_version": TOP3_PROMPT_VERSION,
             "dossier_version": config.DOSSIER_VERSION,
+            "n_final_races": n_final_races,
             "reason": args.final_rerun_reason}, ensure_ascii=False) + "\n")
-    return None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -77,7 +127,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--from", dest="date_from", required=True, metavar="YYYYMMDD")
     p.add_argument("--to", dest="date_to", required=True, metavar="YYYYMMDD")
     p.add_argument("--tuning-until", required=True, metavar="YYYYMMDD")
-    p.add_argument("--methods", default="python,plan_a")
+    # 既定は "python" のみ（Minor 8: --methods を省略しても課金しない）。
+    # Jev に課金する方式（plan_a / plan_b）は明示的に指定させる。
+    p.add_argument("--methods", default="python")
     p.add_argument("--n", type=int, default=config.DEFAULT_TOP_N)
     p.add_argument("--limit", type=int, default=20)
     p.add_argument("--max-recent-runs", type=int, default=config.DEFAULT_DOSSIER_RECENT_RUNS)
@@ -101,7 +153,8 @@ def main(argv: list[str] | None = None) -> int:
                          ensure_ascii=False, indent=2))
         return 0
 
-    problem = _check_final_guard(args, args.data_dir)
+    log_entries = _read_final_log(args.data_dir)
+    problem = _final_guard_problem(args, log_entries)
     if problem:
         print(problem)
         return 2
@@ -119,6 +172,15 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     tuning_until = _day(args.tuning_until).date()
+    # ログへの記録はクライアント生成に成功した後（＝ここまで来られたのは
+    # 実際に予想を進める段になってから）、かつ最終期間のレースが1件以上
+    # サンプルに含まれているときだけ行う（fix round 1 Critical 1 / 3）。
+    if args.final:
+        n_final_races = sum(1 for race in races
+                             if prediction_cutoff_for(race).date() > tuning_until)
+        if n_final_races > 0:
+            _append_final_log(args, args.data_dir, n_final_races)
+
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out_dir = args.out / stamp
     out_dir.mkdir(parents=True, exist_ok=True)
