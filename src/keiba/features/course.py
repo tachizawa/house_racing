@@ -13,12 +13,19 @@ JV-Data仕様書_4.9.0.1.xlsx「コード表」2009 から写した。略名も�
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from datetime import date
+from functools import lru_cache
+from pathlib import Path
 
 from keiba import config
 from keiba.models import RaceConditions, RaceInput
 
-__all__ = ["CourseIdentification", "TrackCode", "decode_track_cd", "identify"]
+__all__ = ["CourseFacts", "CourseIdentification", "TrackCode", "decode_track_cd",
+           "facts_for", "identify", "load_facts_table"]
+
+_FACTS_PATH = Path(__file__).with_name("course_facts.json")
 
 
 @dataclass(frozen=True)
@@ -96,3 +103,48 @@ def identify(race_input: RaceInput, conditions: RaceConditions | None) -> Course
         identified=True, jyo_cd=race_input.jyo_cd, track_cd=conditions.track_cd,
         kyori_m=race_input.kyori_m, track=track,
         course_kubun_cd=(conditions.course_kubun_cd or "").strip() or None, reason=None)
+
+
+@dataclass(frozen=True)
+class CourseFacts:
+    """コース基本情報。JRA 公式ページに書かれている値だけを持つ（推測・補完はしない）。"""
+    facts: dict
+    start_note: str | None
+    source_url: str
+    retrieved_at: str
+    valid_from: str
+    valid_to: str | None
+
+
+@lru_cache(maxsize=1)
+def _load() -> tuple[dict, ...]:
+    payload = json.loads(_FACTS_PATH.read_text(encoding="utf-8"))
+    return tuple(payload["courses"])
+
+
+def load_facts_table() -> list[dict]:
+    return [dict(entry) for entry in _load()]
+
+
+def facts_for(identification: CourseIdentification, on: date, *,
+              table: list[dict] | None = None) -> CourseFacts | None:
+    """識別済みコースの、``on`` の日に有効な基本情報。無ければ None（推測で埋めない）。"""
+    if not identification.identified:
+        return None
+    entries = table if table is not None else _load()
+    for entry in entries:
+        if entry["jyo_cd"] != identification.jyo_cd or entry["track_cd"] != identification.track_cd:
+            continue
+        valid_from = date.fromisoformat(entry["valid_from"])
+        valid_to = date.fromisoformat(entry["valid_to"]) if entry["valid_to"] else date.max
+        if not valid_from <= on <= valid_to:
+            continue
+        return CourseFacts(
+            facts=dict(entry["facts"]),
+            start_note=entry.get("starts", {}).get(str(identification.kyori_m)),
+            source_url=entry["source"]["url"],
+            retrieved_at=entry["source"]["retrieved_at"],
+            valid_from=entry["valid_from"],
+            valid_to=entry["valid_to"],
+        )
+    return None
