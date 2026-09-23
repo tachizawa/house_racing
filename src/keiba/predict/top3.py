@@ -12,17 +12,19 @@ Top3IncompleteError にする（第2層と同じ扱い）。winner の欠けは 
 
 from __future__ import annotations
 
+import sys
 import time
 from dataclasses import dataclass
 from typing import Any
 
-from jev_client import ask
+from jev_client import JevRequestError, ask
 from keiba import config
-from keiba.features.dossier import check_state_size, to_state
+from keiba.features.dossier import StateTooLargeError, check_state_size, to_state
 from keiba.predict import top3_questions as tq
+from keiba.predict.questions import PACE_CHOICES
 
-__all__ = ["PaceUnavailableError", "Top3Answer", "Top3IncompleteError",
-           "run_plan_a", "run_plan_b"]
+__all__ = ["PaceUnavailableError", "PlanBPartialFailure", "Top3Answer",
+           "Top3IncompleteError", "run_plan_a", "run_plan_b"]
 
 
 class Top3IncompleteError(RuntimeError):
@@ -91,6 +93,41 @@ def run_plan_a(client: Any, dossier: dict) -> Top3Answer:
 
 _PACE_NOTE = "前段で予測した展開。確定した事実ではない。"
 
+# JSON にしたとき最も長くなる正の float（repr が23文字）。事前の大きさ検査で
+# 確率の値をこれに置き換えれば、実際に返ってくるどの確率より短くならない。
+_LONGEST_FLOAT = sys.float_info.min
+
+
+class PlanBPartialFailure(RuntimeError):
+    """案Bで、展開（pace）のリクエストが成功した**後**に失敗した。
+
+    pace のリクエストは課金済みなので、そのトークン数を失わないよう持って
+    上へ投げる（final review I-4b）。``cause`` が元の例外
+    （Top3IncompleteError / JevRequestError / StateTooLargeError）。
+    ``requests_sent`` は2回目を送る前に止めたなら 1、送ったなら 2。
+    """
+
+    def __init__(self, cause: Exception, *, input_tokens: int, requests_sent: int,
+                 seconds: float) -> None:
+        super().__init__(f"案Bの展開予測の後で失敗しました: {cause}")
+        self.cause = cause
+        self.input_tokens = input_tokens
+        self.requests_sent = requests_sent
+        self.seconds = seconds
+
+
+def _pace_forecast(probabilities: dict[str, float], pace_definition: dict) -> dict:
+    return {"probabilities": probabilities, "definition": pace_definition, "note": _PACE_NOTE}
+
+
+def _worst_case_pace_forecast(pace_definition: dict) -> dict:
+    """2回目の state の大きさを pace を聞く前に測るための仮の pace_forecast。
+
+    キーは実物と同じ。確率は全区分ぶん、最も長い表記になる値で埋める
+    （Jev は渡した選択肢の中からしか答えないので、区分がこれより増えることはない）。
+    """
+    return _pace_forecast({band: _LONGEST_FLOAT for band in PACE_CHOICES}, pace_definition)
+
 
 def run_plan_b(client: Any, dossier: dict, *, pace_definition: dict | None) -> Top3Answer:
     if pace_definition is None:
@@ -100,22 +137,32 @@ def run_plan_b(client: Any, dossier: dict, *, pace_definition: dict | None) -> T
     pace_state = to_state(dossier)
     pace_state["pace_definition"] = pace_definition
     check_state_size(pace_state, limit=config.STATE_MAX_CHARS)
+    # 2回目の state が上限を超えるなら、pace を聞く前に止める（pace の代金を無駄にしない）。
+    check_state_size(to_state(dossier, pace_forecast=_worst_case_pace_forecast(pace_definition)),
+                     limit=config.STATE_MAX_CHARS)
     pace_q = tq.pace_questions()
     pace_response = ask(client, pace_state, pace_q)
     if "pace" not in pace_response.choices:
         raise Top3IncompleteError(["pace"])
     pace_probs = {k: float(v) for k, v in pace_response.choices["pace"].probabilities.items()}
+    pace_tokens = pace_response.usage.input_tokens or 0
 
     # 最尤区分だけでなく分布のまま渡す（確定した事実として扱わせない）。
-    state = to_state(dossier, pace_forecast={
-        "probabilities": pace_probs, "definition": pace_definition, "note": _PACE_NOTE})
-    response, top3, winner_probs, winner_missing, chars, sent_q = _ask_top3(
-        client, dossier, state, with_pace_forecast=True)
+    state = to_state(dossier, pace_forecast=_pace_forecast(pace_probs, pace_definition))
+    try:
+        response, top3, winner_probs, winner_missing, chars, sent_q = _ask_top3(
+            client, dossier, state, with_pace_forecast=True)
+    except (Top3IncompleteError, JevRequestError, StateTooLargeError) as error:
+        # StateTooLargeError は送る前に弾いている（上の事前検査があるので通常は来ない）。
+        raise PlanBPartialFailure(
+            error, input_tokens=pace_tokens,
+            requests_sent=1 if isinstance(error, StateTooLargeError) else 2,
+            seconds=time.perf_counter() - started) from error
     return Top3Answer(
         top3_probabilities=top3, winner_probabilities=winner_probs,
         winner_missing=winner_missing, pace_probabilities=pace_probs,
         model=response.model,
-        input_tokens=(pace_response.usage.input_tokens or 0) + (response.usage.input_tokens or 0),
+        input_tokens=pace_tokens + (response.usage.input_tokens or 0),
         requests=2, state_chars=chars,
         sent={"requests": [{"state": pace_state, "questions": _dump(pace_q)},
                            {"state": state, "questions": sent_q}]},

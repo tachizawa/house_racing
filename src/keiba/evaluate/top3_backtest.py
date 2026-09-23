@@ -52,7 +52,12 @@ class Top3Row:
     usage: dict
     python_all_tied: bool | None
     #: 案Bの (予測の最尤区分, 実際の区分)。案Bを回していない行は None。
+    #: 予測の確率が空なら最尤区分は None（pace_accuracy は採点不能として数える）。
     pace_pair: tuple | None = None
+    #: winner の答えが丸ごと欠けた方式（"plan_a" / "plan_b"）。その方式の
+    #: winner_same_state_{a|b} は series に入れない（全頭 0.0 を馬番順に並べた
+    #: 順位を採点しないため。final review I-5）。
+    winner_missing_methods: tuple[str, ...] = ()
 
 
 def _period(race: RaceRow, tuning_until: date) -> str:
@@ -61,6 +66,26 @@ def _period(race: RaceRow, tuning_until: date) -> str:
 
 def _rank(probabilities: dict[str, float]) -> list[str]:
     return [u for u, _ in sorted(probabilities.items(), key=lambda kv: (-kv[1], kv[0]))]
+
+
+def _pace_argmax(probabilities: dict[str, float]) -> str | None:
+    """最尤区分。同率は区分名の順で決める（dict の順に依らない）。空なら None。"""
+    ranked = _rank(probabilities)
+    return ranked[0] if ranked else None
+
+
+_PARTIAL_FAILURE_SKIPS: tuple[tuple[type, str], ...] = (
+    (top3.Top3IncompleteError, "incomplete_answer"),
+    (JevRequestError, "jev_failed"),
+    (dossier_mod.StateTooLargeError, "state_too_large"),
+)
+
+
+def _partial_failure_skip(cause: Exception) -> str:
+    for kind, reason in _PARTIAL_FAILURE_SKIPS:
+        if isinstance(cause, kind):
+            return reason
+    raise TypeError(f"想定していない失敗: {cause!r}") from cause
 
 
 def _skip(race: RaceRow, period: str, reason: str) -> Top3Row:
@@ -130,10 +155,21 @@ def run(races: Sequence[RaceRow], repo: Repository, results: ResultRepository, c
             emit(_skip(race, period, "match_ambiguous"))
             continue
 
+        # 案Bの pace_definition はレースごとに1回、どの方式も Jev に送る前に
+        # 作る。作れないならレースごと飛ばす——案Aを課金してから案Bで止まると、
+        # その代金が無駄になり、方式間で比べるレースの集合もずれる（final review I-4a）。
+        pace_definition = None
+        if "plan_b" in methods:
+            pace_definition = pace_definition_for(race_input) if pace_definition_for else None
+            if pace_definition is None:
+                emit(_skip(race, period, "pace_unavailable"))
+                continue
+
         series: dict[str, dict] = {}
         usage: dict[str, dict] = {}
         python_all_tied = None
         pace_pair = None
+        winner_missing_methods: list[str] = []
         skipped = None
         for method in methods:
             try:
@@ -148,8 +184,6 @@ def run(races: Sequence[RaceRow], repo: Repository, results: ResultRepository, c
                     if method == "plan_a":
                         answer = top3.run_plan_a(client, dossier)
                     else:
-                        pace_definition = (pace_definition_for(race_input)
-                                           if pace_definition_for else None)
                         answer = top3.run_plan_b(client, dossier,
                                                  pace_definition=pace_definition)
                         # 前半3Fは結果なので評価側（ResultRepository）からだけ読む。
@@ -157,33 +191,49 @@ def run(races: Sequence[RaceRow], repo: Repository, results: ResultRepository, c
                         actual = classify_pace(
                             actual_race.first_3f_sec if actual_race else None,
                             pace_definition)
-                        predicted = max(answer.pace_probabilities,
-                                        key=answer.pace_probabilities.get)
-                        pace_pair = (predicted, actual)
+                        pace_pair = (_pace_argmax(answer.pace_probabilities or {}), actual)
                     suffix = method[-1]
                     ranking = _rank(answer.top3_probabilities)
                     series[method] = {"ranking": ranking,
                                       "probabilities": answer.top3_probabilities}
-                    series[f"winner_same_state_{suffix}"] = {
-                        "ranking": _rank(answer.winner_probabilities), "probabilities": None}
+                    if len(answer.winner_missing) == len(answer.winner_probabilities):
+                        # winner の答えが1頭分も無い。全頭 0.0 の馬番順は予想ではない。
+                        winner_missing_methods.append(method)
+                    else:
+                        series[f"winner_same_state_{suffix}"] = {
+                            "ranking": _rank(answer.winner_probabilities),
+                            "probabilities": None}
                     usage[method] = {"input_tokens": answer.input_tokens,
                                      "requests": answer.requests, "seconds": answer.seconds,
                                      "state_chars": answer.state_chars, "failed_requests": 0}
                     record, sent = _record(race_input, dossier, method, ranking=ranking,
                                            answer=answer), answer.sent
+            except top3.PlanBPartialFailure as failure:
+                # 案Bで pace のリクエストが成功した後の失敗。pace の代金は分かって
+                # いるので落とさない。2回目を送っていれば、その分は請求額の読めない
+                # 課金として failed_requests に数える（final review I-4b）。
+                usage[method] = {"input_tokens": failure.input_tokens,
+                                 "requests": failure.requests_sent,
+                                 "seconds": failure.seconds, "state_chars": None,
+                                 "failed_requests": 1 if failure.requests_sent == 2 else 0}
+                skipped = _partial_failure_skip(failure.cause)
+                break
             except dossier_mod.StateTooLargeError:
-                # state を送る前に弾いているので、課金は発生していない
-                # （usage には何も足さない）。
+                # state を送る前に弾いているので、この方式の課金は発生していない
+                # （この方式の usage には何も足さない。同じレースで先に回った方式の
+                # 課金は usage に残る）。案Bは2回目の state も pace を聞く前に検査して
+                # いる。pace を聞いた後に弾いた場合は PlanBPartialFailure で来る。
                 skipped = "state_too_large"
                 break
             except top3.PaceUnavailableError:
-                # pace_definition が作れないと分かった時点で止めており、
+                # 通常は方式のループの前に pace_unavailable で飛ばしている。
                 # 何も送っていないので課金は発生していない（usage には足さない）。
                 skipped = "pace_unavailable"
                 break
             except top3.Top3IncompleteError:
                 # 応答は返ってきている＝課金は発生した（トークン数は例外側が
-                # 持っていないので不明のまま 0 にする）。failed_requests で
+                # 持っていないので不明のまま 0 にする。案Bの2回目の欠けは
+                # PlanBPartialFailure で来る）。failed_requests で
                 # 「請求額が読めない課金がある」ことを report() に見せる
                 # （Minor 5: 費用の可視性）。
                 usage[method] = {"input_tokens": 0, "requests": 0, "seconds": 0.0,
@@ -203,13 +253,14 @@ def run(races: Sequence[RaceRow], repo: Repository, results: ResultRepository, c
             emit(Top3Row(race.race_id, period, skipped, None, {}, usage, None))
             continue
         emit(Top3Row(race.race_id, period, None, outcome, series, usage,
-                     python_all_tied, pace_pair))
+                     python_all_tied, pace_pair, tuple(winner_missing_methods)))
     return rows
 
 
 def pace_accuracy(pairs: Sequence[tuple[str, str | None]]) -> dict:
-    """(予測の最尤区分, 実際の区分) の組。実際が None（前半3Fが無い）は数えない。"""
-    scored = [(p, a) for p, a in pairs if a is not None]
+    """(予測の最尤区分, 実際の区分) の組。実際が None（前半3Fが無い）と、
+    予測が None（pace の確率が空で返った）は採点不能として数える。"""
+    scored = [(p, a) for p, a in pairs if p is not None and a is not None]
     return {"n_scored": len(scored), "n_unscorable": len(pairs) - len(scored),
             "argmax_accuracy": (sum(1 for p, a in scored if p == a) / len(scored)
                                 if scored else float("nan"))}
@@ -247,6 +298,10 @@ def _period_block(rows: Sequence[Top3Row], n: int) -> dict:
         "series": series,
         "comparisons": comparisons,
         "n_python_all_tied": sum(1 for r in scored_rows if r.python_all_tied),
+        # winner の答えが丸ごと欠けたため winner_same_state_{a|b} を採点しなかったレース数。
+        "n_winner_missing_races": {
+            method: sum(1 for r in scored_rows if method in r.winner_missing_methods)
+            for method in ("plan_a", "plan_b")},
     }
 
 

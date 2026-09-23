@@ -4,6 +4,10 @@
 CLAUDE.md の実測（延べ1,358頭のうち締切前の出走記録がある馬 29.0%）を、
 データ版を取り直したあとに同じ定義で測り直すためのもの。Jev は呼ばない。
 締切は evaluate/backtest.py と同じ定義（prediction_cutoff_for）を使う。
+
+「出走記録」は資料（features/dossier.py）の history.status と同じ出走集合
+（derive.eligible_runs: 平地で、取消・除外でない走）で数える。取消・除外だけの
+馬や障害走だけの馬は「過去走あり」に数えない（final review I-2）。
 """
 
 from __future__ import annotations
@@ -14,6 +18,7 @@ from datetime import datetime
 
 from keiba.data.repository import Repository, ResultRepository
 from keiba.evaluate.backtest import prediction_cutoff_for
+from keiba.features.derive import eligible_runs
 from keiba.models import RaceRow
 
 __all__ = ["CoverageReport", "measure"]
@@ -38,7 +43,7 @@ def measure(races: Sequence[RaceRow], repo: Repository,
         for result in results.results(race.race_id):
             n_horses += 1
             ketto_num = result.entry.ketto_num
-            runs = repo.past_runs(ketto_num, as_of=as_of) if ketto_num else []
+            runs = eligible_runs(repo.past_runs(ketto_num, as_of=as_of)) if ketto_num else []
             if runs:
                 n_prior += 1
             if len(runs) >= 3:

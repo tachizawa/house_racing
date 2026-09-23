@@ -103,6 +103,15 @@ def _final_guard_problem(args, log_entries: list[dict]) -> str | None:
     return None
 
 
+def _count_final_races(races, tuning_until) -> int:
+    """最終期間で予想する見込みのレース数。障害レースは run() が jump で飛ばす
+    ので数えない（final review M-6）。結果に依るスキップ（no_result など）は
+    結果を読まないと分からないので、ここでは数えたままにする。
+    """
+    return sum(1 for race in races
+               if race.is_flat and prediction_cutoff_for(race).date() > tuning_until)
+
+
 def _append_final_log(args, data_dir: Path, n_final_races: int) -> None:
     """--final の実行を記録する。
 
@@ -142,6 +151,14 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
 
     methods = [m.strip() for m in args.methods.split(",") if m.strip()]
+    # 方式名はここで確かめる。tbt.run() の中で初めて弾くと、それより前に
+    # create_client() と --final の記録（_append_final_log）が済んでおり、
+    # 綴りを誤っただけで最終評価の境界が固定されてしまう（final review I-1）。
+    unknown = [m for m in methods if m not in tbt.METHODS]
+    if unknown or not methods:
+        print(f"未知の方式です: {', '.join(unknown) or '（空）'}。"
+              f"指定できるのは {', '.join(tbt.METHODS)} です（カンマ区切り）。")
+        return 2
     store = DataStore.open_current(args.data_dir)
     repo, results = Repository(store), ResultRepository(store)
     start, end = hasso_window_for_cutoff_window(_day(args.date_from), _day(args.date_to, end=True))
@@ -176,8 +193,7 @@ def main(argv: list[str] | None = None) -> int:
     # 実際に予想を進める段になってから）、かつ最終期間のレースが1件以上
     # サンプルに含まれているときだけ行う（fix round 1 Critical 1 / 3）。
     if args.final:
-        n_final_races = sum(1 for race in races
-                             if prediction_cutoff_for(race).date() > tuning_until)
+        n_final_races = _count_final_races(races, tuning_until)
         if n_final_races > 0:
             _append_final_log(args, args.data_dir, n_final_races)
 

@@ -137,3 +137,53 @@ def test_plan_b_without_pace_definition_does_not_send():
     with pytest.raises(top3.PaceUnavailableError):
         top3.run_plan_b(client, DOSSIER, pace_definition=None)
     assert client.calls == []
+
+
+def test_plan_b_second_step_incomplete_keeps_pace_tokens():
+    # pace は課金済み。2回目の答えが欠けても pace のトークンを失わない（final review I-4b）。
+    def handler(state, questions):
+        if "pace" in questions:
+            return plan_b_handler(state, questions)
+        return Resp(nouls={"top3_01": noul(0.7)},
+                    choices={"winner": winner({"01": 0.5, "02": 0.3, "03": 0.2})})
+    client = Client(handler)
+    with pytest.raises(top3.PlanBPartialFailure) as info:
+        top3.run_plan_b(client, DOSSIER, pace_definition=PACE_DEF)
+    assert isinstance(info.value.cause, top3.Top3IncompleteError)
+    assert info.value.input_tokens == 300
+    assert info.value.requests_sent == 2
+    assert len(client.calls) == 2
+
+
+def test_plan_b_second_step_api_error_keeps_pace_tokens():
+    def handler(state, questions):
+        if "pace" in questions:
+            return plan_b_handler(state, questions)
+        raise ts.TypeSafeAPITimeoutError(10.0)
+    with pytest.raises(top3.PlanBPartialFailure) as info:
+        top3.run_plan_b(Client(handler), DOSSIER, pace_definition=PACE_DEF)
+    assert isinstance(info.value.cause, JevRequestError)
+    assert info.value.input_tokens == 300
+    assert info.value.requests_sent == 2
+
+
+def test_plan_b_too_large_second_state_sends_nothing(monkeypatch):
+    # pace の state は上限内だが、pace_forecast を足した2回目が上限を超える。
+    # pace を聞いてから気付くと pace の代金が無駄になる（final review I-4b）。
+    pace_state = dossier_mod.to_state(DOSSIER)
+    pace_state["pace_definition"] = PACE_DEF
+    limit = dossier_mod.state_chars(pace_state)
+    monkeypatch.setattr(top3.config, "STATE_MAX_CHARS", limit)
+    client = Client(plan_b_handler)
+    with pytest.raises(dossier_mod.StateTooLargeError):
+        top3.run_plan_b(client, DOSSIER, pace_definition=PACE_DEF)
+    assert client.calls == []
+
+
+def test_plan_b_size_check_is_worst_case_for_the_real_forecast():
+    # 事前検査に使う仮の pace_forecast は、実際に送る物より短くない。
+    ugly = {"fast": 1 / 3, "standard": 1e-300 / 7, "slow": 0.123456789012345678}
+    real = dossier_mod.to_state(DOSSIER, pace_forecast={
+        "probabilities": ugly, "definition": PACE_DEF, "note": top3._PACE_NOTE})
+    worst = dossier_mod.to_state(DOSSIER, pace_forecast=top3._worst_case_pace_forecast(PACE_DEF))
+    assert dossier_mod.state_chars(worst) >= dossier_mod.state_chars(real)

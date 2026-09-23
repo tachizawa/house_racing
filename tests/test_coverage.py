@@ -64,3 +64,33 @@ def test_measure_on_empty_races_reports_nan_share(tmp_path):
     report = coverage.measure([], repo, results)
     assert report.n_horses == 0
     assert report.share_with_prior_run != report.share_with_prior_run  # NaN
+
+
+def test_measure_excludes_scratch_only_horses(tmp_path):
+    """過去の出走が取消だけの馬は「過去走あり」に数えない（final review I-2。
+    資料の history.status と同じ出走集合 derive.eligible_runs で数える）。"""
+    races = [
+        fx.make_race(race_id="2026030106010101", hasso_at="2026-03-01T12:00:00+09:00"),
+        fx.make_race(race_id="2026030806010101", hasso_at="2026-03-08T12:00:00+09:00"),
+        fx.make_race(race_id="2026031506010101", hasso_at="2026-03-15T12:00:00+09:00"),
+        fx.make_race(race_id="2026032106011101", hasso_at="2026-03-21T15:25:00+09:00"),
+    ]
+    race_horses = [
+        # A: 取消だけ
+        fx.make_race_horse(race_id="2026030106010101", umaban="01", ketto_num="A",
+                           result_ijyo_cd="1", result_kakutei_jyuni="0"),
+        fx.make_race_horse(race_id="2026032106011101", umaban="01", ketto_num="A"),
+        # B: 2走＋取消1回（3回出てくるが走ったのは2回）
+        fx.make_race_horse(race_id="2026030106010101", umaban="02", ketto_num="B",
+                           result_kakutei_jyuni="2"),
+        fx.make_race_horse(race_id="2026030806010101", umaban="02", ketto_num="B"),
+        fx.make_race_horse(race_id="2026031506010101", umaban="02", ketto_num="B",
+                           result_ijyo_cd="1", result_kakutei_jyuni="0"),
+        fx.make_race_horse(race_id="2026032106011101", umaban="02", ketto_num="B",
+                           result_kakutei_jyuni="2"),
+    ]
+    repo, results = _open(tmp_path, races, race_horses)
+    report = coverage.measure([results.race("2026032106011101")], repo, results)
+    assert report.n_horses == 2
+    assert report.n_with_prior_run == 1
+    assert report.n_with_3plus_prior_runs == 0

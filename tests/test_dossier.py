@@ -126,3 +126,46 @@ def test_check_state_size_raises_over_limit():
 
 def test_check_state_size_returns_chars_within_limit():
     assert dossier.check_state_size({"x": "a"}, limit=1000) == dossier.state_chars({"x": "a"})
+
+
+def test_scratch_only_history_is_not_found(tmp_path):
+    """過去の出走が取消（result_ijyo_cd "1"）だけの馬は、走っていないので
+    found にしない（final review I-2）。recent_runs と同じ出走集合で判定する。"""
+    races = [
+        fx.make_race(race_id="2026030106010101", hasso_at="2026-03-01T15:00:00+09:00",
+                     track_cd="18", kyori_m="2000"),
+        fx.make_race(race_id=TARGET, hasso_at="2026-03-21T15:25:00+09:00",
+                     track_cd="18", kyori_m="2000", class_level="3"),
+    ]
+    race_horses = [
+        fx.make_race_horse(race_id="2026030106010101", umaban="03", ketto_num="A",
+                           bamei="カコアリ", result_ijyo_cd="1", result_kakutei_jyuni="0",
+                           make_date="20260302"),
+        fx.make_race_horse(race_id=TARGET, umaban="01", ketto_num="A", bamei="カコアリ"),
+        fx.make_race_horse(race_id=TARGET, umaban="02", ketto_num="B", bamei="カコナシ",
+                           result_kakutei_jyuni="2"),
+    ]
+    horses = [fx.make_horse(ketto_num="B", bamei="カコナシ", bamei_kana="ｶｺﾅｼ",
+                            make_date="20260101")]
+    repo = Repository(DataStore.open_current(
+        fx.write_dataset(tmp_path, races, race_horses, horses)))
+    d = dossier.build_dossier(_race_input(), repo)
+    history = d["horses"]["01"]["history"]
+    assert history["status"] == "not_in_window"  # class_level 3
+    assert history["runs_found"] == 0
+    assert d["horses"]["01"]["recent_runs"] == []
+    assert d["field_summary"]["n_with_history"] == 0
+
+
+def test_front_runner_definition_states_the_threshold_exactly(tmp_path, monkeypatch):
+    """文言の閾値と判定に使う値が一致する（final review I-3c）。0.33 と書いて
+    1/3 で判定すると、0.333 の馬が文言では外なのに数えられる。"""
+    d = dossier.build_dossier(_race_input(), _dataset(tmp_path))
+    assert config.FRONT_RUNNER_MAX_CORNER_POS == 1 / 3
+    assert "1/3 以下" in d["field_summary"]["front_runner_definition"]
+    monkeypatch.setattr(config, "FRONT_RUNNER_MAX_CORNER_POS", 0.35)
+    d = dossier.build_dossier(_race_input(), _dataset(tmp_path / "b"))
+    assert "0.35 以下" in d["field_summary"]["front_runner_definition"]
+    monkeypatch.setattr(config, "FRONT_RUNNER_MAX_CORNER_POS", 0.3412345)
+    d = dossier.build_dossier(_race_input(), _dataset(tmp_path / "c"))
+    assert "0.3412345 以下" in d["field_summary"]["front_runner_definition"]

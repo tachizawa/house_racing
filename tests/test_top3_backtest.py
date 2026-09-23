@@ -304,3 +304,169 @@ def test_final_run_with_no_final_races_writes_no_log(tmp_path):
 
     assert rc == 0
     assert not (data_dir / "top3" / "final_runs.jsonl").exists()
+
+
+# ===============================================================================
+# final review の修正（I-4 / I-5 / M-6 / I-1 / save_records）
+# ===============================================================================
+
+
+def _run_b(tmp_path, client, *, methods=("plan_b",), pace=PACE_DEF, save_records=False):
+    repo, results = _repos(tmp_path)
+    return tbt.run([results.race(TUNING_RACE)], repo, results, client,
+                   methods=methods, n=3, tuning_until=date(2026, 3, 10),
+                   allow_final=False, max_recent_runs=5, save_records=save_records,
+                   data_dir=tmp_path / "store", pace_definition_for=lambda ri: pace)
+
+
+def test_pace_unavailable_skips_race_before_any_jev_call(tmp_path):
+    # 案Aを先に課金してから案Bで pace が無いと分かる、を防ぐ（I-4a）。
+    client = PlanBClient()
+    rows = _run_b(tmp_path, client, methods=("python", "plan_a", "plan_b"), pace=None)
+    assert client.calls == 0
+    assert rows[0].skipped == "pace_unavailable"
+
+
+def test_plan_b_partial_failure_keeps_pace_usage(tmp_path):
+    class PartialPlanB(PlanBClient):
+        def system_one(self, state, questions, **kw):
+            response = super().system_one(state, questions, **kw)
+            if "pace" not in questions:
+                response.nouls.pop(next(iter(response.nouls)))
+            return response
+    rows = _run_b(tmp_path, PartialPlanB())
+    assert rows[0].skipped == "incomplete_answer"
+    usage = rows[0].usage["plan_b"]
+    assert usage["input_tokens"] == 100  # pace の分
+    assert usage["requests"] == 2
+    assert usage["failed_requests"] == 1
+
+
+def test_plan_b_partial_failure_maps_jev_error(tmp_path):
+    import typesafe_sdk as ts
+
+    class FailingSecond(PlanBClient):
+        def system_one(self, state, questions, **kw):
+            if "pace" not in questions:
+                raise ts.TypeSafeAPITimeoutError(10.0)
+            return super().system_one(state, questions, **kw)
+    rows = _run_b(tmp_path, FailingSecond())
+    assert rows[0].skipped == "jev_failed"
+    assert rows[0].usage["plan_b"]["input_tokens"] == 100
+    assert rows[0].usage["plan_b"]["failed_requests"] == 1
+
+
+def test_plan_b_partial_failure_before_second_send_is_not_a_failed_request(tmp_path,
+                                                                            monkeypatch):
+    # 2回目を送る前に止めた（StateTooLargeError）なら requests 1 / failed 0。
+    from keiba.predict import top3 as top3_mod
+
+    def fake_run_plan_b(client, dossier, *, pace_definition):
+        from keiba.features.dossier import StateTooLargeError
+        raise top3_mod.PlanBPartialFailure(StateTooLargeError(10, 5), input_tokens=77,
+                                           requests_sent=1, seconds=0.5)
+    monkeypatch.setattr(tbt.top3, "run_plan_b", fake_run_plan_b)
+    rows = _run_b(tmp_path, PlanBClient())
+    assert rows[0].skipped == "state_too_large"
+    assert rows[0].usage["plan_b"] == {"input_tokens": 77, "requests": 1, "seconds": 0.5,
+                                       "state_chars": None, "failed_requests": 0}
+
+
+class PaceProbsClient(PlanBClient):
+    def __init__(self, pace_probs):
+        super().__init__()
+        self.pace_probs = pace_probs
+
+    def system_one(self, state, questions, **kw):
+        response = super().system_one(state, questions, **kw)
+        if "pace" in questions:
+            response.choices["pace"].probabilities = self.pace_probs
+        return response
+
+
+def test_empty_pace_probabilities_are_unscorable(tmp_path):
+    rows = _run_b(tmp_path, PaceProbsClient({}))
+    assert rows[0].skipped is None
+    assert rows[0].pace_pair == (None, "standard")
+    rep = tbt.report(rows, n=3, run_info={})
+    assert rep["pace_accuracy"]["n_scored"] == 0
+    assert rep["pace_accuracy"]["n_unscorable"] == 1
+
+
+def test_pace_argmax_ties_break_by_band_name(tmp_path):
+    rows = _run_b(tmp_path, PaceProbsClient({"slow": 0.4, "fast": 0.4, "standard": 0.2}))
+    assert rows[0].pace_pair[0] == "fast"
+
+
+def test_pace_accuracy_counts_missing_prediction_as_unscorable():
+    assert tbt.pace_accuracy([(None, "fast"), ("fast", "fast")]) == {
+        "n_scored": 1, "n_unscorable": 1, "argmax_accuracy": 1.0}
+
+
+class NoWinnerClient(Client):
+    def system_one(self, state, questions, **kw):
+        response = super().system_one(state, questions, **kw)
+        response.choices = {}
+        return response
+
+
+def test_missing_winner_answer_is_not_scored_as_winner_series(tmp_path):
+    # winner が丸ごと欠けたレースを「全頭0.0を馬番順に並べた順位」として採点しない（I-5）。
+    rows = _run(tmp_path, client=NoWinnerClient())
+    tuning = rows[0]
+    assert tuning.skipped is None
+    assert "plan_a" in tuning.series
+    assert "winner_same_state_a" not in tuning.series
+    rep = tbt.report(rows, n=3, run_info={})
+    assert rep["by_period"]["tuning"]["n_winner_missing_races"] == {"plan_a": 1, "plan_b": 0}
+    assert "winner_same_state_a" not in rep["by_period"]["tuning"]["series"]
+    assert rep["by_period"]["final"]["n_winner_missing_races"] == {"plan_a": 0, "plan_b": 0}
+
+
+def test_winner_present_counts_zero_missing_races(tmp_path):
+    rep = tbt.report(_run(tmp_path), n=3, run_info={})
+    assert rep["by_period"]["tuning"]["n_winner_missing_races"] == {"plan_a": 0, "plan_b": 0}
+
+
+def test_save_records_writes_record_and_sent_prompt(tmp_path):
+    repo, results = _repos(tmp_path)
+    store_dir = tmp_path / "store"
+    tbt.run([results.race(TUNING_RACE)], repo, results, Client(), methods=("plan_a",), n=3,
+            tuning_until=date(2026, 3, 10), allow_final=False, max_recent_runs=5,
+            save_records=True, data_dir=store_dir)
+    records = list((store_dir / "top3" / "predictions").glob("*.jsonl"))
+    assert len(records) == 1
+    record = json.loads(records[0].read_text(encoding="utf-8").splitlines()[0])
+    assert record["method"] == "plan_a"
+    assert record["race_id"] == TUNING_RACE
+    prompts = list((store_dir / "top3" / "prompts").glob("*/*.json"))
+    assert [p.stem for p in prompts] == [record["record_id"]]
+    sent = json.loads(prompts[0].read_text(encoding="utf-8"))
+    assert set(sent["requests"][0]["questions"]) >= {"top3_01", "winner"}
+
+
+def test_misspelled_method_is_refused_before_final_log(tmp_path, monkeypatch):
+    # 方式名の検証が create_client と --final の記録より後だと、綴りを誤っただけで
+    # 最終評価の境界が固定されてしまう（I-1）。
+    monkeypatch.setattr(backtest_top3_cli, "create_client", lambda: Client())
+    data_dir = _dataset_dir(tmp_path / "data")
+    args = _final_cli_args(data_dir, tmp_path / "out")
+    args[args.index("--methods") + 1] = "python,plan-x"
+
+    rc = backtest_top3_cli.main(args)
+
+    assert rc == 2
+    assert not (data_dir / "top3" / "final_runs.jsonl").exists()
+
+
+def test_final_race_count_ignores_jump_races(tmp_path):
+    # 最終期間の障害レースは予想しない（jump でスキップ）ので、境界を記録するか
+    # どうかの件数に入れない（M-6）。races_between は今は平地しか返さないが、
+    # 件数の定義は run() のスキップ規則とここで揃えておく。
+    import dataclasses
+    _, results = _repos(tmp_path)
+    tuning, final = results.race(TUNING_RACE), results.race(FINAL_RACE)
+    jump = dataclasses.replace(final, track_kind="jump")
+    until = date(2026, 3, 10)
+    assert backtest_top3_cli._count_final_races([tuning, final], until) == 1
+    assert backtest_top3_cli._count_final_races([tuning, jump], until) == 0

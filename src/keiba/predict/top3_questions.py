@@ -32,15 +32,23 @@ _PACE_LINE = (
     "未確定の見立てとして考慮し、確定した事実として扱わないでください。\n"
 )
 
-_RULES = (
-    "\n"
-    "今回のコース条件、対象馬の過去走、出走全頭との能力比較を判断材料にしてください。\n"
-    "条件別実績は出走数（starts）と比較条件（definition）を併せて参照してください。\n"
-    "未経験の条件や欠損情報を、不適性の証拠として扱わないでください。"
-    "history.status が debut / not_in_window / unknown / unmatched の馬は、"
-    "過去走が無いことを能力が低い証拠として扱わないでください。\n"
-    "馬名の知名度ではなく、入力された情報を根拠にしてください。"
-)
+def _rules(whose_runs: str) -> str:
+    """判断の規則。winner には対象馬が無いので、過去走の主語だけ差し替える
+    （final review I-3b）。"""
+    return (
+        "\n"
+        f"今回のコース条件、{whose_runs}の過去走、出走全頭との能力比較を判断材料にしてください。\n"
+        "条件別実績は出走数（starts）と比較条件（definition）を併せて参照してください。\n"
+        "未経験の条件や欠損情報を、不適性の証拠として扱わないでください。"
+        "history.status が debut / not_in_window / unknown / unmatched の馬は、"
+        "過去走が無いことを能力が低い証拠として扱わないでください。"
+        "found_may_be_truncated の馬は、表示されている過去走が一部だけの可能性があります。\n"
+        "馬名の知名度ではなく、入力された情報を根拠にしてください。"
+    )
+
+
+_TOP3_RULES = _rules("対象馬")
+_WINNER_RULES = _rules("各馬")
 
 _CRITERIA = NoulCriteria(
     true="対象馬が今回のレースで確定着順3着以内に入る。",
@@ -60,7 +68,7 @@ def _top3_instructions(umaban: str, *, with_pace_forecast: bool) -> str:
         "\n"
         + _MATERIALS
         + (_PACE_LINE if with_pace_forecast else "")
-        + _RULES
+        + _TOP3_RULES
     )
 
 
@@ -70,7 +78,7 @@ def _winner_instructions(*, with_pace_forecast: bool) -> str:
         "\n"
         + _MATERIALS
         + (_PACE_LINE if with_pace_forecast else "")
-        + _RULES
+        + _WINNER_RULES
     )
 
 

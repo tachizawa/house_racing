@@ -13,12 +13,14 @@ from __future__ import annotations
 import copy
 import json
 from collections import Counter
+from fractions import Fraction
 
 from keiba import config
 from keiba.data.repository import Repository
 from keiba.features import course as course_mod
 from keiba.features import history
 from keiba.features.context import build_context
+from keiba.features.derive import eligible_runs
 from keiba.features.summary import ability_dict, data_quality, race_dict, running_style_dict
 from keiba.models import RaceInput
 
@@ -72,6 +74,23 @@ def _conditions_dict(records) -> dict:
     }
 
 
+def _threshold_text(value: float) -> str:
+    """判定に使う閾値を、文言でも同じ値として読めるように書く（final review I-3c）。
+
+    有限小数で書けない分数（1/3 など）は「1/3」と分数で書く。それ以外は
+    float の repr（round-trip で同じ値に戻る最短の表記）。``:.2f`` のように
+    丸めると「0.33 以下」と書いて 1/3 で判定し、文言と判定がずれる。
+    """
+    fraction = Fraction(value).limit_denominator(12)
+    denominator = fraction.denominator
+    for prime in (2, 5):
+        while denominator % prime == 0:
+            denominator //= prime
+    if float(fraction) == value and denominator != 1:
+        return f"{fraction.numerator}/{fraction.denominator}"
+    return repr(float(value))
+
+
 def build_dossier(race_input: RaceInput, repo: Repository, *,
                   max_recent_runs: int = config.DEFAULT_DOSSIER_RECENT_RUNS) -> dict:
     as_of = race_input.prediction_cutoff
@@ -91,7 +110,12 @@ def build_dossier(race_input: RaceInput, repo: Repository, *,
     n_front = 0
     for hf in ctx.horses:
         runs = repo.past_runs(hf.ketto_num, as_of=as_of) if hf.ketto_num else []
-        status = history.history_status(runs, matched=hf.ketto_num is not None,
+        # 取消・除外（と障害走）は走っていない／比較できないので、recent_runs・
+        # conditions と同じ出走集合で判定する。生の past_runs を渡すと、取消だけの
+        # 馬が found / runs_found 1 になり recent_runs は空という矛盾が出る
+        # （final review I-2）。
+        status = history.history_status(eligible_runs(runs),
+                                        matched=hf.ketto_num is not None,
                                         race_class_level=class_level,
                                         coverage_from=repo.coverage_from)
         statuses[status.status] += 1
@@ -138,7 +162,7 @@ def build_dossier(race_input: RaceInput, repo: Repository, *,
             "n_front_runners": n_front,
             "front_runner_definition": (
                 "近走の4角の相対位置（通過順÷頭数）の平均が "
-                f"{config.FRONT_RUNNER_MAX_CORNER_POS:.2f} 以下の馬"),
+                f"{_threshold_text(config.FRONT_RUNNER_MAX_CORNER_POS)} 以下の馬"),
         },
         "data_quality": quality,
     }

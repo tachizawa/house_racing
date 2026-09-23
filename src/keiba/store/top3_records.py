@@ -77,9 +77,11 @@ def save(record: Top3Record, *, sent: dict | None, data_dir: Path) -> Path:
     if sent is not None:
         prompt_path = _root(data_dir) / "prompts" / month / f"{record.record_id}.json"
         prompt_path.parent.mkdir(parents=True, exist_ok=True)
+        # 記録自身のキーを後に置く。sent に同名のキーがあっても上書きされない
+        # （final review M-3）。
         prompt_path.write_text(json.dumps(
-            {"record_id": record.record_id, "race_id": record.race_id,
-             "versions": record.versions, **sent},
+            {**sent, "record_id": record.record_id, "race_id": record.race_id,
+             "versions": record.versions},
             ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     return path
 

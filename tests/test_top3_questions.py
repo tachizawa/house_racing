@@ -64,3 +64,19 @@ def test_winner_criteria_are_umaban():
 def test_pace_questions_reuse_existing_bands():
     qs = tq.pace_questions()
     assert set(qs["pace"].model_dump()["criteria"]) == {"fast", "standard", "slow"}
+
+
+def test_rules_warn_that_truncated_history_may_be_partial():
+    # found_may_be_truncated は取得期間が短いと頻出する（final review I-3a）。
+    for q in tq.top3_questions(DOSSIER, with_pace_forecast=False).values():
+        assert "found_may_be_truncated" in q.instructions
+        assert "一部だけ" in q.instructions
+
+
+def test_winner_rules_do_not_mention_a_target_horse():
+    # winner には対象馬が無い（final review I-3b）。top3 は対象馬のまま。
+    qs = tq.top3_questions(DOSSIER, with_pace_forecast=True)
+    assert "対象馬" not in qs["winner"].instructions
+    assert "各馬の過去走" in qs["winner"].instructions
+    assert "対象馬の過去走" in qs["top3_01"].instructions
+    assert "pace_forecast" in qs["winner"].instructions

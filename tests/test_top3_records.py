@@ -60,3 +60,16 @@ def test_sent_is_saved_separately(tmp_path):
 
 def test_load_missing_month_is_empty(tmp_path):
     assert store.load_month("209901", data_dir=tmp_path) == []
+
+
+def test_sent_cannot_overwrite_record_keys(tmp_path):
+    # 送った物の側に同名のキーがあっても、記録自身の値が勝つ（final review M-3）。
+    record = make_record()
+    store.save(record, sent={"record_id": "x", "race_id": "y", "versions": {}, "requests": []},
+               data_dir=tmp_path)
+    path = tmp_path / "top3" / "prompts" / "202609" / "abc.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["record_id"] == "abc"
+    assert payload["race_id"] == record.race_id
+    assert payload["versions"] == record.versions
+    assert payload["requests"] == []
