@@ -27,6 +27,73 @@
       "source": {"url": "https://www.jra.go.jp/facilities/race/sapporo/course/", "retrieved_at": "2026-09-23"}
     },
     {
+      "jyo_cd": "02",
+      "track_cd": "17",
+      "valid_from": "2000-01-01",
+      "valid_to": null,
+      "rail_basis": "Aコース",
+      "facts": {
+        "circumference_m": 1626.6,
+        "width_m": 29,
+        "straight_m": 262.1,
+        "elevation_note": "高低差3.5m"
+      },
+      "starts": {},
+      "source": {"url": "https://www.jra.go.jp/facilities/race/hakodate/course/", "retrieved_at": "2026-09-24"}
+    },
+    {
+      "jyo_cd": "02",
+      "track_cd": "24",
+      "valid_from": "2000-01-01",
+      "valid_to": null,
+      "facts": {
+        "circumference_m": 1475.8,
+        "width_m": 20,
+        "straight_m": 260.3,
+        "elevation_note": "高低差3.5m"
+      },
+      "starts": {},
+      "source": {"url": "https://www.jra.go.jp/facilities/race/hakodate/course/", "retrieved_at": "2026-09-24"}
+    },
+    {
+      "jyo_cd": "03",
+      "track_cd": "17",
+      "valid_from": "2000-01-01",
+      "valid_to": null,
+      "rail_basis": "Aコース",
+      "facts": {
+        "circumference_m": 1600,
+        "straight_m": 292.0,
+        "elevation_note": "高低差1.9m"
+      },
+      "starts": {},
+      "source": {"url": "https://www.jra.go.jp/facilities/race/fukushima/course/", "retrieved_at": "2026-09-24"}
+    },
+    {
+      "jyo_cd": "03",
+      "track_cd": "24",
+      "valid_from": "2000-01-01",
+      "valid_to": null,
+      "facts": {
+        "circumference_m": 1444.6,
+        "straight_m": 295.7,
+        "elevation_note": "高低差2.1m"
+      },
+      "starts": {},
+      "source": {"url": "https://www.jra.go.jp/facilities/race/fukushima/course/", "retrieved_at": "2026-09-24"}
+    },
+    {
+      "jyo_cd": "04",
+      "track_cd": "10",
+      "valid_from": "2000-01-01",
+      "valid_to": null,
+      "facts": {
+        "layout": "直線コース"
+      },
+      "starts": {},
+      "source": {"url": "https://www.jra.go.jp/facilities/race/niigata/course/", "retrieved_at": "2026-09-24"}
+    },
+    {
       "jyo_cd": "04",
       "track_cd": "11",
       "valid_from": "2000-01-01",
@@ -65,6 +132,34 @@
       "source": {"url": "https://www.jra.go.jp/facilities/race/niigata/course/", "retrieved_at": "2026-09-23"}
     },
     {
+      "jyo_cd": "05",
+      "track_cd": "11",
+      "valid_from": "2000-01-01",
+      "valid_to": null,
+      "rail_basis": "Aコース",
+      "facts": {
+        "circumference_m": 2083.1,
+        "straight_m": 525.9,
+        "elevation_note": "高低差2.7m"
+      },
+      "starts": {},
+      "source": {"url": "https://www.jra.go.jp/facilities/race/tokyo/course/", "retrieved_at": "2026-09-24"}
+    },
+    {
+      "jyo_cd": "05",
+      "track_cd": "23",
+      "valid_from": "2000-01-01",
+      "valid_to": null,
+      "facts": {
+        "circumference_m": 1899,
+        "width_m": 25,
+        "straight_m": 501.6,
+        "elevation_note": "高低差2.5m"
+      },
+      "starts": {},
+      "source": {"url": "https://www.jra.go.jp/facilities/race/tokyo/course/", "retrieved_at": "2026-09-24"}
+    },
+    {
       "jyo_cd": "06",
       "track_cd": "17",
       "valid_from": "2000-01-01",
@@ -89,6 +184,21 @@
       },
       "starts": {},
       "source": {"url": "https://www.jra.go.jp/facilities/race/nakayama/course/", "retrieved_at": "2026-09-23"}
+    },
+    {
+      "jyo_cd": "06",
+      "track_cd": "21",
+      "valid_from": "2000-01-01",
+      "valid_to": null,
+      "rail_basis": "Aコース",
+      "facts": {
+        "layout": "内回り",
+        "circumference_m": 1667.1,
+        "straight_m": 310,
+        "elevation_note": "高低差5.3m"
+      },
+      "starts": {},
+      "source": {"url": "https://www.jra.go.jp/facilities/race/nakayama/course/", "retrieved_at": "2026-09-24"}
     },
     {
       "jyo_cd": "06",
@@ -206,6 +316,35 @@
       },
       "starts": {},
       "source": {"url": "https://www.jra.go.jp/facilities/race/hanshin/course/", "retrieved_at": "2026-09-23"}
+    },
+    {
+      "jyo_cd": "10",
+      "track_cd": "17",
+      "valid_from": "2000-01-01",
+      "valid_to": null,
+      "rail_basis": "Aコース",
+      "facts": {
+        "circumference_m": 1615.1,
+        "width_m": 30,
+        "straight_m": 293,
+        "elevation_note": "高低差3m"
+      },
+      "starts": {},
+      "source": {"url": "https://www.jra.go.jp/facilities/race/kokura/course/", "retrieved_at": "2026-09-24"}
+    },
+    {
+      "jyo_cd": "10",
+      "track_cd": "24",
+      "valid_from": "2000-01-01",
+      "valid_to": null,
+      "facts": {
+        "circumference_m": 1445.4,
+        "width_m": 24,
+        "straight_m": 291.3,
+        "elevation_note": "高低差2.9m"
+      },
+      "starts": {},
+      "source": {"url": "https://www.jra.go.jp/facilities/race/kokura/course/", "retrieved_at": "2026-09-24"}
     }
   ]
 }
