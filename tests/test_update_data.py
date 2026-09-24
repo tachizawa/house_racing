@@ -24,7 +24,7 @@ from tests.fixtures import records as fx  # noqa: E402
 
 
 class DataspecAwareLink:
-    """dataspec ごとに JVOpen の結果と JVGets で返すレコードを変えられる偽 link。
+    """dataspec ごとに JVOpen の結果と JVRead で返すレコードを変えられる偽 link。
 
     update_data.py は dataspec ごとに open_dataspec() / read_open_dataspec() /
     JVClose() を呼ぶので、単一の open_code しか持てない偽物では「DIFF は -1、
@@ -49,11 +49,11 @@ class DataspecAwareLink:
     def JVStatus(self):
         return self._current_download_count
 
-    def JVGets(self, buf, size, fname):
+    def JVRead(self, buf, size, fname):
         if not self._pending:
-            return (0, memoryview(b""), "")
+            return (0, "", size, "")
         payload = self._pending.pop(0)
-        return (len(payload), memoryview(payload), "")
+        return (len(payload), payload.decode("cp932"), size, "")
 
     def JVClose(self):
         self.close_calls += 1
@@ -68,9 +68,9 @@ def test_aborts_the_writer_when_reading_fails(tmp_path, monkeypatch):
     ディレクトリの両方を後始末する。
     """
     class ExplodingLink(DataspecAwareLink):
-        def JVGets(self, buf, size, fname):
+        def JVRead(self, buf, size, fname):
             if self._pending:
-                return super().JVGets(buf, size, fname)
+                return super().JVRead(buf, size, fname)
             raise RuntimeError("ダウンロード中に切断")
 
     link = ExplodingLink(
@@ -262,7 +262,7 @@ class TestOpenCodeReporting:
 
     def test_closes_the_link_when_reading_raises(self, tmp_path, monkeypatch):
         class ExplodingLink(DataspecAwareLink):
-            def JVGets(self, buf, size, fname):
+            def JVRead(self, buf, size, fname):
                 raise RuntimeError("ダウンロード中に切断")
 
         link = ExplodingLink(open_codes={"RACE": 0})
