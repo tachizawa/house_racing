@@ -118,11 +118,17 @@ scripts/update_data.py --dataspec RACE --fromdate 20230801000000
 ほか）を実装し、調整期間・最終評価期間で比較した。設計と結果は
 `docs/superpowers/specs/2026-09-23-top3-prediction-design.md` §11〜14（**拘束力のある仕様の続き**）。
 
-- **データ版**は `20260923T115107Z`。`--fromdate 20230801000000` を指定しても
-  **option 1 では実際には 2025-09-27〜2026-09-22 の約1年ぶんしか返らない**（3,504レース）。
-  それより古いデータが要る場合は JV-Link 側の追加設定（セットアップ系データの取得など）が
-  要るが**未検証**——`scripts/update_data.py --dataspec RACE --fromdate 20230801000000` を
-  実行すれば2023年から取れる、という上の書き方は誤りなので読み替えること。
+- 上の比較結果を出したデータ版は `20260923T115107Z`（約1年ぶん）。`--fromdate` を古くしても
+  **option 1 では約1年ぶんしか返らない**。
+- **2026-09-24 に5年ぶんのデータ版 `20260924T115403Z` を作った（現在の CURRENT）。**
+  `update_data.py --dataspec RACE --fromdate 20210901000000 --option 4`。JRA は
+  2021-09〜2026-09-27（2022〜2025年は各3,456レース）。セットアップ取得は
+  **スタートキットのダイアログに所有者が「持っていない」→ OK を押す必要がある**。利用キーが
+  「試験運用中」の間は -301 が断続的に出ていた。
+  - 地方（data_kubun A）・海外（B）のレースも届く（SE の38%）が、`config.DATA_KUBUN_DROP` で
+    読み込み時に捨てるので予想には入らない。1989〜2020年の JRA の訂正再配信も約450レース混じる
+  - 5年ぶんにすると過去走が揃い、資料の大きさが増える。2026年1〜6月の1,661レースの
+    ドライランで **29件（1.7%）が `STATE_MAX_CHARS` を超えた**（最大 52,664 文字）。対処は未決
 - 版: `DOSSIER_VERSION` 2 / `TOP3_PROMPT_VERSION` 2 / `TOP3_EVAL_RULES_VERSION` 1。
   `n = 3`（`config.DEFAULT_TOP_N`）。
 - **最終評価期間 2026-07-01〜09-22 は使用済み**（境界は `data/top3/final_runs.jsonl` に
@@ -139,9 +145,13 @@ scripts/update_data.py --dataspec RACE --fromdate 20230801000000
   詳細・調整期間の数値は spec §13〜14。
 - **「判断材料不足が減った」と「予測が正しくなった」は別**。今回測ったのは的中数・Brierなど
   後者だけで、`insufficient` 回答の割合そのものはこの評価の対象にしていない。
-- 所有者に残っている項目: コース事実テーブル（`src/keiba/features/course_facts.json`）は
-  **6競馬場・15エントリぶんしか確認していない**（JRA10場のうち函館・福島・東京・小倉の
-  4場が未収載）。案Bの展開予測ステージは上記のとおり信号なし——使うかどうかの判断が残る。
+- コース事実テーブル（`src/keiba/features/course_facts.json`）は 2026-09-24 に
+  **JRA10場・26エントリ**になり、データ版の平地 3,384 レースすべてに該当する。
+  JV-Data のコース情報（CS レコード、dataspec `COMM`）は option 1 で `-1`、
+  option 4 で `-301` となり取れないため、JRA 公式のコース紹介ページから写している。
+  残り: 距離ごとのスタート地点（`starts`）は全エントリ空、数値は A コースのものだけ、
+  幅員が範囲表記（「25〜27m」など）の場合は省いている。
+- 所有者に残っている項目: 案Bの展開予測ステージは上記のとおり信号なし——使うかどうかの判断が残る。
 
 ## 何を作るのか
 
@@ -324,17 +334,26 @@ open_code, read_count, download_count, lastfiletime = jvlink.JVOpen(
 while jvlink.JVStatus() < download_count:   # ダウンロード進捗
     ...
 
-ret, memview, fname = jvlink.JVGets(bytearray(110000), 110000, bytearray())
-#  >0  : memview.tobytes() にレコード1件
-#  -1  : ファイル切替（fname が対象ファイル名）
+ret, text, _size, fname = jvlink.JVRead("", 110000, "")
+#  >0  : text にレコード1件（ret は cp932 のバイト長。_size は渡した値のまま）
+#  -1  : ファイル切替
 #   0  : EOF
 #  <-1 : エラー
+raw = text.encode("cp932")   # len(raw) == ret を確かめる
 
 jvlink.JVClose()
 ```
 
-- **レコードは cp932。** `memview.tobytes().decode("cp932")` でデコードする
-- `JVRead` ではなく **`JVGets` を使う**（公式サンプルの既定。memoryview で受けられる）
+- **`JVGets` は使わない（2026-09-24 実測）。** 公式サンプルは `JVGets` だが、pywin32 経由では
+  呼ぶたびに約110KB（バッファ長ぶん）漏れ、`JVClose` しても戻らない。5年分のセットアップ取得
+  （数十万件）では黙ってメモリを使い切って落ちる。`JVRead` なら漏れない
+- **`JVRead` は読んだ時点のコンソール出力コードページで文字列にする。** 65001（UTF-8）だと
+  日本語が欧文として化ける。`jvlink.read_open_dataspec()` が読む間だけ 932 に切り替えている。
+  cp932 に戻したバイト列は `JVGets` の結果（末尾の NUL を除く）と全件一致することを確認済み
+- **レコードは cp932。** 固定長の位置はバイト単位なので、デコードは `records.py` 側で行う
+- **option 3/4（セットアップ）では「スタートキット（CD/DVD-ROM）」のダイアログが出る。**
+  option 4 でも出る。**「持っていない」を選んで OK** を所有者に押してもらう必要がある
+  （「持っている」のままだと -501、放置・異常終了の直後は -301 がしばらく続く）
 - レコード種別は先頭2バイト（`RA` / `SE` / `HR` / `O1` …）
 - `JVOpen` の `option` は型ライブラリ上 **`VT_UINT`**。このため **VBScript からは呼べない**
   （「型が一致しません」で落ちる）。Python なら問題ない
