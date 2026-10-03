@@ -116,6 +116,21 @@ PACE_MIN_RACES = 30              # ペース三分位を層別に計算するの
 # name_index が race_horses.csv も見る）、DIFF で取れる分だけで十分。
 DEFAULT_DATASPECS: tuple[str, ...] = ("RACE", "DIFF")
 
+# 血統（SK 産駒マスタ / HN 繁殖馬マスタ / BT 系統情報）。BLOD ではなく BLDN を使う。
+# BLOD は JV-Data 4.9.0（2023-08）より前の形式（繁殖登録番号8桁）のまま 2023-07 作成分で
+# 止まっている（2026-09-25 実測。2023年生まれ以降の馬が入らない）。新形式（10桁）を
+# 1986年以降ぶん運ぶのが BLDN（DIFF と DIFN の関係と同じ）。
+# レースの版とは別の系統に保存する（ingest/store.py の BLOOD_FILES を参照）。
+DEFAULT_BLOOD_DATASPECS: tuple[str, ...] = ("BLDN",)
+BLOOD_DATA_DIR = DATA_DIR / "blood"
+
+# 払戻（HR）とオッズ（O1〜O6）。RACE が運ぶが、レースの版とは別の系統に保存する
+# （ingest/store.py の MARKET_FILES）。3連単のオッズは5年で約4,000万行あり、
+# レースの版に混ぜると予想の読み込みが重くなるうえ、CURRENT を共有すると
+# 片方の取り直しがもう片方を巻き込む。
+DEFAULT_MARKET_DATASPECS: tuple[str, ...] = ("RACE",)
+MARKET_DATA_DIR = DATA_DIR / "market"
+
 # 入力の距離が現実的か判定するための幅。中央の平地はおよそ 1000m〜3600m だが、
 # 障害・特殊条件の余地を残して広めに取る。
 MIN_DISTANCE_M = 800
@@ -161,6 +176,16 @@ IJYO_NO_TIME = frozenset({"4", "5"})
 DATA_KUBUN_RESULT_PRIORITY: tuple[str, ...] = ("7", "6", "5", "4", "3")
 DATA_KUBUN_ENTRY_PRIORITY: tuple[str, ...] = ("2", "1")
 DATA_KUBUN_DROP = frozenset({"0", "9", "A", "B"})
+
+# 払戻（HR）とオッズ（O1〜O6）のデータ区分は RA/SE とも互いとも意味が違う。
+#   HR   : 1:速報成績(払戻金確定) 2:成績(月曜) 9:レース中止 0:削除
+#   O1〜O6: 1:中間 2:前日売最終 3:最終 4:確定 5:確定(月曜) 9:レース中止 0:削除
+# 払戻金が確定しているのは HR の 1/2、確定オッズは O の 4/5。O の 1〜3 は確定前の値で、
+# 確定オッズとは一致しない。同じレースに複数あれば先頭を優先する。0 と 9 は使わない。
+# 注意: 確定オッズは締切後にしか分からない。「期待値で買い目を選ぶ」検証に確定オッズを
+# 使うと、買う時点では知りえない値で選んでいることになる（締切直前との差の分だけ甘くなる）。
+DATA_KUBUN_PAYOUT_PRIORITY: tuple[str, ...] = ("2", "1")
+DATA_KUBUN_ODDS_PRIORITY: tuple[str, ...] = ("5", "4")
 
 # UM（競走馬マスタ）のデータ区分は RA/SE と意味が違う。
 #   1:新規馬名登録 2:馬名変更 3:再登録(抹消後の再登録) 4:その他更新
