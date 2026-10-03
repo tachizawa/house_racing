@@ -12,7 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | パス | 役割 |
 |---|---|
 | `src/jev_client.py` | Jev への薄いアクセス層。キー解決・例外の日本語化・並列実行のみ。**予想ロジックと重みは置かない** |
-| `src/keiba/ingest/` | JV-Link からの取得、レコード分解、版付き CSV 保存 |
+| `src/keiba/ingest/` | JV-Link からの取得、レコード分解、版付き CSV 保存（レース・血統・払戻オッズの3系統）、生レコードの保存（`rawdump`） |
 | `src/keiba/data/` | 版の読み出しと `Repository`。**全公開メソッドが `as_of` を必須キーワード引数に取る** |
 | `src/keiba/input/` | 利用者入力の解析・検証・馬名照合 |
 | `src/keiba/features/` | 数値化。`EntryRow` しか受け取らない（結果は型で入らない） |
@@ -152,6 +152,40 @@ scripts/update_data.py --dataspec RACE --fromdate 20230801000000
   残り: 距離ごとのスタート地点（`starts`）は全エントリ空、数値は A コースのものだけ、
   幅員が範囲表記（「25〜27m」など）の場合は省いている。
 - 所有者に残っている項目: 案Bの展開予測ステージは上記のとおり信号なし——使うかどうかの判断が残る。
+
+### 血統データ（2026-09-25）
+
+- `data/blood/versions/<id>/` に**レースとは別の系統**で置く（`CURRENT` も別）。
+  `update_data.py --kind blood --option 4 --fromdate 19860101000000`（ダイアログ操作が要る）。
+  `pedigrees.csv`（SK。3代血統14頭を `sire_num` `dam_sire_num` … の列で）、
+  `breeding_horses.csv`（HN）、`lineages.csv`（BT。系統説明の自由文は捨てる）
+- **dataspec は `BLDN`。`BLOD` を使わないこと。** BLOD は JV-Data 4.9.0（2023-08）より前の
+  形式（繁殖登録番号8桁）のまま 2023-07 作成分で止まっており、仕様書どおりに読むと位置が全部ずれる。
+  パーサはレコード長で旧形式を弾く。race 側既定の `DIFF` も同じ問題を抱えている可能性がある（未確認）
+- 現在の版 `20260925T043102Z`: SK 427,630 / HN 162,061 / BT 92。2021〜2025年の JRA 出走馬
+  27,574頭の **99.92%** で父・母父の名前が引ける。BT は系統の起点の馬にしか付かない（父に直接
+  付くのは3.35%）ので、系統は父系をさかのぼって最初に BT がある馬で決める
+- 中山・芝中距離の記述統計は `tmp/keiba-report/stats1/report.md`（血統なし。市場の期待との差で
+  ほぼ全変数の差が消え、遠征だけが全場で −0.9pp ±0.6 残った）
+
+### 払戻・オッズ（2026-09-26）
+
+- `data/market/versions/<id>/` に**レース・血統とは別の系統**で置く（`CURRENT` も別）。
+  `update_data.py --kind market`（dataspec は RACE。HR と O1〜O6 だけを保存）
+- ファイル: `payout_races.csv` / `payouts.csv`（HR。組番ごと、100円あたり）、`odds_pools.csv`（賭式ごとの
+  発売状況・票数合計）、`odds_tansyo.csv` / `odds_fukusyo.csv` / `odds_wakuren.csv`、
+  `odds_umaren.csv.gz` / `odds_wide.csv.gz` / `odds_umatan.csv.gz` / `odds_sanrenpuku.csv.gz` /
+  `odds_sanrentan.csv.gz`（大きい表は gzip）。組番は馬番2桁を `-` でつなぐ。馬単・3連単は着順どおり、他は昇順
+- **データ区分の意味が RA/SE と違う。** HR は 2（月曜）> 1、O は 5（確定・月曜）> 4（確定）。O の 1〜3 は
+  確定前（`config.DATA_KUBUN_PAYOUT_PRIORITY` / `DATA_KUBUN_ODDS_PRIORITY`）。セットアップ取得では HR は全件 2、
+  O は 5（中止の 9 が33件）だった
+- **確定オッズは締切後にしか分からない。** 期待値で買い目を選ぶ検証に使うと、買う時点で知りえない値で選ぶことになる
+- 2026-09-26 に生レコード `data/raw/20260925T172902Z/`（RACE, fromdate 20210901, option 4。`keiba.ingest.rawdump`
+  の形式）から `--from-raw` で作った。生レコードで照合済み: 全レコード長が仕様どおり・パースエラー0、O1 の単勝オッズと
+  SE の確定単勝オッズが 239,960 頭で全一致、3連単の払戻の組番と SE の1-2-3着が同着なしの 17,416 レースで全一致、
+  単勝の払戻とオッズ×100 のずれは1着同着の46件だけ
+- `--from-raw DIR` は JV-Link を呼ばずに生レコードから版を作る。ダイアログ操作が要るセットアップ取得を、
+  パーサの実装より先に済ませたいときに使う
 
 ## 何を作るのか
 
@@ -453,7 +487,7 @@ venv は `.venv`（Python 3.13.3 / 64bit）。コマンドは `.venv` の python
 # 依存（初回のみ）
 .venv/Scripts/python.exe -m pip install -r requirements.txt
 
-# テスト全体（2026-09-23 実行: 1263 passed）
+# テスト全体（2026-09-26 実行: 1336 passed）
 .venv/Scripts/python.exe -m pytest
 
 # テスト1件だけ
