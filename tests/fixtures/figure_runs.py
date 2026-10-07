@@ -82,3 +82,44 @@ def season_runs(*, years=(2024, 2025), days_per_year=4, field=12, seed=0) -> pd.
                                     time_sec=(S_TRUE[1600] + 1.0 - ability[2][i] + v) * 1.6,
                                     rank=float(i + 1), barei=2, cohort=year - 2))
     return pd.DataFrame(rows)
+
+
+def sparse_season_runs(*, years=(2024, 2025), n_days=16, horses_per_age=80, runs_per_horse=4,
+                       noise=0.4, seed=0) -> pd.DataFrame:
+    """区間の偏りを確かめるための作り物。馬は開催日の一部（runs_per_horse 日）にしか走らず、1走ごとの雑音が大きい。
+
+    実データと同じく「開催日を抜くと馬の走が減り、最高値が下がる」形にしてある。毎年、年齢ごとに
+    horses_per_age 頭。1〜8月の開催日に、古馬戦（3〜5歳・1勝クラス）を距離ごとに1つと2歳戦を1つ置く。
+    """
+    rng = np.random.default_rng(seed)
+    rows = []
+    days = [f"{m:02d}{d:02d}" for m in range(1, 9) for d in (5, 20)][:n_days]
+    for year in years:
+        horses = []
+        for age in (2, 3, 4, 5):
+            for i in range(horses_per_age):
+                horses.append(dict(age=age, i=i, ability=float(rng.normal(0, 0.3)),
+                                   kyori=1600 if age == 2 else (1600, 2000)[i % 2],
+                                   days=set(rng.choice(len(days), runs_per_horse, replace=False).tolist())))
+        for d, md in enumerate(days):
+            day = f"{year}{md}"
+            v = float(rng.normal(0, 0.2))
+            groups = {("O", 1600): [], ("O", 2000): [], ("Y", 1600): []}
+            for h in horses:
+                if d in h["days"]:
+                    groups[("Y" if h["age"] == 2 else "O", h["kyori"])].append(h)
+            for (kind, kyori), members in groups.items():
+                if not members:
+                    continue
+                times = [(S_TRUE[kyori] + v - h["ability"] + (1.0 if kind == "Y" else 0.0)
+                          + float(rng.normal(0, noise))) * kyori / 1000 for h in members]
+                for rank, k in enumerate(np.argsort(times), start=1):
+                    h = members[k]
+                    rows.append(run_row(race_id=f"{day}-{kyori}-{kind}", umaban=f"{k + 1:02d}",
+                                        ketto_num=f"C{year - h['age']}-{h['i']}", day=day,
+                                        date=pd.Timestamp(day), year=year, kyori_m=kyori,
+                                        syubetu_cd="11" if kind == "Y" else "13",
+                                        class_level=1.0 if kind == "Y" else 2.0,
+                                        time_sec=times[k], rank=float(rank), barei=h["age"],
+                                        cohort=year - h["age"]))
+    return pd.DataFrame(rows)

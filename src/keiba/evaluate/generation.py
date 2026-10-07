@@ -7,13 +7,14 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date
 
 import numpy as np
 import pandas as pd
 
 from keiba.evaluate.age_curve import half_of
-from keiba.features.speed_figure import apply_figures, fit_model
+from keiba.features.speed_figure import FigureModel, apply_figures, fit_model
 
 METRICS = ("top10", "top50", "median")
 TOP_K = {"top10": 10, "top50": 50}
@@ -172,7 +173,7 @@ def replicate_stats(fig: pd.DataFrame, *, as_of: date, years: list[int], ages: l
 
 
 def resample_days(runs: pd.DataFrame, rng: np.random.Generator) -> pd.DataFrame:
-    """開催日を復元抽出する（§5.5）。同じ日が2回選ばれたら別の日として扱う（day と race_id に #番号）。"""
+    """開催日を復元抽出する（§5.5 の手順 1。物差しの推定し直しにだけ使う）。同じ日が2回選ばれたら別の日として扱う（day と race_id に #番号）。"""
     groups = runs.groupby("day", sort=True).indices
     days = np.array(sorted(groups))
     pick = rng.choice(days, size=len(days), replace=True)
@@ -185,17 +186,79 @@ def resample_days(runs: pd.DataFrame, rng: np.random.Generator) -> pd.DataFrame:
     return out
 
 
-def bootstrap_intervals(runs: pd.DataFrame, *, as_of: date, years: list[int], ages: list[int],
-                        curve_levels: dict | None, n_boot: int, seed: int) -> pd.DataFrame:
-    """開催日単位のクラスタ・ブートストラップで 95% 区間（§5.5）。物差しの推定からやり直す。
+def replicate_model(point: FigureModel, rep: FigureModel) -> FigureModel:
+    """複製で推定し直した物差しを、元の走に当てられる形にする（§5.5 の手順 2）。
 
-    年齢分を差し引いた差では curve_levels を固定する（曲線の誤差は区間に入らない）。
+    複製の開催面は日付に「#番号」が付いているので外す（同じ日が2回選ばれた写しは同じ値になるので平均する）。
+    複製に選ばれなかった日の開催面と、複製に古馬戦が無かったキーは点推定の値を使う。
+    そうしないと、選ばれなかった日の走が指数を失ったり馬場差 0 で計算されたりして、
+    最高値・上位K頭の平均が下に偏る（復元抽出では約 37% の日が選ばれない）。
     """
+    v = rep.variants
+    faces = v.index.to_frame(index=False)
+    faces["day"] = faces["day"].astype(str).str.split("#").str[0]
+    plain = pd.Series(v.to_numpy(), index=pd.MultiIndex.from_frame(faces))
+    plain = plain.groupby(level=list(range(plain.index.nlevels))).mean()
+    return replace(rep, standards=rep.standards.combine_first(point.standards),
+                   variants=plain.combine_first(point.variants))
+
+
+def resample_horses(fig: pd.DataFrame, rng: np.random.Generator) -> pd.DataFrame:
+    """世代ごとに馬を復元抽出する（§5.5 の手順 3）。馬の全走（年をまたいでも）をまとめて動かす。
+
+    同じ馬が2回選ばれたら別の馬として数える。ketto_num は抽出の通し番号（整数）に置き換えるので、
+    元の血統登録番号は残らない（世代の数値は馬の区別にしか使わない）。
+    """
+    unit_keys = ["cohort", "ketto_num"]
+    f = fig.sort_values(unit_keys, kind="stable").reset_index(drop=True)
+    g = f.groupby(unit_keys, sort=False)
+    unit = g.ngroup().to_numpy()
+    counts = np.bincount(unit)
+    starts = np.concatenate([[0], np.cumsum(counts)[:-1]])
+    unit_cohort = f["cohort"].to_numpy()[starts]
+    picks = []
+    for c in np.unique(unit_cohort):
+        members = np.flatnonzero(unit_cohort == c)
+        picks.append(rng.choice(members, size=len(members), replace=True))
+    pick = np.concatenate(picks)
+    lens = counts[pick]
+    offset = np.repeat(np.cumsum(lens) - lens, lens)
+    idx = np.repeat(starts[pick], lens) + (np.arange(lens.sum()) - offset)
+    out = f.iloc[idx].reset_index(drop=True)
+    out["ketto_num"] = np.repeat(np.arange(len(pick)), lens)
+    return out
+
+
+def bootstrap_replicates(runs: pd.DataFrame, *, as_of: date, years: list[int], ages: list[int],
+                         curve_levels: dict | None, n_boot: int, seed: int,
+                         model: FigureModel | None = None) -> pd.DataFrame:
+    """ブートストラップの複製ごとの統計（行 = 複製、列 = 統計のキー）。手順は §5.5。
+
+    1. 開催日を復元抽出して物差し（基準・クラス差・馬場差）を推定し直す（物差しの誤差）
+    2. その物差しを**元の走すべて**に当てる。抽出した走に当てると、選ばれなかった日の走が消えて
+       馬ごとの最高値が下がり、上位K頭の平均や中央値が下に偏る（点推定が区間の外に出ていた）
+    3. 世代ごとに馬を復元抽出する（どの馬がその世代にいたかの誤差）
+
+    model は点推定の物差し。省略すると runs から推定する。年齢分の差では curve_levels を固定する。
+    """
+    model = fit_model(runs) if model is None else model
+    runs_in_years = runs[runs["year"].isin(years)].reset_index(drop=True)
     rng = np.random.default_rng(seed)
     reps = []
     for _ in range(n_boot):
-        rs = resample_days(runs, rng)
-        fig = apply_figures(rs, fit_model(rs))
+        rep = replicate_model(model, fit_model(resample_days(runs, rng)))
+        fig = resample_horses(apply_figures(runs_in_years, rep), rng)
         reps.append(replicate_stats(fig, as_of=as_of, years=years, ages=ages, curve_levels=curve_levels))
-    df = pd.DataFrame(reps)
+    return pd.DataFrame(reps)
+
+
+def bootstrap_intervals(runs: pd.DataFrame, *, as_of: date, years: list[int], ages: list[int],
+                        curve_levels: dict | None, n_boot: int, seed: int,
+                        model: FigureModel | None = None) -> pd.DataFrame:
+    """95% 区間（2.5% と 97.5% の分位点）。複製の作り方は bootstrap_replicates（§5.5）。
+
+    年齢分を差し引いた差では curve_levels を固定する（曲線の誤差は区間に入らない）。
+    """
+    df = bootstrap_replicates(runs, as_of=as_of, years=years, ages=ages, curve_levels=curve_levels,
+                              n_boot=n_boot, seed=seed, model=model)
     return pd.DataFrame({"lo": df.quantile(0.025), "hi": df.quantile(0.975)})

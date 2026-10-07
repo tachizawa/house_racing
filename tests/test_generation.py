@@ -11,9 +11,10 @@ import pytest
 from keiba.evaluate.generation import (HYPOTHESIS_PAIRS, cohort_table, cohort_values,
                                        comparable_years, pair_differences, ranking_table,
                                        same_monthday, trajectory, verdict, yearly_comparison)
-from keiba.evaluate.generation import bootstrap_intervals, replicate_stats, resample_days
+from keiba.evaluate.generation import (bootstrap_intervals, bootstrap_replicates, replicate_model,
+                                       replicate_stats, resample_days, resample_horses)
 from keiba.features.speed_figure import apply_figures, fit_model
-from tests.fixtures.figure_runs import season_runs
+from tests.fixtures.figure_runs import season_runs, sparse_season_runs
 
 
 def fig_rows(year, cohort, figures, *, month=5, prefix="H"):
@@ -145,16 +146,89 @@ def test_resample_days_keeps_each_day_whole():
     assert out["day"].nunique() == runs["day"].nunique()   # 復元抽出の回数 = 日数（同じ日の写しは別名）
 
 
-def test_bootstrap_is_reproducible_and_brackets_point():
-    runs, fig = _season_fig()
+def test_bootstrap_is_reproducible():
+    runs, _ = _season_fig()
     kw = dict(as_of=date(2025, 10, 4), years=[2024, 2025], ages=[2, 3, 4, 5], curve_levels=None)
-    a = bootstrap_intervals(runs, n_boot=15, seed=11, **kw)
-    b = bootstrap_intervals(runs, n_boot=15, seed=11, **kw)
-    pd.testing.assert_frame_equal(a, b)
+    a = bootstrap_intervals(runs, n_boot=5, seed=11, **kw)
+    reps = bootstrap_replicates(runs, n_boot=5, seed=11, **kw)      # 同じ種なら同じ複製
     assert list(a.columns) == ["lo", "hi"]
-    point = replicate_stats(fig, **kw)["value|2025|4|median"]
-    lo, hi = a.loc["value|2025|4|median"]
-    assert lo - 0.5 <= point <= hi + 0.5
+    pd.testing.assert_series_equal(a["lo"], reps.quantile(0.025), check_names=False)
+    pd.testing.assert_series_equal(a["hi"], reps.quantile(0.975), check_names=False)
+
+
+# 区間の偏りの許容幅（指数の秒）。作り物の上位K頭・中央値のブートストラップの標準偏差は 0.08〜0.18。
+# 正しい手順（30 回）では複製の平均と点推定の差は 0.07 以内（種 11〜13・20261004 で 0.03〜0.07）、
+# 古い手順（日を抜いた走だけに指数を付ける）では 0.10〜0.27 下に偏る（10 回でも 12 キーすべて、
+# 区間が点推定を含まないキーも 18〜23 個）。その間で線を引く。複製の平均の標準誤差は 30 回で 0.015〜0.03 なので、
+# 0.08 は正しい手順を偶然で落とさない幅でもある。
+BIAS_TOL = 0.08
+
+
+def _old_style_replicates(runs, *, n_boot, seed, **kw):
+    """以前の手順: 日を抜いた走で推定し、その走だけに指数を付ける。選ばれなかった日の走が消えて最高値が下がる。"""
+    rng = np.random.default_rng(seed)
+    reps = []
+    for _ in range(n_boot):
+        rs = resample_days(runs, rng)
+        reps.append(replicate_stats(apply_figures(rs, fit_model(rs)), **kw))
+    return pd.DataFrame(reps)
+
+
+def _bias_check(point: dict, reps: pd.DataFrame) -> tuple[list[str], list[str]]:
+    """（区間が点推定を含まないキー、複製の平均が点推定から BIAS_TOL 以上ずれたキー）。"""
+    keys = [k for k in point if k.startswith(("value|", "yearly|", "did|")) and not np.isnan(point[k])]
+    lo, hi = reps.quantile(0.025), reps.quantile(0.975)
+    outside = [k for k in keys if not lo[k] <= point[k] <= hi[k]]
+    shifted = [k for k in keys if k.startswith("value|2025|") and abs(reps[k].mean() - point[k]) > BIAS_TOL]
+    return outside, shifted
+
+
+def test_bootstrap_centres_on_point_estimate():
+    """§5.5: 区間は点推定を含み、複製の平均は点推定からほとんどずれない（古い手順はこれを満たさない）。"""
+    runs = sparse_season_runs()
+    model = fit_model(runs)
+    kw = dict(as_of=date(2025, 10, 4), years=[2024, 2025], ages=[2, 3, 4, 5], curve_levels=None)
+    point = replicate_stats(apply_figures(runs, model), **kw)
+    reps = bootstrap_replicates(runs, n_boot=30, seed=11, model=model, **kw)
+    outside, shifted = _bias_check(point, reps)
+    assert outside == [] and shifted == []
+    # 許容幅が偏りを見分けられること: 以前の手順は同じ検査で引っかかる
+    old_outside, old_shifted = _bias_check(point, _old_style_replicates(runs, n_boot=10, seed=11, **kw))
+    assert len(old_shifted) >= 6 and len(old_outside) >= 6
+
+
+def test_replicate_model_keeps_point_values_for_missing_days():
+    """選ばれなかった日の馬場差と、複製に無いキーの基準は点推定の値を使う。写しの日は #番号を外して戻す。"""
+    runs = sparse_season_runs(years=(2025,))
+    point = fit_model(runs)
+    rs = resample_days(runs, np.random.default_rng(3))
+    rep = fit_model(rs)
+    merged = replicate_model(point, rep)
+    assert set(point.variants.index) <= set(merged.variants.index)
+    assert set(point.standards.index) <= set(merged.standards.index)
+    assert not merged.variants.index.get_level_values("day").str.contains("#").any()
+    drawn = set(rs["day"].str.split("#").str[0])
+    missing = [f for f in point.variants.index if f[0] not in drawn]
+    assert missing                                                   # 抜けた日がある
+    for face in missing:
+        assert merged.variants[face] == point.variants[face]
+    for face, v in rep.variants.items():
+        assert merged.variants[(face[0].split("#")[0], *face[1:])] == pytest.approx(v)
+    fig = apply_figures(runs, merged)
+    assert fig["has_variant"].all() and fig["figure"].notna().sum() == apply_figures(runs, point)["figure"].notna().sum()
+
+
+def test_resample_horses_moves_whole_horses_within_cohort():
+    runs = sparse_season_runs()
+    fig = apply_figures(runs, fit_model(runs))
+    out = resample_horses(fig, np.random.default_rng(5))
+    assert len(out.groupby("cohort")["ketto_num"].nunique()) == fig["cohort"].nunique()
+    for c, g in fig.groupby("cohort"):
+        assert out[out["cohort"] == c]["ketto_num"].nunique() == g["ketto_num"].nunique()  # 世代の頭数は変わらない
+    sizes = fig.groupby("ketto_num").size()
+    # 抽出された馬は元の1頭の全走をそのまま持つ（走の数で照合する）
+    for _, g in out.groupby("ketto_num"):
+        assert g["cohort"].nunique() == 1 and len(g) in set(sizes)
 
 
 # --- 見立ての照合を端から端まで（仕様 §9「年齢分を差し引いた差」「例年の差と比べた差」） ---

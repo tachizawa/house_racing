@@ -85,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
     point = replicate_stats(fig, as_of=as_of, years=years, ages=ages, curve_levels=levels)
     print(f"ブートストラップ {args.bootstrap} 回……", flush=True)
     ci = bootstrap_intervals(runs, as_of=as_of, years=years, ages=ages, curve_levels=levels,
-                             n_boot=args.bootstrap, seed=args.seed)
+                             n_boot=args.bootstrap, seed=args.seed, model=model)
     table = cohort_table(fig, as_of=as_of, ages=ages, years=years)
 
     out_dir.mkdir(parents=True, exist_ok=True)
