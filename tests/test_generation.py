@@ -11,6 +11,9 @@ import pytest
 from keiba.evaluate.generation import (HYPOTHESIS_PAIRS, cohort_table, cohort_values,
                                        comparable_years, pair_differences, ranking_table,
                                        same_monthday, trajectory, verdict, yearly_comparison)
+from keiba.evaluate.generation import bootstrap_intervals, replicate_stats, resample_days
+from keiba.features.speed_figure import apply_figures, fit_model
+from tests.fixtures.figure_runs import season_runs
 
 
 def fig_rows(year, cohort, figures, *, month=5, prefix="H"):
@@ -111,3 +114,40 @@ def test_verdict():
     assert verdict(-0.5, -0.1) == "見立てと逆"
     assert verdict(-0.1, 0.2) == "差があるとは言えない"
     assert verdict(float("nan"), 0.2) == "判定できない"
+
+
+def _season_fig():
+    runs = season_runs()
+    return runs, apply_figures(runs, fit_model(runs))
+
+
+def test_replicate_stats_keys():
+    _, fig = _season_fig()
+    stats = replicate_stats(fig, as_of=date(2025, 10, 4), years=[2024, 2025], ages=[2, 3, 4, 5],
+                            curve_levels={(3, 1): 0.0, (4, 1): 0.2, (5, 1): 0.1})
+    for key in ("value|2025|3|median", "yearly|2|median", "pair_raw|4-5|median",
+                "pair_adj|4-3|median", "traj|2021|3|median"):
+        assert key in stats
+    assert not any(k.startswith("pair_") and ("-2|" in k or "|2-" in k) for k in stats)
+
+
+def test_resample_days_keeps_each_day_whole():
+    runs, _ = _season_fig()
+    out = resample_days(runs, np.random.default_rng(0))
+    assert out["day"].str.split("#").str[0].isin(runs["day"]).all()
+    sizes = runs.groupby("day").size()
+    for label, g in out.groupby("day"):
+        assert len(g) == sizes[label.split("#")[0]]       # 選ばれた日は丸ごと入る
+    assert out["day"].nunique() == runs["day"].nunique()   # 復元抽出の回数 = 日数（同じ日の写しは別名）
+
+
+def test_bootstrap_is_reproducible_and_brackets_point():
+    runs, fig = _season_fig()
+    kw = dict(as_of=date(2025, 10, 4), years=[2024, 2025], ages=[2, 3, 4, 5], curve_levels=None)
+    a = bootstrap_intervals(runs, n_boot=15, seed=11, **kw)
+    b = bootstrap_intervals(runs, n_boot=15, seed=11, **kw)
+    pd.testing.assert_frame_equal(a, b)
+    assert list(a.columns) == ["lo", "hi"]
+    point = replicate_stats(fig, **kw)["value|2025|4|median"]
+    lo, hi = a.loc["value|2025|4|median"]
+    assert lo - 0.5 <= point <= hi + 0.5

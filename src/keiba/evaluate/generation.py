@@ -12,6 +12,9 @@ from datetime import date
 import numpy as np
 import pandas as pd
 
+from keiba.evaluate.age_curve import half_of
+from keiba.features.speed_figure import apply_figures, fit_model
+
 METRICS = ("top10", "top50", "median")
 TOP_K = {"top10": 10, "top50": 50}
 HYPOTHESIS_PAIRS = ((4, 5), (5, 3), (4, 3))   # 所有者の見立て 4歳 > 5歳 > 3歳。左が強いと見立てた側
@@ -126,3 +129,55 @@ def verdict(lo: float, hi: float) -> str:
     if hi < 0:
         return "見立てと逆"
     return "差があるとは言えない"
+
+
+def replicate_stats(fig: pd.DataFrame, *, as_of: date, years: list[int], ages: list[int],
+                    curve_levels: dict | None) -> dict[str, float]:
+    """1回の推定から出る統計を、ブートストラップで集めやすい「キー → 値」の形にする。"""
+    table = cohort_table(fig, as_of=as_of, ages=ages, years=years)
+    out: dict[str, float] = {}
+    for r in table.itertuples():
+        for m in METRICS:
+            out[f"value|{r.year}|{r.age}|{m}"] = float(getattr(r, m))
+    for r in yearly_comparison(table, year=as_of.year).itertuples():
+        out[f"yearly|{r.age}|{r.metric}"] = float(r.diff)
+    pairs = [p for p in HYPOTHESIS_PAIRS if set(p) <= set(ages)]
+    if pairs:
+        pdf = pair_differences(table, year=as_of.year, pairs=pairs, curve_levels=curve_levels,
+                               half=half_of(as_of))
+        for r in pdf.itertuples():
+            out[f"pair_raw|{r.pair}|{r.metric}"] = float(r.diff)
+            out[f"pair_adj|{r.pair}|{r.metric}"] = float(r.adjusted)
+    for r in trajectory(table, year=as_of.year).itertuples():
+        out[f"traj|{r.cohort}|{r.age}|{r.metric}"] = float(r.deviation)
+    return out
+
+
+def resample_days(runs: pd.DataFrame, rng: np.random.Generator) -> pd.DataFrame:
+    """開催日を復元抽出する（§5.5）。同じ日が2回選ばれたら別の日として扱う（day と race_id に #番号）。"""
+    groups = runs.groupby("day", sort=True).indices
+    days = np.array(sorted(groups))
+    pick = rng.choice(days, size=len(days), replace=True)
+    idx = np.concatenate([groups[d] for d in pick])
+    copy_no = np.repeat(np.arange(len(pick)), [len(groups[d]) for d in pick])
+    out = runs.iloc[idx].reset_index(drop=True)
+    tag = pd.Series(copy_no).astype(str).radd("#")
+    out["day"] = out["day"].astype(str) + tag
+    out["race_id"] = out["race_id"].astype(str) + tag
+    return out
+
+
+def bootstrap_intervals(runs: pd.DataFrame, *, as_of: date, years: list[int], ages: list[int],
+                        curve_levels: dict | None, n_boot: int, seed: int) -> pd.DataFrame:
+    """開催日単位のクラスタ・ブートストラップで 95% 区間（§5.5）。物差しの推定からやり直す。
+
+    年齢分を差し引いた差では curve_levels を固定する（曲線の誤差は区間に入らない）。
+    """
+    rng = np.random.default_rng(seed)
+    reps = []
+    for _ in range(n_boot):
+        rs = resample_days(runs, rng)
+        fig = apply_figures(rs, fit_model(rs))
+        reps.append(replicate_stats(fig, as_of=as_of, years=years, ages=ages, curve_levels=curve_levels))
+    df = pd.DataFrame(reps)
+    return pd.DataFrame({"lo": df.quantile(0.025), "hi": df.quantile(0.975)})
