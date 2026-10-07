@@ -116,3 +116,13 @@ def test_example_heading_names_race_and_explains_older_horses():
     assert "## 例: 2025100405040211（毎日王冠）" in text
     assert "その年齢の例年比（同じ年齢の過去平均との差）" in text
     assert "5歳より上" in text
+
+
+def test_curve_plateau_with_gap_is_listed_not_called_flat():
+    curve = pd.DataFrame([
+        dict(age=a, half=h, label=f"{a}歳{'前半' if h == 0 else '後半'}", delta=0.0, n=500, delta_lo=0.0,
+             delta_hi=0.0, level=lv, level_lo=lo, level_hi=hi)
+        for a, h, lv, lo, hi in [(3, 1, 0.0, 0.0, 0.0), (4, 0, 0.12, 0.08, 0.17), (4, 1, 0.0, -0.07, 0.05),
+                                 (5, 0, 0.05, -0.02, 0.11)]], columns=CURVE_COLUMNS)
+    text = render(_inputs(curves={"全体": curve, "芝": curve.iloc[:0], "ダート": curve.iloc[:0]}))
+    assert "4歳前半・5歳前半が同程度" in text and "ほぼ横ばい" not in text

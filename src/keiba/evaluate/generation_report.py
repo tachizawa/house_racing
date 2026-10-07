@@ -189,9 +189,9 @@ def _peak_text(s: dict) -> str:
     plateau = s["plateau"]
     if len(plateau) <= 1:
         return f"{s['peak']}（水準 {_num(s['peak_level'])}）"
-    span = f"{plateau[0]}〜{plateau[-1]}" if _contiguous(plateau) else "・".join(plateau)
-    return (f"{span}でほぼ横ばい（水準の95%区間が最大の期間と重なる）、"
-            f"最大は {s['peak']} {_num(s['peak_level'])}")
+    # 続いていれば「A〜Bでほぼ横ばい」。間に区間の重ならない期間を挟むなら横ばいとは言えないので並べるだけ
+    span = f"{plateau[0]}〜{plateau[-1]}でほぼ横ばい" if _contiguous(plateau) else f"{'・'.join(plateau)}が同程度"
+    return f"{span}（水準の95%区間が最大の期間と重なる）、最大は {s['peak']} {_num(s['peak_level'])}"
 
 
 def _contiguous(labels: list[str]) -> bool:
