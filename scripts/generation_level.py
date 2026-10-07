@@ -54,6 +54,18 @@ def _examples(store: DataStore, race_ids: list[str]) -> dict[str, list[ExampleHo
     return out
 
 
+def _race_names(store: DataStore, race_ids: list[str]) -> dict[str, str]:
+    """例の見出しに付けるレース名。データ区分は問わず、作成日が最も新しい行の名前（空なら付けない）。"""
+    out = {}
+    for race_id in race_ids:
+        rows = store.races[store.races["race_id"] == race_id].sort_values("make_date")
+        if len(rows):
+            name = rows["race_name"].iloc[-1]
+            if isinstance(name, str) and name.strip():
+                out[race_id] = name.strip()
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--as-of", required=True, help="時点 YYYYMMDD（その日の 0:00 より前のレースだけ使う）")
@@ -64,6 +76,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=20261004)
     parser.add_argument("--example-race", action="append", default=[], help="例として載せるレース（繰り返し可）")
     args = parser.parse_args(argv)
+    if args.bootstrap < 1:
+        parser.error("--bootstrap は 1 以上にしてください（区間を作る複製の回数）")
 
     as_of = datetime.strptime(args.as_of, "%Y%m%d").date()
     as_of_dt = datetime(as_of.year, as_of.month, as_of.day, tzinfo=JST)
@@ -76,7 +90,8 @@ def main(argv: list[str] | None = None) -> int:
     runs = prepare_runs(store.races, store.race_horses, as_of=as_of_dt)
     model = fit_model(runs)
     fig = apply_figures(runs, model)
-    years = comparable_years(coverage_start(manifest, runs), as_of.year)
+    start = coverage_start(manifest, runs)
+    years = comparable_years(start, as_of.year)
     print(f"対象の走 {len(runs):,} 件、古馬戦 {model.n_races:,} レース、比べる年 {years}", flush=True)
 
     curves = {name: age_curve(fig, years=years, before=as_of, surface=sf, n_boot=args.bootstrap, seed=args.seed)
@@ -92,7 +107,8 @@ def main(argv: list[str] | None = None) -> int:
     report = render(ReportInputs(as_of=as_of, version_id=store.version_id, years=years, ages=ages, model=model,
                                  fig=fig, table=table, point=point, ci=ci, curves=curves,
                                  repeat=repeatability(fig), n_boot=args.bootstrap, seed=args.seed,
-                                 examples=_examples(store, args.example_race)))
+                                 examples=_examples(store, args.example_race),
+                                 example_names=_race_names(store, args.example_race)))
     (out_dir / "report.md").write_text(report, encoding="utf-8")
 
     cohorts = table.copy()
@@ -105,7 +121,8 @@ def main(argv: list[str] | None = None) -> int:
     fig[["race_id", "umaban", "ketto_num", "cohort", "barei", "figure", "jyo_cd", "track_cd", "kyori_m",
          "day", "track_kind", "has_standard", "has_variant"]].to_csv(out_dir / "figures.csv", index=False)
     (out_dir / "manifest.json").write_text(json.dumps({
-        "data_version": store.version_id, "as_of": as_of.isoformat(), "years": years, "ages": ages,
+        "data_version": store.version_id, "data_dir": str(args.data_dir), "coverage_start": start.isoformat(),
+        "as_of": as_of.isoformat(), "years": years, "ages": ages,
         "bootstrap": args.bootstrap, "seed": args.seed, "sigma2": model.sigma2, "tau2": model.tau2,
         "n_races": model.n_races, "examples": args.example_race,
         "created_at": datetime.now(JST).isoformat(timespec="seconds"),
