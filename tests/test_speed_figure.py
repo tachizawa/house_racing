@@ -167,3 +167,9 @@ def test_repeatability_pairs_consecutive_runs_within_gap():
     r, n = repeatability(fig, max_gap_days=120)
     assert n == 4                       # 2月→12月は 120 日を超えるので数えない
     assert r == pytest.approx(1.0)
+
+
+def test_fit_raises_without_reference_class_for_a_surface():
+    dirt = pd.DataFrame([run_row(race_id="D", track_kind="dirt", track_cd="23", class_level=3.0)])
+    with pytest.raises(ValueError, match="dirt"):
+        fit_model(pd.concat([older_runs(), dirt], ignore_index=True))

@@ -108,6 +108,11 @@ def fit_model(runs: pd.DataFrame, *, max_iter: int = 500, tol: float = 1e-10) ->
     w = _older_winners(runs)
     if w.empty:
         raise ValueError("古馬戦の1着が1件もありません。基準タイムを推定できません")
+    has_ref = w[w["class_level"] == REFERENCE_CLASS]["track_kind"].unique()
+    missing = sorted(set(w["track_kind"]) - set(has_ref))
+    if missing:
+        raise ValueError(f"1勝クラスの古馬戦が無い馬場があります（{', '.join(missing)}）。"
+                         "クラス差の基準を決められません")
     gk = w.groupby(KEY, sort=True)
     gc = w.groupby(["class_level", "track_kind"], sort=True)
     gf = w.groupby(FACE, sort=True)
@@ -130,7 +135,7 @@ def fit_model(runs: pd.DataFrame, *, max_iter: int = 500, tol: float = 1e-10) ->
         # 芝ダごとに基準クラス（1勝）の c を 0 にし、その分を s に移す（当てはまりは変わらない）
         for kind in np.unique(class_kind):
             ref_mask = (class_kind == kind) & (class_lv == REFERENCE_CLASS)
-            ref = float(c[ref_mask][0]) if ref_mask.any() else 0.0
+            ref = float(c[ref_mask][0])
             c[class_kind == kind] -= ref
             s[key_kind == kind] += ref
         v, sigma2, tau2 = _shrunk_face_effects(y - s[kc] - c[cc], fc, nf)
