@@ -96,6 +96,31 @@ def trajectory(table: pd.DataFrame, *, year: int) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["cohort", "age_now", "age", "year", "metric", "value", "deviation"])
 
 
+def trajectory_correlations(table: pd.DataFrame, *, metric: str = "top10",
+                            min_cohorts: int = 3) -> pd.DataFrame:
+    """仮説②の数字（§5.4）: 隣り合う年齢 (a, a+1) の例年比の、世代をまたいだ相関係数と世代の数。
+
+    例年比は trajectory と同じく「その年齢の他の年の平均との差」。表にある全世代（今いる世代に限らない）で、
+    a 歳時と a+1 歳時の両方に値がある世代だけを使う。世代が min_cohorts 未満なら相関は欠損。
+    世代は数個しかないので、記述のためだけの数字（証拠にはならない）。
+    """
+    dev = {}
+    for r in table.itertuples():
+        others = table[(table["age"] == r.age) & (table["year"] != r.year)][metric]
+        dev[(int(r.cohort), int(r.age))] = float(getattr(r, metric)) - float(others.mean())
+    rows = []
+    ages = sorted(int(a) for a in table["age"].unique())
+    for a in ages:
+        if a + 1 not in ages:
+            continue
+        pairs = [(dev[(g, a)], dev[(g, a + 1)]) for g in sorted({g for g, _ in dev})
+                 if (g, a) in dev and (g, a + 1) in dev
+                 and not np.isnan(dev[(g, a)]) and not np.isnan(dev[(g, a + 1)])]
+        corr = float(np.corrcoef(np.array(pairs).T)[0, 1]) if len(pairs) >= min_cohorts else float("nan")
+        rows.append({"age_from": a, "age_to": a + 1, "n_cohorts": len(pairs), "corr": corr})
+    return pd.DataFrame(rows, columns=["age_from", "age_to", "n_cohorts", "corr"])
+
+
 def ranking_table(table: pd.DataFrame, *, metric: str) -> pd.DataFrame:
     """年 × 年齢（3歳以上）の数値。今年の並びが例年と違うかを見る（§5.3）。"""
     t = table[table["age"] >= MIN_RANKING_AGE]

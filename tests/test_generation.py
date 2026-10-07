@@ -10,7 +10,8 @@ import pytest
 
 from keiba.evaluate.generation import (HYPOTHESIS_PAIRS, cohort_table, cohort_values,
                                        comparable_years, pair_differences, ranking_table,
-                                       same_monthday, trajectory, verdict, yearly_comparison)
+                                       same_monthday, trajectory, trajectory_correlations, verdict,
+                                       yearly_comparison)
 from keiba.evaluate.generation import (bootstrap_intervals, bootstrap_replicates, replicate_model,
                                        replicate_stats, resample_days, resample_horses)
 from keiba.features.speed_figure import apply_figures, fit_model
@@ -86,6 +87,23 @@ def test_trajectory_lines_up_each_cohort_by_age():
     cell = tr[(tr.cohort == 2021) & (tr.age == 3) & (tr.metric == "top10")].iloc[0]
     assert cell.year == 2024
     assert cell.deviation == pytest.approx(1.0 - np.mean([0.0, -1.5]))   # 2024年の3歳 − 他の年の3歳
+
+
+def test_trajectory_correlations_across_cohorts():
+    """§5.4: 隣り合う年齢の例年比の、世代をまたいだ相関。世代の地の差がそのまま残る作り物では 1。"""
+    effect = {2016: 0.3, 2017: -0.2, 2018: 0.5, 2019: 0.0, 2020: -0.4, 2021: 0.1}
+    rows = []
+    for year in range(2019, 2024):
+        for age in (2, 3):
+            e = effect[year - age]
+            rows.append(dict(year=year, age=age, cohort=year - age, n=100,
+                             top10=age + e, top50=age + e, median=age + e))
+    tc = trajectory_correlations(pd.DataFrame(rows), metric="top10").set_index(["age_from", "age_to"])
+    row = tc.loc[(2, 3)]
+    assert row.n_cohorts == 4                              # 2017〜2020年生まれ（2歳時と3歳時が両方ある）
+    assert row["corr"] == pytest.approx(1.0)
+    short = trajectory_correlations(_table(), metric="top10").set_index(["age_from", "age_to"])
+    assert short.loc[(2, 3)].n_cohorts == 2 and np.isnan(short.loc[(2, 3)]["corr"])   # 3世代未満は出さない
 
 
 def test_ranking_table_excludes_two_year_olds():
