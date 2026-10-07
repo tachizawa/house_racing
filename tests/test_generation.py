@@ -105,6 +105,10 @@ def test_pair_differences_age_adjustment():
     assert row["diff"] == pytest.approx(0.0 - (-1.5))
     assert row.age_gap == pytest.approx(1.0)
     assert row.adjusted == pytest.approx(1.5 - 1.0)
+    assert row.past_diff == pytest.approx(1.0)          # 2023: 1 − 0、2024: 2 − 1
+    assert row.did == pytest.approx(1.5 - 1.0)           # 今年の 3歳だけ 0.5 弱い分
+    yc = yearly_comparison(_table(), year=2025).set_index(["age", "metric"])["diff"]
+    assert row.did == pytest.approx(yc[(4, "top10")] - yc[(3, "top10")])
     assert np.isnan(pair_differences(_table(), year=2025, pairs=[(4, 5)], curve_levels=None,
                                      half=1).iloc[0].adjusted)
 
@@ -126,7 +130,7 @@ def test_replicate_stats_keys():
     stats = replicate_stats(fig, as_of=date(2025, 10, 4), years=[2024, 2025], ages=[2, 3, 4, 5],
                             curve_levels={(3, 1): 0.0, (4, 1): 0.2, (5, 1): 0.1})
     for key in ("value|2025|3|median", "yearly|2|median", "pair_raw|4-5|median",
-                "pair_adj|4-3|median", "traj|2021|3|median"):
+                "pair_adj|4-3|median", "pair_past|4-3|median", "did|4-3|median", "traj|2021|3|median"):
         assert key in stats
     assert not any(k.startswith("pair_") and ("-2|" in k or "|2-" in k) for k in stats)
 
@@ -151,3 +155,60 @@ def test_bootstrap_is_reproducible_and_brackets_point():
     point = replicate_stats(fig, **kw)["value|2025|4|median"]
     lo, hi = a.loc["value|2025|4|median"]
     assert lo - 0.5 <= point <= hi + 0.5
+
+
+# --- 見立ての照合を端から端まで（仕様 §9「年齢分を差し引いた差」「例年の差と比べた差」） ---
+
+# 真の年齢曲線（3歳後半 = 0）。test_age_curve と同じ形
+TRUE_CURVE = {(2, 1): -2.0, (3, 0): -1.0, (3, 1): 0.0, (4, 0): 0.3, (4, 1): 0.4, (5, 0): 0.3, (5, 1): 0.1}
+E2E_YEARS = list(range(2018, 2026))
+E2E_AS_OF = date(2025, 10, 4)
+
+
+def stable_population_fig(*, n: int = 200) -> pd.DataFrame:
+    """毎年まったく同じ構造の世代を並べた作り物（世代の強弱は無い）。
+
+    馬の指数 = 地力 + 年齢の水準。弱い馬ほど早く引退する（下位 50% は 3歳後半で、下位 70% は 4歳後半で）。
+    年齢曲線は同じ馬の変化から正しく取れるが、4・5歳は強い馬だけが残った集団なので、
+    3歳と並べると「年齢分を差し引いても」古馬が強く見える。毎年同じなので、例年の差と比べれば 0 になるはず。
+    """
+    abilities = np.linspace(-2.0, 2.0, n)
+    rows = []
+    for cohort in range(min(E2E_YEARS) - 5, max(E2E_YEARS) - 1):
+        for i, ab in enumerate(abilities):
+            for (age, half), lvl in TRUE_CURVE.items():
+                if (age, half) >= (4, 0) and i < 0.5 * n:
+                    break
+                if (age, half) >= (5, 0) and i < 0.7 * n:
+                    break
+                year = cohort + age
+                if year not in E2E_YEARS:
+                    continue
+                for month in ((3, 5) if half == 0 else (8, 9)):
+                    rows.append(dict(ketto_num=f"H{cohort}-{i}", year=year, cohort=cohort,
+                                     date=pd.Timestamp(year, month, 1), barei=age, track_kind="turf",
+                                     figure=float(ab + lvl)))
+    return pd.DataFrame(rows)
+
+
+def test_pair_difference_against_usual_gap_removes_survivorship():
+    """年齢分を差し引いても生き残りの偏りは残る。例年の差と比べた差（did）なら 0 になり、判定も差なしになる。"""
+    from keiba.evaluate.age_curve import age_curve, curve_levels, half_of
+
+    fig = stable_population_fig()
+    curve = age_curve(fig, years=E2E_YEARS, before=E2E_AS_OF, n_boot=5, seed=1)
+    levels = curve_levels(curve)
+    for period, lvl in TRUE_CURVE.items():
+        if period != (2, 1):
+            assert levels[period] == pytest.approx(lvl, abs=1e-9)     # 曲線そのものは正しく取れている
+    table = cohort_table(fig, as_of=E2E_AS_OF, ages=[2, 3, 4, 5], years=E2E_YEARS)
+    pdf = pair_differences(table, year=2025, pairs=HYPOTHESIS_PAIRS, curve_levels=levels,
+                           half=half_of(E2E_AS_OF)).set_index(["pair", "metric"])
+    assert abs(pdf.loc[("4-3", "median"), "adjusted"]) > 0.5           # 年齢分を引いても 0 にならない
+    assert abs(pdf.loc[("5-3", "median"), "adjusted"]) > 0.5
+    for pair in ("4-5", "5-3", "4-3"):
+        for m in ("top10", "top50", "median"):
+            assert pdf.loc[(pair, m), "did"] == pytest.approx(0.0, abs=1e-9)
+    stats = replicate_stats(fig, as_of=E2E_AS_OF, years=E2E_YEARS, ages=[2, 3, 4, 5], curve_levels=levels)
+    assert stats["did|4-3|median"] == pytest.approx(0.0, abs=1e-9)
+    assert verdict(-0.1 + stats["did|4-3|median"], 0.1 + stats["did|4-3|median"]) == "差があるとは言えない"

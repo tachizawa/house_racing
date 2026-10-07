@@ -20,6 +20,7 @@ TOP_K = {"top10": 10, "top50": 50}
 HYPOTHESIS_PAIRS = ((4, 5), (5, 3), (4, 3))   # 所有者の見立て 4歳 > 5歳 > 3歳。左が強いと見立てた側
 MIN_RANKING_AGE = 3
 TABLE_COLUMNS = ["year", "age", "cohort", "n", *METRICS]
+PAIR_COLUMNS = ["pair", "stronger", "weaker", "metric", "diff", "age_gap", "adjusted", "past_diff", "did"]
 
 
 def same_monthday(as_of: date, year: int) -> date:
@@ -102,11 +103,21 @@ def ranking_table(table: pd.DataFrame, *, metric: str) -> pd.DataFrame:
 
 def pair_differences(table: pd.DataFrame, *, year: int, pairs, curve_levels: dict | None,
                      half: int) -> pd.DataFrame:
-    """見立ての照合（§5.3）。そのままの差と、年齢曲線で年齢分を差し引いた差。"""
+    """見立ての照合（§5.3）。組ごとに4通りの差を出す。判定に使うのは did だけ。
+
+    - diff: 今年のそのままの差
+    - adjusted: 年齢曲線で年齢分を差し引いた差。同じ馬の加齢しか除かない。4・5歳は弱い馬が引退した後の
+      集団で、3歳は未勝利馬まで含む集団なので、生き残り・顔ぶれの差と3歳の斤量の減量、年の途中の時期の
+      ずれ（3歳の最高値は3歳前半に出やすい）が残る。毎年ほぼ同じ形で残るので参考にとどめる
+    - past_diff: 過去の比べてよい年の同じ月日での、同じ組の差の平均（例年の差）
+    - did: 今年の差 − 例年の差。年ごとに変わらない偏り（上の残りもの）を丸ごと除くので、
+      「今年の世代の並びが例年と違うか」に直接答える。yearly[a] − yearly[b] と同じ値
+    """
     for a, b in pairs:
         if min(a, b) < MIN_RANKING_AGE:
             raise ValueError("2歳は今いる世代の並びに入れません（仕様 §5.3）")
     now = table[table["year"] == year].set_index("age")
+    past_mean = table[table["year"] != year].groupby("age")[list(METRICS)].mean()
     rows = []
     for a, b in pairs:
         if curve_levels is None:
@@ -115,9 +126,14 @@ def pair_differences(table: pd.DataFrame, *, year: int, pairs, curve_levels: dic
             gap = curve_levels.get((a, half), float("nan")) - curve_levels.get((b, half), float("nan"))
         for m in METRICS:
             diff = float(now.at[a, m]) - float(now.at[b, m])
+            pa = float(past_mean.at[a, m]) if a in past_mean.index else float("nan")
+            pb = float(past_mean.at[b, m]) if b in past_mean.index else float("nan")
+            # (今年 a − 過去 a) − (今年 b − 過去 b)。過去の平均は年齢ごとに欠損を除いて取る（yearly と同じ）
+            did = (float(now.at[a, m]) - pa) - (float(now.at[b, m]) - pb)
             rows.append({"pair": f"{a}-{b}", "stronger": a, "weaker": b, "metric": m,
-                         "diff": diff, "age_gap": gap, "adjusted": diff - gap})
-    return pd.DataFrame(rows, columns=["pair", "stronger", "weaker", "metric", "diff", "age_gap", "adjusted"])
+                         "diff": diff, "age_gap": gap, "adjusted": diff - gap,
+                         "past_diff": pa - pb, "did": did})
+    return pd.DataFrame(rows, columns=PAIR_COLUMNS)
 
 
 def verdict(lo: float, hi: float) -> str:
@@ -148,6 +164,8 @@ def replicate_stats(fig: pd.DataFrame, *, as_of: date, years: list[int], ages: l
         for r in pdf.itertuples():
             out[f"pair_raw|{r.pair}|{r.metric}"] = float(r.diff)
             out[f"pair_adj|{r.pair}|{r.metric}"] = float(r.adjusted)
+            out[f"pair_past|{r.pair}|{r.metric}"] = float(r.past_diff)
+            out[f"did|{r.pair}|{r.metric}"] = float(r.did)
     for r in trajectory(table, year=as_of.year).itertuples():
         out[f"traj|{r.cohort}|{r.age}|{r.metric}"] = float(r.deviation)
     return out
