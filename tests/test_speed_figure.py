@@ -8,10 +8,13 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import numpy as np
 import pandas as pd
 import pytest
 
-from keiba.features.speed_figure import RUN_COLUMNS, prepare_runs
+from keiba.features.speed_figure import (RUN_COLUMNS, apply_figures, fit_model, prepare_runs,
+                                         repeatability)
+from tests.fixtures.figure_runs import C_TRUE, V_TRUE, older_runs, run_row, young_runs
 
 JST = timezone(timedelta(hours=9))
 
@@ -85,3 +88,82 @@ def test_prepare_runs_requires_timezone():
     races, horses = frames([race_row(OK)], [horse_row(OK)])
     with pytest.raises(ValueError):
         prepare_runs(races, horses, as_of=datetime(2025, 2, 1))
+
+
+def test_fit_recovers_track_variants():
+    model = fit_model(older_runs())
+    est = model.variants.xs(("05", "turf"), level=("jyo_cd", "track_kind")).to_numpy()
+    truth = np.array(V_TRUE)
+    # 基準と馬場差は全体の定数を取り合うので、平均を引いた形で比べる
+    assert np.allclose(est - est.mean(), truth - truth.mean(), atol=1e-6)
+    assert model.n_races == 24
+
+
+def test_fit_recovers_class_effects_and_standards():
+    model = fit_model(older_runs())
+    assert model.class_effects[(2.0, "turf")] == pytest.approx(0.0, abs=1e-9)
+    assert model.class_effects[(3.0, "turf")] == pytest.approx(C_TRUE[3], abs=1e-6)
+    s = model.standards
+    assert s[("05", "24", 2000)] - s[("05", "24", 1600)] == pytest.approx(1.0, abs=1e-6)
+
+
+def test_slow_two_year_olds_are_not_absorbed_into_variant():
+    """§3.4 の核心。2歳戦が一律に遅くても馬場差は動かず、2歳の指数が下がる。"""
+    base = fit_model(older_runs())
+    runs = pd.concat([older_runs(), young_runs(slow=0.5)], ignore_index=True)
+    model = fit_model(runs)
+    pd.testing.assert_series_equal(model.variants, base.variants)
+    fig = apply_figures(runs, model)
+    young = fig[fig.syubetu_cd == "11"]
+    assert np.allclose(young.figure, -0.5 * 1.6, atol=1e-6)
+    older_cls3 = fig[(fig.syubetu_cd == "13") & (fig.class_level == 3.0)]
+    assert np.allclose(older_cls3.figure, 0.5 * 1.6, atol=1e-6)   # 上のクラスほど速い
+
+
+def test_non_winners_do_not_enter_the_fit():
+    base = fit_model(older_runs())
+    extra = pd.DataFrame([run_row(race_id="20250101-1600-2", umaban="02", rank=2.0, time_sec=200.0)])
+    model = fit_model(pd.concat([older_runs(), extra], ignore_index=True))
+    pd.testing.assert_series_equal(model.variants, base.variants)
+
+
+def test_dead_heat_winner_counted_once():
+    heat = pd.DataFrame([run_row(race_id="20250101-1600-2", umaban="09", ketto_num="H9",
+                                 time_sec=older_runs().iloc[0].time_sec)])
+    model = fit_model(pd.concat([older_runs(), heat], ignore_index=True))
+    assert model.n_races == 24
+
+
+def test_run_on_key_without_older_races_has_no_figure():
+    odd = pd.DataFrame([run_row(race_id="X", kyori_m=1200, syubetu_cd="11", time_sec=72.0)])
+    runs = pd.concat([older_runs(), odd], ignore_index=True)
+    fig = apply_figures(runs, fit_model(runs))
+    row = fig[fig.race_id == "X"].iloc[0]
+    assert not row.has_standard and np.isnan(row.figure)
+
+
+def test_run_on_day_without_older_races_uses_zero_variant():
+    z = pd.DataFrame([run_row(race_id="Z", day="20250301", date=pd.Timestamp("2025-03-01"),
+                              syubetu_cd="11", time_sec=60.0 * 1.6)])
+    runs = pd.concat([older_runs(), z], ignore_index=True)
+    model = fit_model(runs)
+    row = apply_figures(runs, model).set_index("race_id").loc["Z"]
+    assert not row.has_variant
+    assert row.figure == pytest.approx((model.standards[("05", "24", 1600)] - 60.0) * 1.6)
+
+
+def test_fit_without_older_races_raises():
+    with pytest.raises(ValueError):
+        fit_model(young_runs(slow=0.0))
+
+
+def test_repeatability_pairs_consecutive_runs_within_gap():
+    rows = []
+    for h, base in enumerate([-1.0, 0.0, 1.0, 2.0]):
+        for k, d in enumerate(["2025-01-01", "2025-02-01", "2025-12-01"]):
+            rows.append(run_row(race_id=f"{h}{k}", ketto_num=f"H{h}", date=pd.Timestamp(d)))
+    fig = pd.DataFrame(rows)
+    fig["figure"] = [b + 0.01 * k for b in [-1.0, 0.0, 1.0, 2.0] for k in range(3)]
+    r, n = repeatability(fig, max_gap_days=120)
+    assert n == 4                       # 2月→12月は 120 日を超えるので数えない
+    assert r == pytest.approx(1.0)
