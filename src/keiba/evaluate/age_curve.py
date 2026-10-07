@@ -15,6 +15,7 @@ import pandas as pd
 ANCHOR = (3, 1)        # 3歳後半 = 0
 MIN_RUNS = 2           # 期間の値を作るのに要る走の数
 TOP_RUNS = 2           # 期間の値 = 上位2走の平均（最高値1つだと走った回数が多い期間ほど高く出る）
+MIN_PEAK_N = 30        # 全盛期・1年後の落ち幅に使う期間の最低頭数（これ未満はレポートで「頭数少」）
 CURVE_COLUMNS = ["age", "half", "label", "delta", "n", "delta_lo", "delta_hi",
                  "level", "level_lo", "level_hi"]
 
@@ -136,12 +137,23 @@ def curve_levels(curve: pd.DataFrame) -> dict[tuple[int, int], float]:
     return {(int(r.age), int(r.half)): float(r.level) for r in curve.itertuples()}
 
 
-def peak_summary(curve: pd.DataFrame) -> dict:
-    """全盛期（水準が最大の期間）と、その1年後（2期間後）までの落ち幅（正 = 落ちた）。"""
+def peak_summary(curve: pd.DataFrame, *, min_n: int = MIN_PEAK_N) -> dict:
+    """全盛期と、その1年後（2期間後）までの落ち幅（正 = 落ちた）。
+
+    - 候補は頭数 min_n 以上の期間だけ。高齢の数頭の期間は水準の区間が広く、偶然の高さを拾うため
+    - 実データの曲線は 3歳後半〜5歳前半でほぼ平らで、最大の期間を1つ挙げると精度を装うことになる。
+      水準の95%区間が最大の期間の区間と重なる期間（頭数 min_n 以上）を「横ばい」(plateau) として返す
+    - 1年後の落ち幅は、その期間の頭数も min_n 以上のときだけ出す
+    """
+    empty = {"peak": None, "peak_level": float("nan"), "drop_1y": float("nan"), "plateau": []}
     c = curve.dropna(subset=["level"])
+    c = c[c["n"].astype(int) >= min_n]
     if c.empty:
-        return {"peak": None, "peak_level": float("nan"), "drop_1y": float("nan")}
+        return empty
     top = c.loc[c["level"].astype(float).idxmax()]
-    later = curve[(curve["age"] * 2 + curve["half"]) == _ordinal(int(top.age), int(top.half)) + 2]
+    overlap = (c["level_lo"] <= top.level_hi) & (c["level_hi"] >= top.level_lo)
+    overlap |= c.index == top.name                     # 区間が欠損でも最大の期間そのものは入れる
+    plateau = c[overlap].assign(_o=lambda d: d["age"] * 2 + d["half"]).sort_values("_o")["label"].tolist()
+    later = c[(c["age"] * 2 + c["half"]) == _ordinal(int(top.age), int(top.half)) + 2]
     drop = float(top.level - later["level"].iloc[0]) if len(later) else float("nan")
-    return {"peak": top.label, "peak_level": float(top.level), "drop_1y": drop}
+    return {"peak": top.label, "peak_level": float(top.level), "drop_1y": drop, "plateau": plateau}

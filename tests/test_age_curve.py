@@ -110,3 +110,34 @@ def test_age_curve_empty_when_no_changes():
     curve = age_curve(one, years=YEARS, before=date(2026, 1, 1), n_boot=5, seed=1)
     assert curve.empty and list(curve.columns) == CURVE_COLUMNS
     assert peak_summary(curve)["peak"] is None
+
+
+def _curve(spec) -> pd.DataFrame:
+    """(age, half, level, level_lo, level_hi, n) の並びから曲線の表を作る。"""
+    return pd.DataFrame([dict(age=a, half=h, label=period_label(a, h), delta=np.nan, n=n, delta_lo=np.nan,
+                              delta_hi=np.nan, level=lv, level_lo=lo, level_hi=hi)
+                         for a, h, lv, lo, hi, n in spec], columns=CURVE_COLUMNS)
+
+
+FLAT_TOP = [(3, 1, 0.00, 0.00, 0.00, 6000), (4, 0, 0.09, 0.06, 0.11, 4000), (4, 1, 0.03, 0.00, 0.07, 3500),
+            (5, 0, 0.05, 0.01, 0.09, 2900), (5, 1, -0.09, -0.13, -0.03, 2200), (6, 0, -0.12, -0.18, -0.06, 1400)]
+
+
+def test_peak_ignores_periods_with_few_horses():
+    """頭数 30 未満の期間は全盛期の候補にしない（11歳で2頭だけ速かった、などを拾わない）。"""
+    s = peak_summary(_curve(FLAT_TOP + [(11, 1, 0.50, 0.10, 0.90, 2)]))
+    assert s["peak"] == "4歳前半" and s["peak_level"] == pytest.approx(0.09)
+
+
+def test_peak_reports_plateau_of_overlapping_periods():
+    """水準の区間が全盛期の区間と重なる期間（頭数 30 以上）は横ばいとして並べる。"""
+    s = peak_summary(_curve(FLAT_TOP))
+    assert s["plateau"] == ["4歳前半", "4歳後半", "5歳前半"]
+    assert s["drop_1y"] == pytest.approx(0.09 - 0.05)
+
+
+def test_one_year_drop_needs_enough_horses_later():
+    spec = [r if (r[0], r[1]) != (5, 0) else (5, 0, 0.05, 0.01, 0.09, 12) for r in FLAT_TOP]
+    s = peak_summary(_curve(spec))
+    assert np.isnan(s["drop_1y"])
+    assert "5歳前半" not in s["plateau"]
