@@ -33,6 +33,27 @@ def test_valid_race_mask_excludes_dead_heat_and_missing_odds():
     assert set(d[m].race_id) == {"R0000"}
 
 
+def test_exclusion_reasons_per_race():
+    """除く理由をレースごとに分けて数える（重なりあり）。valid_race_mask と同じ判定。"""
+    from keiba.factors.order_model import exclusion_reasons
+
+    d = synth(n_races=5)
+    d.loc[(d.race_id == "R0001") & (d.jyuni == 3), "jyuni"] = 2.0       # 2着同着 → 3着がいない
+    d.loc[(d.race_id == "R0002") & (d.umaban == "01"), "odds"] = 0.0
+    d.loc[d.race_id == "R0003", "field"] = 3
+    d.loc[(d.race_id == "R0004") & (d.jyuni == 2), "jyuni"] = 1.0       # 同着かつオッズ欠け
+    d.loc[(d.race_id == "R0004") & (d.umaban == "02"), "odds"] = np.nan
+    t = exclusion_reasons(d)
+    assert t.loc["R0000"].tolist() == [False, False, False]
+    assert t.loc["R0001"].tolist() == [True, False, False]
+    assert t.loc["R0002"].tolist() == [False, True, False]
+    assert t.loc["R0003"].tolist() == [False, False, True]
+    assert t.loc["R0004"].tolist() == [True, True, False]
+    assert list(t.columns) == ["dead_heat", "bad_odds", "small_field"]
+    ok = set(d[valid_race_mask(d)].race_id)
+    assert ok == set(t.index[~t.any(axis=1)])
+
+
 def test_fit_recovers_stage1_weight():
     d = synth()
     w = fit_stages(d, ["x"])

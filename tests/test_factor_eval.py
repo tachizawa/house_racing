@@ -86,7 +86,8 @@ def test_by_year_has_disagreement_columns_matching_pooled():
 def test_by_year_disagreement_nan_when_empty():
     pr = pd.DataFrame({"year": [2017], "delta:f": [0.0], "solo:f": [0.0], "comb:f": [0.0], "mkt_odds_hits": [0.0],
                        "mkt_model_hits": [0.0], "fo_n:f": [0.0], "fo_hit:f": [0.0], "fo_e3:f": [0.0],
-                       "mo_n:f": [0.0], "mo_hit:f": [0.0], "mo_e3:f": [0.0]})
+                       "mo_n:f": [0.0], "mo_hit:f": [0.0], "mo_e3:f": [0.0], "measured:f": [True],
+                       "clip_n:f": [0.0], "n_runners": [8.0], "nll_mkt": [5.0]})
     t = by_year(pr, ["f"])
     assert t.loc[(2017, "f"), "fo_n"] == 0 and np.isnan(t.loc[(2017, "f"), "fo_rate"])
 
@@ -223,3 +224,72 @@ def test_delta_finite_and_bounded_for_late_starting_and_scale_shift_factors(monk
         assert np.all(np.isfinite(yearly)), f
         assert np.all(np.abs(yearly) < 1.0), (f, yearly.to_dict())
     assert pr.loc[pr.year == 2017, "delta:late_start"].eq(0.0).all()
+
+
+def _late_start(R: pd.DataFrame) -> np.ndarray:
+    """2016年はレース内で全頭同じ（測れない）、2017年からレース内で差がある要素。"""
+    v = _constant_within_race(R)
+    later = (R.year >= 2017).to_numpy()
+    v[later] = R.loc[later, "good"].to_numpy()
+    return v
+
+
+def test_unmeasured_years_are_marked_and_not_counted():
+    """学習の z が全部 0 の年は Δ = 0 ちょうどだが「改善しなかった年」ではなく「測れなかった年」（final-findings #2）。"""
+    R = synth_eval(n_per_year=60)
+    R = R.assign(late_start=_late_start(R))
+    pr = evaluate(R, ["late_start", "allnan", "good"], log=lambda *_: None)["per_race"]
+    t = by_year(pr, ["late_start", "allnan", "good"])
+    assert t.loc[(2017, "late_start"), "measured"] == False      # noqa: E712  2016年だけで学習 → 測れない
+    assert t.loc[(2018, "late_start"), "measured"] == True       # noqa: E712
+    assert not t.xs("allnan", level="factor")["measured"].any()
+    assert t.xs("good", level="factor")["measured"].all()
+    s = summarize(pr, ["late_start", "allnan", "good"], n_boot=50)
+    assert s.loc["late_start", "years_measured"] == 8
+    assert s.loc["allnan", "years_measured"] == 0 and s.loc["allnan", "years_improved"] == 0
+    assert s.loc["good", "years_measured"] == 9
+    assert s.loc["late_start", "years_improved"] <= 8
+
+
+def test_clipped_share_per_year_matches_zscore():
+    """年 × 要素ごとに、評価の行のうち |z| が上限で切られた割合を出す（final-findings #3）。"""
+    from keiba.evaluate import factor_eval as fe
+
+    R = synth_eval(n_per_year=60)
+    R = R.assign(wide=np.where(R.year >= 2019, 50.0, 1.0) * R["noise"])   # 2019年から散らばりが50倍
+    pr = evaluate(R, ["wide", "good"], log=lambda *_: None)["per_race"]
+    t = by_year(pr, ["wide", "good"])
+    assert "clipped_share" in t.columns
+    d = fe.add_market_features(R[fe.valid_race_mask(R)].copy()).sort_values(["race_id", "umaban"]).reset_index(drop=True)
+    train = ((d.year >= 2016) & (d.year < 2019)).to_numpy()
+    z = fe.zscore(d, "wide", train)
+    test = (d.year == 2019).to_numpy()
+    assert t.loc[(2019, "wide"), "clipped_share"] == pytest.approx(np.mean(np.abs(z[test]) >= fe.Z_CLIP))
+    assert t.loc[(2019, "wide"), "clipped_share"] > 0.5
+    assert t.loc[(2018, "wide"), "clipped_share"] < 0.01
+    assert t.xs("good", level="factor")["clipped_share"].max() < 0.01
+
+
+def test_summary_has_baseline_nll_pct_and_bonferroni_interval():
+    """市場だけのモデルの1レースあたり −対数尤度と、Δ のその割合、15比較の Bonferroni の区間（final-findings #5）。"""
+    R = synth_eval(n_per_year=60)
+    pr = evaluate(R, ["good", "noise"], log=lambda *_: None)["per_race"]
+    s = summarize(pr, ["good", "noise"], n_boot=200, n_compare=15)
+    assert s.loc["good", "base_nll"] == pytest.approx(pr["nll_mkt"].mean())
+    assert s.loc["good", "delta_pct"] == pytest.approx(s.loc["good", "delta"] / pr["nll_mkt"].mean())
+    for f in ("good", "noise"):
+        assert s.loc[f, "lo_bonf"] <= s.loc[f, "lo"] <= s.loc[f, "hi"] <= s.loc[f, "hi_bonf"]
+    # 判定は 95% 区間のまま（Bonferroni は参考の列）
+    assert s.loc["good", "verdict"] == verdict(s.loc["good", "lo"], int(s.loc["good", "years_improved"]))
+
+
+def test_excluded_counts_by_reason():
+    R = synth_eval(n_per_year=30)
+    first = R.loc[R.year == 2017, "race_id"].unique()[:3]
+    R.loc[(R.race_id == first[0]) & (R.jyuni == 2), "jyuni"] = 1.0
+    R.loc[(R.race_id == first[1]) & (R.umaban == "01"), "odds"] = np.nan
+    R = R[~((R.race_id == first[2]) & (R.jyuni > 3))]
+    R.loc[R.race_id == first[2], "field"] = 3
+    ex = evaluate(R, ["good"], years=[2017], log=lambda *_: None)["excluded"]
+    assert ex["excluded"] == 3
+    assert ex["by_reason"] == {"dead_heat": 1, "bad_odds": 1, "small_field": 1}

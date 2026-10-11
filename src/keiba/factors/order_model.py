@@ -10,12 +10,26 @@ from scipy.optimize import minimize
 STAGES = (1, 2, 3)
 
 
+def exclusion_reasons(R: pd.DataFrame) -> pd.DataFrame:
+    """race_id → 除く理由（重なりあり）。レポートで除いた件数を理由ごとに示すため。
+
+    - dead_heat: 1・2・3着のどれかが1頭でない（同着、または該当の着順の馬がいない）
+    - bad_odds: 単勝オッズが無い・0以下の馬がいる
+    - small_field: 4頭未満
+    """
+    g = R.groupby("race_id", sort=False)
+    counts = pd.concat({k: R["jyuni"].eq(k).groupby(R["race_id"], sort=False).sum() for k in STAGES}, axis=1)
+    return pd.DataFrame({
+        "dead_heat": (counts != 1).any(axis=1),
+        "bad_odds": (~(R["odds"] > 0)).groupby(R["race_id"], sort=False).any(),
+        "small_field": g["field"].first() < 4,
+    })
+
+
 def valid_race_mask(R: pd.DataFrame) -> np.ndarray:
-    """評価に使える行: 単勝オッズが全頭正、1・2・3着が各1頭、4頭以上のレース。"""
-    bad_odds = (~(R["odds"] > 0)).groupby(R["race_id"]).transform("sum") > 0
-    c = {k: R["jyuni"].eq(k).groupby(R["race_id"]).transform("sum") for k in STAGES}
-    ok = ~bad_odds & (c[1] == 1) & (c[2] == 1) & (c[3] == 1) & (R["field"] >= 4)
-    return ok.to_numpy()
+    """評価に使える行: 単勝オッズが全頭正、1・2・3着が各1頭、4頭以上のレース（exclusion_reasons のどれにも当たらない）。"""
+    bad = exclusion_reasons(R).any(axis=1)
+    return (~R["race_id"].map(bad).astype(bool)).to_numpy()
 
 
 def add_market_features(R: pd.DataFrame) -> pd.DataFrame:

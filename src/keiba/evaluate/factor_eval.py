@@ -2,6 +2,11 @@
 
 評価年 Y ごとに、市場だけの着順モデルと「市場＋1要素」の着順モデルを 2016〜Y−1年で推定し、Y年のレースで
 −対数尤度の差 Δ（正 = 要素で良くなった）を出す。判定は9年まとめた Δ の区間と、年ごとの安定性で行う。
+
+「測れなかった年」: 学習の年の z が全部 0（点数が欠けている・レース内で全頭同じ）か、評価の年の z が全部 0 なら、
+要素を足しても市場だけと同じなので Δ = 0 ちょうどになる。これは「改善しなかった」ではなく「その年は測れなかった」
+なので、年 × 要素ごとに measured で区別し、レポートでは Δ を「—」、改善した年を「k/m（測れた年 m）」と出す。
+判定のルール（9年中7年以上で改善）は変えない（仕様 §5.2）。
 """
 
 from __future__ import annotations
@@ -9,13 +14,16 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from keiba.factors.order_model import add_market_features, fit_stages, place_probabilities, race_nll, valid_race_mask
+from keiba.factors.order_model import (add_market_features, exclusion_reasons, fit_stages, place_probabilities,
+                                      race_nll, valid_race_mask)
 
 EVAL_YEARS = list(range(2017, 2026))
 TRAIN_FIRST = 2016
 N_BOOT = 1000
 SEED = 20261011
 MIN_YEARS_IMPROVED = 7
+ALPHA = 0.05
+N_COMPARE = 15    # Bonferroni の参考の区間で割る比較の数（15要素）。判定には使わない
 MKT = ["lq", "lq2"]
 ZERO_TOL = 1e-9   # これより小さい中心化した値は丸めの残りとみなして 0 にする（zscore）
 Z_CLIP = 4.0      # z の上限・下限（zscore）
@@ -69,6 +77,8 @@ def evaluate(R: pd.DataFrame, factors: list[str], *, years=EVAL_YEARS, log=print
     in_years = R["year"].isin(years).to_numpy()
     n_races = R.loc[in_years, "race_id"].nunique()
     n_valid = R.loc[in_years & keep, "race_id"].nunique()
+    reasons = exclusion_reasons(R[in_years])
+    by_reason = {c: int(reasons[c].sum()) for c in reasons.columns}
     d = add_market_features(R[keep & (R["year"] >= TRAIN_FIRST).to_numpy()].copy()).reset_index(drop=True)
     d = d.sort_values(["race_id", "umaban"]).reset_index(drop=True)
     parts = []
@@ -88,12 +98,16 @@ def evaluate(R: pd.DataFrame, factors: list[str], *, years=EVAL_YEARS, log=print
         w_odds = topk_weights(-te["odds"].to_numpy(float), rid)
         w_mm = topk_weights(p_m, rid)
         # 列を1本ずつ DataFrame に足すと断片化して遅くなる（PerformanceWarning）ので、辞書に集めて最後に1回で作る
-        cols = {"race_id": rid, "mkt_odds_hits": w_odds * top3, "mkt_model_hits": w_mm * top3}
-        deltas = {}
+        cols = {"race_id": rid, "mkt_odds_hits": w_odds * top3, "mkt_model_hits": w_mm * top3,
+                "n_runners": np.ones(len(te))}
+        deltas, measured = {}, {}
         for f in factors:
             z_all = zscore(d, f, train.to_numpy())
-            if not np.any(z_all[train.to_numpy()]) or not np.any(z_all[test]):
-                # 点数が全部欠けている・レース内で全頭同じ → 足しても市場だけと同じ（数値誤差で判定を揺らさない）
+            measured[f] = bool(np.any(z_all[train.to_numpy()]) and np.any(z_all[test]))
+            cols[f"clip_n:{f}"] = (np.abs(z_all[test]) >= Z_CLIP).astype(float)
+            if not measured[f]:
+                # 点数が全部欠けている・レース内で全頭同じ → 足しても市場だけと同じ（数値誤差で判定を揺らさない）。
+                # Δ = 0 になるが「測れなかった年」として measured で区別する
                 nll_f, p_f = nll_m, p_m
             else:
                 te["_z"] = z_all[test]
@@ -111,8 +125,10 @@ def evaluate(R: pd.DataFrame, factors: list[str], *, years=EVAL_YEARS, log=print
             cols[f"fo_n:{f}"], cols[f"fo_hit:{f}"], cols[f"fo_e3:{f}"] = fo, fo * top3, fo * np.nan_to_num(e3)
             cols[f"mo_n:{f}"], cols[f"mo_hit:{f}"], cols[f"mo_e3:{f}"] = mo, mo * top3, mo * np.nan_to_num(e3)
         agg = pd.DataFrame(cols).groupby("race_id", sort=False).sum()
-        agg = pd.concat([agg, pd.DataFrame({f"delta:{f}": deltas[f].reindex(agg.index).to_numpy() for f in factors},
-                                           index=agg.index)], axis=1)
+        extra = {f"delta:{f}": deltas[f].reindex(agg.index).to_numpy() for f in factors}
+        extra.update({f"measured:{f}": np.full(len(agg), measured[f]) for f in factors})
+        extra["nll_mkt"] = nll_m.reindex(agg.index).to_numpy()
+        agg = pd.concat([agg, pd.DataFrame(extra, index=agg.index)], axis=1)
         meta = te.groupby("race_id", sort=False).agg(date=("date", "first"), class_level=("class_level", "first"),
                                                        syubetu=("syubetu", "first"))
         agg = agg.join(meta)
@@ -122,10 +138,11 @@ def evaluate(R: pd.DataFrame, factors: list[str], *, years=EVAL_YEARS, log=print
         parts.append(agg.reset_index())
     per_race = pd.concat(parts, ignore_index=True)
     return {"per_race": per_race, "excluded": {"races": int(n_races), "valid": int(n_valid),
-                                               "excluded": int(n_races - n_valid)}}
+                                               "excluded": int(n_races - n_valid), "by_reason": by_reason}}
 
 
-def _cluster_ci(per_race: pd.DataFrame, cols: list[str], n_boot: int, seed: int) -> tuple[np.ndarray, np.ndarray]:
+def _cluster_boot(per_race: pd.DataFrame, cols: list[str], n_boot: int, seed: int) -> np.ndarray:
+    """開催日単位のクラスタ・ブートストラップの平均（n_boot × 列）。"""
     codes, uniq = pd.factorize(per_race["date"])
     sums = np.stack([np.bincount(codes, per_race[c].to_numpy(float), len(uniq)) for c in cols], axis=1)
     counts = np.bincount(codes, minlength=len(uniq)).astype(float)
@@ -134,20 +151,38 @@ def _cluster_ci(per_race: pd.DataFrame, cols: list[str], n_boot: int, seed: int)
     for b in range(n_boot):
         w = np.bincount(rng.integers(0, len(uniq), len(uniq)), minlength=len(uniq)).astype(float)
         means[b] = (w @ sums) / (w @ counts)
-    return np.quantile(means, 0.025, axis=0), np.quantile(means, 0.975, axis=0)
+    return means
 
 
-def summarize(per_race: pd.DataFrame, factors: list[str], *, n_boot: int = N_BOOT, seed: int = SEED) -> pd.DataFrame:
+def summarize(per_race: pd.DataFrame, factors: list[str], *, n_boot: int = N_BOOT, seed: int = SEED,
+              n_compare: int = N_COMPARE) -> pd.DataFrame:
+    """要素ごとのまとめ。判定は 95% 区間の下限（lo）と改善した年の数で決める（仕様 §5.2。変えない）。
+
+    - lo_bonf / hi_bonf: n_compare 比較の Bonferroni（15要素なら 1 − 0.05/15 ≈ 99.67%）の区間。15要素を同時に
+      調べていることの参考に並べるだけで、判定には使わない。95% の区間と同じブートストラップの標本から取るので、
+      種をそろえれば 95% の区間は v1 の実行と同じ値になる。1,000 回では端の分位点（約 0.17%）は下から2番目程度の
+      標本で決まるので粗い
+    - years_measured: 測れた年の数（モジュールの docstring）。years_improved は測れた年のうち Δ > 0 の年の数
+    - base_nll: 市場だけのモデルの1レースあたり −対数尤度の平均。delta_pct = Δ / base_nll（大きさの目安）
+    """
     cols = [f"delta:{f}" for f in factors]
-    lo, hi = _cluster_ci(per_race, cols, n_boot, seed)
+    means = _cluster_boot(per_race, cols, n_boot, seed)
+    lo, hi = np.quantile(means, ALPHA / 2, axis=0), np.quantile(means, 1 - ALPHA / 2, axis=0)
+    a_b = ALPHA / n_compare
+    lo_b, hi_b = np.quantile(means, a_b / 2, axis=0), np.quantile(means, 1 - a_b / 2, axis=0)
     yearly = per_race.groupby("year")[cols].mean()
+    meas = per_race.groupby("year")[[f"measured:{f}" for f in factors]].all()
+    base = float(per_race["nll_mkt"].mean())
     rows = []
     for i, f in enumerate(factors):
-        improved = int((yearly[f"delta:{f}"] > 0).sum())
+        m = meas[f"measured:{f}"]
+        improved = int(((yearly[f"delta:{f}"] > 0) & m).sum())
         fo_n, mo_n = per_race[f"fo_n:{f}"].sum(), per_race[f"mo_n:{f}"].sum()
+        delta = per_race[f"delta:{f}"].mean()
         rows.append(dict(
-            factor=f, delta=per_race[f"delta:{f}"].mean(), lo=lo[i], hi=hi[i], years_improved=improved,
-            verdict=verdict(lo[i], improved), solo=per_race[f"solo:{f}"].mean(),
+            factor=f, delta=delta, lo=lo[i], hi=hi[i], years_improved=improved, years_measured=int(m.sum()),
+            years_total=int(len(m)), verdict=verdict(lo[i], improved), lo_bonf=lo_b[i], hi_bonf=hi_b[i],
+            base_nll=base, delta_pct=delta / base if base else np.nan, solo=per_race[f"solo:{f}"].mean(),
             mkt_odds=per_race["mkt_odds_hits"].mean(), comb=per_race[f"comb:{f}"].mean(),
             mkt_model=per_race["mkt_model_hits"].mean(), fo_n=fo_n,
             fo_rate=per_race[f"fo_hit:{f}"].sum() / fo_n if fo_n else np.nan,
@@ -158,11 +193,19 @@ def summarize(per_race: pd.DataFrame, factors: list[str], *, n_boot: int = N_BOO
 
 
 def by_year(per_race: pd.DataFrame, factors: list[str]) -> pd.DataFrame:
-    """年 × 要素の表。Δ・的中に加え、食い違いの件数・的中率・平均の期待3着内率も年ごとに出す（仕様 §5.3）。"""
+    """年 × 要素の表。Δ・的中に加え、食い違いの件数・的中率・平均の期待3着内率も年ごとに出す（仕様 §5.3）。
+
+    measured はその年を測れたか（モジュールの docstring）。clipped_share は評価の行のうち z が ±Z_CLIP で切られた
+    行の割合（仕様 §4.2 の追記。高い年の Δ は要素の力より物差しのずれを映しうる）。base_nll はその年の市場だけの
+    モデルの1レースあたり −対数尤度の平均。
+    """
     rows = []
     for y, g in per_race.groupby("year"):
+        runners = g["n_runners"].sum()
         for f in factors:
-            row = dict(year=y, factor=f, delta=g[f"delta:{f}"].mean(), solo=g[f"solo:{f}"].mean(),
+            row = dict(year=y, factor=f, delta=g[f"delta:{f}"].mean(), measured=bool(g[f"measured:{f}"].all()),
+                       clipped_share=g[f"clip_n:{f}"].sum() / runners if runners else np.nan,
+                       base_nll=g["nll_mkt"].mean(), solo=g[f"solo:{f}"].mean(),
                        mkt_odds=g["mkt_odds_hits"].mean(), comb=g[f"comb:{f}"].mean(),
                        mkt_model=g["mkt_model_hits"].mean())
             for tag in ("fo", "mo"):
