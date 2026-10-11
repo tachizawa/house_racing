@@ -144,10 +144,17 @@ def summarize(per_race: pd.DataFrame, factors: list[str], *, n_boot: int = N_BOO
 
 
 def by_year(per_race: pd.DataFrame, factors: list[str]) -> pd.DataFrame:
+    """年 × 要素の表。Δ・的中に加え、食い違いの件数・的中率・平均の期待3着内率も年ごとに出す（仕様 §5.3）。"""
     rows = []
     for y, g in per_race.groupby("year"):
         for f in factors:
-            rows.append(dict(year=y, factor=f, delta=g[f"delta:{f}"].mean(), solo=g[f"solo:{f}"].mean(),
-                             mkt_odds=g["mkt_odds_hits"].mean(), comb=g[f"comb:{f}"].mean(),
-                             mkt_model=g["mkt_model_hits"].mean()))
+            row = dict(year=y, factor=f, delta=g[f"delta:{f}"].mean(), solo=g[f"solo:{f}"].mean(),
+                       mkt_odds=g["mkt_odds_hits"].mean(), comb=g[f"comb:{f}"].mean(),
+                       mkt_model=g["mkt_model_hits"].mean())
+            for tag in ("fo", "mo"):
+                n = g[f"{tag}_n:{f}"].sum()
+                row[f"{tag}_n"] = n
+                row[f"{tag}_rate"] = g[f"{tag}_hit:{f}"].sum() / n if n else np.nan
+                row[f"{tag}_e3"] = g[f"{tag}_e3:{f}"].sum() / n if n else np.nan
+            rows.append(row)
     return pd.DataFrame(rows).set_index(["year", "factor"])
