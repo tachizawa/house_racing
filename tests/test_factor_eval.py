@@ -150,3 +150,76 @@ def test_disagreement_counts_hand_checked():
     assert r["mkt_odds_hits"] == pytest.approx(2.0)           # 1番・2番が3着内、3番は圏外
 
 
+
+
+def _constant_within_race(R: pd.DataFrame, seed: int = 1) -> np.ndarray:
+    """レースごとに1つの値を全頭に入れる（年齢の 2016年のような「レース内で全頭同じ」要素）。
+
+    0.1 刻みでない半端な値にして、レース内平均を引いたときに丸めの残り（1e−17 程度）が出るようにする。
+    """
+    rng = np.random.default_rng(seed)
+    per_race = pd.Series(rng.uniform(-1.2, 0.1, R["race_id"].nunique()) / 7.0, index=R["race_id"].unique())
+    return R["race_id"].map(per_race).to_numpy(float, copy=True)
+
+
+def test_zscore_rounding_residuals_count_as_zero():
+    """学習の行がどのレースでも全頭同じ値なら、中心化の丸めの残りで割って巨大な z を作ってはいけない。"""
+    R = synth_eval(n_per_year=40)
+    R = R[R.year <= 2017].reset_index(drop=True)
+    v = _constant_within_race(R)
+    late = (R.year == 2017).to_numpy()
+    v[late] = R.loc[late, "noise"].to_numpy()          # 評価年だけレース内で差がある
+    d = R.assign(f=v)
+    train = (R.year == 2016).to_numpy()
+    c = v - pd.Series(v).groupby(R["race_id"]).transform("mean").to_numpy()
+    assert np.any(c[train] != 0.0), "作り物に丸めの残りが出ていない（テストの前提）"
+    z = zscore(d, "f", train)
+    assert np.all(z[train] == 0.0)
+    assert np.all(z == 0.0)                            # 学習で差が無い → 標準偏差 0 → 全部 0（市場だけと同じ）
+
+
+def test_zscore_is_clipped_when_test_spread_exceeds_train():
+    """学習の年より評価の年の方が散らばりが大きい要素（縮小が年ごとに弱まる表の要素）でも |z| は 4 まで。"""
+    d = pd.DataFrame({"race_id": ["a"] * 4 + ["b"] * 4,
+                      "f": [0.001, -0.001, 0.002, -0.002, 0.5, -0.5, 0.3, -0.3]})
+    train = np.array([True] * 4 + [False] * 4)
+    z = zscore(d, "f", train)
+    assert np.all(np.abs(z) <= 4.0)
+    assert z[4] == 4.0 and z[5] == -4.0
+    assert 0 < z[0] < 4.0                              # 学習の範囲の値は切られない
+
+
+def test_delta_finite_and_bounded_for_late_starting_and_scale_shift_factors(monkeypatch):
+    """実データで壊れた2つの形を仕込み、Δ が有限で桁外れにならないことを確かめる。
+
+    - late_start（年齢の形）: 2016年はレース内で全頭同じ値、2017年からレース内で差がある。2017年の学習は
+      2016年だけなので、要素は何も足さない（Δ = 0 ちょうど）。直す前は丸めの残りで割って Δ が −51 だった
+    - scale_shift（父の芝ダの形）: 弱く効く要素で、散らばりが 2017年まで 0.001、2018年 0.0015、2019年から 0.01。
+      モデルに入る z は ±4 に収まり、2019年の Δ も 1 未満（直す前は z が ±80 前後になり −2.2）
+
+    作り物は1年80レースと小さく、雑音の要素でも推定のぶれで Δ が ±0.05 程度動くので、境は緩くしている。
+    """
+    from keiba.evaluate import factor_eval as fe
+
+    R = synth_eval(n_per_year=80)
+    v = _constant_within_race(R)
+    later = (R.year >= 2017).to_numpy()
+    v[later] = R.loc[later, "noise"].to_numpy() * 0.1
+    scale = np.where(R.year <= 2017, 0.001, np.where(R.year == 2018, 0.0015, 0.01))
+    R = R.assign(late_start=v, scale_shift=(0.1 * R["good"] + R["noise"]).to_numpy() * scale)
+    seen_z = []
+    orig = fe.race_nll
+
+    def spy(d, feats, weights):
+        if "_z" in feats:
+            seen_z.append(float(np.abs(d["_z"]).max()))
+        return orig(d, feats, weights)
+
+    monkeypatch.setattr(fe, "race_nll", spy)
+    pr = evaluate(R, ["late_start", "scale_shift"], log=lambda *_: None)["per_race"]
+    assert seen_z and max(seen_z) <= fe.Z_CLIP
+    for f in ("late_start", "scale_shift"):
+        yearly = pr.groupby("year")[f"delta:{f}"].mean()
+        assert np.all(np.isfinite(yearly)), f
+        assert np.all(np.abs(yearly) < 1.0), (f, yearly.to_dict())
+    assert pr.loc[pr.year == 2017, "delta:late_start"].eq(0.0).all()

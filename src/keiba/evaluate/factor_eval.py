@@ -17,6 +17,8 @@ N_BOOT = 1000
 SEED = 20261011
 MIN_YEARS_IMPROVED = 7
 MKT = ["lq", "lq2"]
+ZERO_TOL = 1e-9   # これより小さい中心化した値は丸めの残りとみなして 0 にする（zscore）
+Z_CLIP = 4.0      # z の上限・下限（zscore）
 
 
 def topk_weights(values: np.ndarray, race_ids: np.ndarray, k: int = 3) -> np.ndarray:
@@ -36,13 +38,26 @@ def topk_weights(values: np.ndarray, race_ids: np.ndarray, k: int = 3) -> np.nda
 
 
 def zscore(d: pd.DataFrame, col: str, train: np.ndarray) -> np.ndarray:
-    """レース内で中心化し、学習行の中心化した値の標準偏差で割る。NaN（点数なし）はレース平均（0）にする。"""
+    """レース内で中心化し、学習行の中心化した値の標準偏差で割る。NaN（点数なし）はレース平均（0）にする。
+
+    仕様 §4.2 に2点を足している（2026-10-11 の実データでの破綻への対処）:
+
+    - 中心化した値の絶対値が ZERO_TOL 未満なら 0 とみなす。レース内で全頭同じ値（年齢の 2016年など）でも
+      平均を引くと 1e−17 程度の丸めの残りが出て、学習の年がそれだけだと標準偏差が 1e−17 になり、評価の年の
+      本物の差を割って z が 1e17 になった（年齢の Δ ×1000 が −8e16）。0 とみなせば標準偏差 0 → z は全部 0
+      （市場だけと同じ）になる。
+    - z を ±Z_CLIP で切る。表の要素は縮小の強さ λ を年ごとに推定し直すので、材料の少ない初めの年は散らばりが
+      小さく、後の年で一気に広がる（父の芝ダ: 2018年の中心化した値の標準偏差 0.0011、2019年 0.0059）。学習の年の
+      標準偏差で割ると評価の年の z が ±38 になり、学習の範囲外で推定した重みを当てはめて Δ が壊れた。
+      学習の行も同じく切るので、学習と評価で z の範囲がそろう（学習の行で ±4 を超えるのはごく一部）。
+    """
     v = d[col].to_numpy(float)
     mean = pd.Series(v).groupby(d["race_id"].to_numpy()).transform("mean").to_numpy()
     c = v - mean
+    c[np.abs(c) < ZERO_TOL] = 0.0          # NaN は比較が False なので NaN のまま残る
     sd = np.nanstd(c[train]) if np.isfinite(c[train]).any() else 0.0
     z = c / sd if sd > 0 else np.zeros_like(c)
-    return np.nan_to_num(z, nan=0.0)
+    return np.clip(np.nan_to_num(z, nan=0.0), -Z_CLIP, Z_CLIP)
 
 
 def verdict(lo: float, years_improved: int) -> str:
@@ -72,9 +87,8 @@ def evaluate(R: pd.DataFrame, factors: list[str], *, years=EVAL_YEARS, log=print
         e3 = te["e3"].to_numpy(float) if "e3" in te else np.full(len(te), np.nan)
         w_odds = topk_weights(-te["odds"].to_numpy(float), rid)
         w_mm = topk_weights(p_m, rid)
-        res = pd.DataFrame({"race_id": rid})
-        res["mkt_odds_hits"] = w_odds * top3
-        res["mkt_model_hits"] = w_mm * top3
+        # 列を1本ずつ DataFrame に足すと断片化して遅くなる（PerformanceWarning）ので、辞書に集めて最後に1回で作る
+        cols = {"race_id": rid, "mkt_odds_hits": w_odds * top3, "mkt_model_hits": w_mm * top3}
         deltas = {}
         for f in factors:
             z_all = zscore(d, f, train.to_numpy())
@@ -92,13 +106,13 @@ def evaluate(R: pd.DataFrame, factors: list[str], *, years=EVAL_YEARS, log=print
             w_comb = topk_weights(p_f, rid)
             fo = w_solo * (1 - w_odds)
             mo = w_odds * (1 - w_solo)
-            res[f"solo:{f}"] = w_solo * top3
-            res[f"comb:{f}"] = w_comb * top3
-            res[f"fo_n:{f}"], res[f"fo_hit:{f}"], res[f"fo_e3:{f}"] = fo, fo * top3, fo * np.nan_to_num(e3)
-            res[f"mo_n:{f}"], res[f"mo_hit:{f}"], res[f"mo_e3:{f}"] = mo, mo * top3, mo * np.nan_to_num(e3)
-        agg = res.groupby("race_id", sort=False).sum()
-        for f in factors:
-            agg[f"delta:{f}"] = deltas[f].reindex(agg.index).to_numpy()
+            cols[f"solo:{f}"] = w_solo * top3
+            cols[f"comb:{f}"] = w_comb * top3
+            cols[f"fo_n:{f}"], cols[f"fo_hit:{f}"], cols[f"fo_e3:{f}"] = fo, fo * top3, fo * np.nan_to_num(e3)
+            cols[f"mo_n:{f}"], cols[f"mo_hit:{f}"], cols[f"mo_e3:{f}"] = mo, mo * top3, mo * np.nan_to_num(e3)
+        agg = pd.DataFrame(cols).groupby("race_id", sort=False).sum()
+        agg = pd.concat([agg, pd.DataFrame({f"delta:{f}": deltas[f].reindex(agg.index).to_numpy() for f in factors},
+                                           index=agg.index)], axis=1)
         meta = te.groupby("race_id", sort=False).agg(date=("date", "first"), class_level=("class_level", "first"),
                                                        syubetu=("syubetu", "first"))
         agg = agg.join(meta)
