@@ -6,7 +6,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from keiba.factors.cumulative import add_expected_top3, eb_lambda, prior_day_sums, shrunk_prior_scores
+from keiba.factors.cumulative import (add_expected_top3, eb_lambda, eb_lambda_hetero, eb_variance_components,
+                                     prior_day_sums, shrunk_prior_scores)
 from tests.fixtures.factor_runs import STRONG_JOCKEY, assert_no_lookahead, make_factor_runs
 
 
@@ -26,6 +27,52 @@ def test_eb_lambda_none_when_groups_do_not_differ():
     v2 = v + np.repeat(rng.normal(0, 1, 40), 100)
     lam = eb_lambda(v2, k)
     assert lam is not None and 0.5 < lam < 2.0               # σ² = 1, τ² ≈ 1
+
+
+def _unequal_variance_groups(seed: int = 3, tau: float = 0.02):
+    """実データの A−E の形を真似た作り物: 人気馬に多く乗る少数の大きな組は散らばりが大きく（σ² = 0.25）、
+    多数の小さな組は散らばりが小さい（σ² = 0.01）。組の真の差 u_k は ±tau を交互に置き、τ² = tau² ちょうどにする。"""
+    rng = np.random.default_rng(seed)
+    sizes = [2000] * 10 + [20] * 600
+    sds = [0.5] * 10 + [0.1] * 600
+    u = np.where(np.arange(len(sizes)) % 2 == 0, tau, -tau)
+    v = np.concatenate([u[k] + rng.normal(0, sd, n) for k, (n, sd) in enumerate(zip(sizes, sds))])
+    keys = np.repeat(np.arange(len(sizes)), sizes)
+    return v, keys, tau ** 2
+
+
+def test_hetero_estimator_recovers_tau2_where_pooled_is_badly_biased():
+    """組ごとに散らばりが違うと、散らばりを1つにまとめる旧の推定（eb_lambda）は τ² を大きく引きすぎる。
+    散らばりを組ごとに引く新の推定（eb_lambda_hetero）は真の τ² の近くに来る（仕様 §2「縮小」の v2）。"""
+    v, keys, tau2 = _unequal_variance_groups()
+    sigma2, t2 = eb_variance_components(v, keys)
+    assert t2 == pytest.approx(tau2, rel=0.3)
+    lam_true = sigma2 / tau2
+    lam_new = eb_lambda_hetero(v, keys)
+    assert lam_new == pytest.approx(lam_true, rel=0.3)
+    lam_old = eb_lambda(v, keys)
+    assert lam_old is None or lam_old > 3 * lam_true          # 旧は「差なし」か、縮めすぎ
+
+
+def test_hetero_estimator_matches_pooled_when_variances_are_equal():
+    rng = np.random.default_rng(1)
+    k = np.repeat(np.arange(40), 100)
+    v = rng.normal(0, 1, 4000) + np.repeat(rng.normal(0, 1, 40), 100)
+    old, new = eb_lambda(v, k), eb_lambda_hetero(v, k)
+    assert old is not None and new is not None and new == pytest.approx(old, rel=0.1)
+    flat = eb_lambda_hetero(rng.normal(0, 1, 4000), k)
+    assert flat is None or flat > 50                         # 組の差が無い → 縮小は非常に強い（または無し）
+    assert eb_lambda_hetero(np.ones(3), np.array(["a", "a", "a"])) is None   # 組が1つ
+
+
+def test_shrunk_scores_take_the_estimator():
+    """shrunk_prior_scores は λ の推定を選べる（v1 = 旧、v2 = 新）。既定は旧のまま（v1 を再現できるように）。"""
+    R = add_expected_top3(make_factor_runs())
+    a = shrunk_prior_scores(R, ["kisyu"], "ae", first_year=2016)
+    b = shrunk_prior_scores(R, ["kisyu"], "ae", first_year=2016, lam_fn=eb_lambda)
+    c = shrunk_prior_scores(R, ["kisyu"], "ae", first_year=2016, lam_fn=eb_lambda_hetero)
+    np.testing.assert_array_equal(a, b)
+    assert np.isfinite(c[(R.year >= 2016).to_numpy()]).all()
 
 
 def test_shrunk_scores_recover_strong_jockey():

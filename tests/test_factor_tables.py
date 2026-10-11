@@ -75,3 +75,21 @@ def test_draw_is_zero_when_no_draw_effect(R):
     sc = tf.draw(R)
     rows = (R.year >= 2016).to_numpy()
     assert np.allclose(sc[rows], 0.0, atol=0.05)   # 作り物は枠に効果を入れていない
+
+
+@pytest.mark.parametrize("fn", TABLE, ids=lambda f: f.__name__)
+def test_table_factor_versions_differ_only_in_lambda(fn, R):
+    """v1・v2 は λ の推定だけが違う。どちらも有限で、助走の年（2015）は NaN。"""
+    a, b = fn(R, version="v1"), fn(R, version="v2")
+    rows = (R.year >= 2016).to_numpy()
+    assert np.isfinite(a[rows]).all() and np.isfinite(b[rows]).all()
+    assert np.isnan(b[~rows]).all()
+    assert np.array_equal(fn(R), b, equal_nan=True)    # 既定は今の版（v2）
+
+
+def test_lambda_table_has_both_estimators(R):
+    t = tf.lambda_table(R, [2016, 2017], names=("jockey", "draw"))
+    assert set(t.columns) == {"factor", "year", "lambda_v1", "lambda_v2"}
+    assert len(t) == 4
+    j = t[(t.factor == "jockey") & (t.year == 2017)].iloc[0]
+    assert j.lambda_v2 > 0
