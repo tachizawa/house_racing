@@ -71,9 +71,17 @@ def to_runs_all(R: pd.DataFrame) -> pd.DataFrame:
 
 
 def perturb_results_from(R: pd.DataFrame, day) -> pd.DataFrame:
-    """day 以降の行の結果（着順・3着内・着順の割合・タイム）を入れ替えた写し。レース前の情報はそのまま。"""
+    """day 以降の行の結果（着順・3着内・着順の割合・タイム）と、day より後の行の人気・単勝オッズを入れ替えた写し。
+
+    人気・単勝オッズは発走前に決まるので、その日の行が自分の人気を使うのは正しい（見込み3着内率 e3 は
+    その行の人気の組で引く）。しかし day より後の日の人気・オッズは day の点数に効いてはいけないので変える
+    （e3 は人気から作るので、ここを変えないと e3 の先読みを見逃す）。
+    """
     P = R.copy()
     m = P["date"] >= pd.Timestamp(day)
+    later = P["date"] > pd.Timestamp(day)
+    P.loc[later, "ninki"] = P.loc[later, "field"] - P.loc[later, "ninki"] + 1
+    P.loc[later, "odds"] = P.loc[later, "odds"] * 2.0 + 1.0
     P.loc[m, "jyuni"] = P.loc[m, "field"] - P.loc[m, "jyuni"] + 1
     P.loc[m, "top3"] = P.loc[m, "jyuni"].between(1, 3).astype(float)
     P.loc[m, "fin_pct"] = (P.loc[m, "jyuni"] - 1) / (P.loc[m, "field"] - 1)
