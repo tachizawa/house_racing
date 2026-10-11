@@ -42,7 +42,13 @@ def test_jockey_finds_strong_jockey(R):
 def test_layoff_bins():
     R = pd.DataFrame({"ketto_num": ["A", "A", "A", "B"],
                       "date": pd.to_datetime(["2020-01-01", "2020-01-10", "2021-03-01", "2020-01-01"])})
-    assert tf.layoff_bin(R).tolist() == ["初出走", "〜13", "365〜", "初出走"]
+    assert tf.layoff_bin(R).tolist() == ["不明", "〜13", "365〜", "不明"]
+
+
+def test_layoff_bin_unknown_near_data_start():
+    R = pd.DataFrame({"ketto_num": ["X", "A", "B"],
+                      "date": pd.to_datetime(["2015-01-04", "2015-03-01", "2016-06-01"])})
+    assert tf.layoff_bin(R).tolist() == ["不明", "不明", "初出走"]
 
 
 def test_weight_bins():

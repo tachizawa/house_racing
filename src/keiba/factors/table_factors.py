@@ -42,12 +42,18 @@ def travel(R: pd.DataFrame) -> np.ndarray:
 
 
 def layoff_bin(R: pd.DataFrame) -> np.ndarray:
-    """前走（同じ馬の前の行）からの日数の区分。前の行が無ければ「初出走」。"""
+    """前走（同じ馬の前の行）からの日数の区分。
+
+    前の行が無い行は、表の最初の日から365日より後なら「初出走」。365日以内なら、表の始まりより前に
+    走っていたかもしれず初出走と区別できないので「不明」（初出走の区分を汚さないため別にする）。
+    """
     order = np.lexsort((R["date"].to_numpy(), R["ketto_num"].to_numpy()))
     d = R.iloc[order]
     prev = d.groupby("ketto_num", sort=False)["date"].shift(1)
     gap = (d["date"] - prev).dt.days
-    lab = pd.cut(gap, bins=LAYOFF_EDGES, labels=LAYOFF_LABELS).astype(object).where(gap.notna(), "初出走")
+    first_label = np.where((d["date"] - R["date"].min()).dt.days > 365, "初出走", "不明")
+    lab = pd.cut(gap, bins=LAYOFF_EDGES, labels=LAYOFF_LABELS).astype(object)
+    lab = lab.where(gap.notna(), pd.Series(first_label, index=d.index))
     out = np.empty(len(R), dtype=object)
     out[order] = lab.to_numpy()
     return out
