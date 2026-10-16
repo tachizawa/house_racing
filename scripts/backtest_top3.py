@@ -113,7 +113,10 @@ def _count_final_races(races, tuning_until) -> int:
 
 
 def _append_final_log(args, data_dir: Path, n_final_races: int) -> None:
-    """--final の実行を記録する。
+    """--final の実行、または固定された境界を越える --final なしの実行を記録する。
+
+    n_final_races は境界より後で予想する見込みのレース数（--final なしなら、境界から
+    --tuning-until までの調整期間として使い直すレース数）。
 
     呼び出し側で「最終期間のレースが実際に1件以上あった」ことを確認して
     から呼ぶこと（0件なら境界を動かしていないので記録しない。fix round 1
@@ -127,7 +130,7 @@ def _append_final_log(args, data_dir: Path, n_final_races: int) -> None:
             "tuning_until": args.tuning_until, "to": args.date_to,
             "methods": args.methods, "top3_prompt_version": TOP3_PROMPT_VERSION,
             "dossier_version": config.DOSSIER_VERSION,
-            "n_final_races": n_final_races,
+            "n_final_races": n_final_races, "final": args.final,
             "reason": args.final_rerun_reason}, ensure_ascii=False) + "\n")
 
 
@@ -199,6 +202,13 @@ def main(argv: list[str] | None = None) -> int:
         n_final_races = _count_final_races(races, tuning_until)
         if n_final_races > 0:
             _append_final_log(args, args.data_dir, n_final_races)
+    elif log_entries and args.tuning_until > log_entries[0]["tuning_until"]:
+        # --final なしで固定された境界を越える実行（ガードは理由付きで通している）も
+        # 記録する。境界から --tuning-until までのレースを調整期間としてもう一度使う。
+        pinned = _day(log_entries[0]["tuning_until"]).date()
+        n_reused = _count_final_races(races, pinned) - _count_final_races(races, tuning_until)
+        if n_reused > 0:
+            _append_final_log(args, args.data_dir, n_reused)
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out_dir = args.out / stamp

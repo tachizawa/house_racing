@@ -78,7 +78,10 @@ TIE_BAND = 0.03
 #      （condition_definitions / history_status_notes）へ集約し、直近走の既定を
 #      5走から4走に減らした（state size fix。実測 100レースのドライランで
 #      17/100 が旧上限 48,000 文字を超えていた）。
-DOSSIER_VERSION = "2"
+# "3": data_quality.coverage_from（と履歴の found_may_be_truncated の判定）を
+#      fromdate と first_hasso_at の遅いほうにした。option 4 の版では訂正再配信の
+#      1989年などが入り、打ち切りの可能性が一度も付かなかった。形は "2" と同じ。
+DOSSIER_VERSION = "3"
 # 「3着以内」の 3。表示頭数（DEFAULT_TOP_N）とは別物なので分けて持つ。
 TOP3_PLACE = 3
 # 3着内の採点規則（evaluate/top3_metrics.py の docstring）の版。同着・取消・

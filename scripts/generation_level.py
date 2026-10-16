@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from keiba import config  # noqa: E402
 from keiba.data.store import DataStore  # noqa: E402
+from keiba.data.store import coverage_start as data_coverage_start  # noqa: E402
 from keiba.evaluate.age_curve import age_curve, curve_levels  # noqa: E402
 from keiba.evaluate.generation import (METRICS, bootstrap_intervals, cohort_table,  # noqa: E402
                                        comparable_years, replicate_stats)
@@ -33,13 +34,14 @@ SURFACES = (("全体", None), ("芝", "turf"), ("ダート", "dirt"))
 
 
 def coverage_start(manifest: dict, runs: pd.DataFrame) -> date:
-    """比べてよい年を決める取得開始日。manifest の fromdate、無ければ対象の走の最初の日。
+    """比べてよい年を決める取得開始日。データ版の収録開始、無ければ対象の走の最初の日。
 
-    coverage.first_hasso_at は訂正再配信の古いレース（1989年など）が混じるので使わない。
+    収録開始は fromdate と coverage.first_hasso_at の遅いほう（keiba.data.store.coverage_start）。
+    fromdate だけだと、option 1 の版で実データの無い年・一部しか無い年を比べてしまう。
     """
-    fromdate = manifest.get("fromdate")
-    if fromdate:
-        return datetime.strptime(fromdate[:8], "%Y%m%d").date()
+    start = data_coverage_start(manifest)
+    if start is not None:
+        return start.date()
     return runs["date"].min().date()
 
 

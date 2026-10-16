@@ -109,13 +109,28 @@ def _is_saved(spec: str, files: store.FileSet) -> bool:
 
 
 def _consume(raw: bytes, counts: Counter, writer: store.VersionWriter,
-             se_rows: list[dict]) -> None:
-    """1レコードを数えて、表の行に分けて書く。組に無い表の行は writer が捨てる。"""
+             se_rows: list[dict] | None) -> None:
+    """1レコードを数えて、表の行に分けて書く。組に無い表の行は writer が捨てる。
+
+    se_rows は --verify-time-fields のときだけ渡す（None なら溜めない）。5年ぶんの
+    セットアップ取得では SE が数十万行あり、使わないのに全部をメモリに持つことになる。
+    """
     counts[records.record_spec(raw)] += 1
     for key, row in records.parse_rows(raw):
         writer.add(key, row)
-        if key == "SE":
+        if key == "SE" and se_rows is not None:
             se_rows.append(row)
+
+
+def _verify_time_fields(se_rows: list[dict]) -> int:
+    """走破タイムの照合を出力し、不一致があれば 1、なければ 0 を返す。"""
+    report = jvlink.verify_time_fields(se_rows)
+    mismatches = [entry for entry in report if not entry["matches"]]
+    print(f"\n走破タイムの照合: {len(report)} 件中、不一致 {len(mismatches)} 件")
+    for entry in mismatches:
+        print(f"  race_id={entry['race_id']}"
+              f" computed={entry['computed']} recorded={entry['recorded']}")
+    return 1 if mismatches else 0
 
 
 def _from_raw(args: argparse.Namespace) -> int:
@@ -138,7 +153,7 @@ def _from_raw(args: argparse.Namespace) -> int:
                 "raw_counts": raw_manifest.get("counts")},
     )
     counts: Counter[str] = Counter()
-    se_rows: list[dict] = []
+    se_rows: list[dict] | None = [] if args.verify_time_fields else None
     try:
         # 表に書かれない種別（JG など）はパースもしないので、組に関係する種別だけ読む。
         specs = [spec for spec in raw_manifest.get("counts", {}) if _is_saved(spec, files)]
@@ -158,7 +173,7 @@ def _from_raw(args: argparse.Namespace) -> int:
     except BaseException:
         writer.abort()
         raise
-    return 0
+    return _verify_time_fields(se_rows) if se_rows is not None else 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -182,7 +197,7 @@ def main(argv: list[str] | None = None) -> int:
     # dataspec ごとの内訳を見せないと「UM が0件」に気づけない。
     counts_by_dataspec: dict[str, Counter[str]] = {}
     open_codes: dict[str, int] = {}
-    se_rows: list[dict] = []
+    se_rows: list[dict] | None = [] if args.verify_time_fields else None
 
     # VersionWriter は「構築したら必ず commit() か abort() のどちらかで終わる」
     # という不変条件を保つ。読み取りループの中だけでなく commit() 自身が失敗
@@ -255,18 +270,7 @@ def main(argv: list[str] | None = None) -> int:
         writer.abort()      # 握りつぶさない。後始末だけしてそのまま投げ直す
         raise
 
-    exit_code = 0
-    if args.verify_time_fields:
-        report = jvlink.verify_time_fields(se_rows)
-        mismatches = [entry for entry in report if not entry["matches"]]
-        print(f"\n走破タイムの照合: {len(report)} 件中、不一致 {len(mismatches)} 件")
-        for entry in mismatches:
-            print(f"  race_id={entry['race_id']}"
-                  f" computed={entry['computed']} recorded={entry['recorded']}")
-        if mismatches:
-            exit_code = 1
-
-    return exit_code
+    return _verify_time_fields(se_rows) if se_rows is not None else 0
 
 
 if __name__ == "__main__":

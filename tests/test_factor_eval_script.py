@@ -40,7 +40,7 @@ def old_table(tmp_path_factory) -> Path:
     out = compute_all(R, to_runs_all(R), years=[2016, 2017], log=lambda *_: None)
     for name, fn in tf.TABLE_FACTORS.items():
         out[name] = fn(out, version="v1")
-    path = tmp_path_factory.mktemp("old") / "factors_old.pkl"
+    path = tmp_path_factory.mktemp("old") / "factors_D1_B1_0ld0ta90.pkl"
     out.to_pickle(path)
     return path
 
@@ -51,6 +51,24 @@ def _dirs(tmp_path: Path) -> list[str]:
         (tmp_path / name / "CURRENT").write_text(cur, encoding="utf-8")
     return ["--data-dir", str(tmp_path / "data"), "--blood-dir", str(tmp_path / "blood"),
             "--cache-dir", str(tmp_path / "cache"), "--n-boot", "20"]
+
+
+def test_recompute_source_must_match_current_versions(tmp_path):
+    ok = script.recompute_source_problem
+    assert ok(tmp_path / "factors_D1_B1_abcd1234.pkl", "D1", "B1") is None
+    assert ok(tmp_path / "factors_D1.pkl", "D1", "B1") is None          # 血統版を名前に入れる前の古い名前
+    assert "D0" in ok(tmp_path / "factors_D0_B1_abcd1234.pkl", "D1", "B1")
+    assert "B0" in ok(tmp_path / "factors_D1_B0_abcd1234.pkl", "D1", "B1")
+    assert ok(tmp_path / "old.pkl", "D1", "B1") is not None             # 版が読めない名前は使わない
+
+
+def test_recompute_from_other_data_version_is_refused(tmp_path, old_table, capsys):
+    base = _dirs(tmp_path)
+    (tmp_path / "data" / "CURRENT").write_text("D2", encoding="utf-8")
+    rc = script.main(base + ["--out-dir", str(tmp_path / "out"), "--recompute-table-from", str(old_table)])
+    assert rc == 2
+    assert not script.cache_path(tmp_path / "cache", "D2", "B1").exists()
+    assert "D2" in capsys.readouterr().out
 
 
 def test_recompute_from_old_table_then_reuse_cache(tmp_path, old_table, capsys):

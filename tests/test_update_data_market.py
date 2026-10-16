@@ -76,6 +76,22 @@ class TestFromRaw:
         assert manifest["source"]["raw_dir"] == str(raw_dir)
         assert manifest["record_counts"]["payout_races"] == 1
 
+    def test_verify_time_fields_runs_on_raw(self, tmp_path, capsys):
+        """--from-raw でも --verify-time-fields を黙って無視せず、不一致なら exit 1。"""
+        path = tmp_path / "raw_se"
+        with rawdump.RawDumpWriter(path, dataspec="RACE", fromdate="20210901000000",
+                                   option=4) as writer:
+            writer.write(fx.make_ra())
+            writer.write(fx.make_se(kakutei_jyuni="01", time="1234", time_diff="-003", umaban="01"))
+            # 実際のタイム差は 0.3 秒だが、記録上の margin は 0.9 秒にしてずらす。
+            writer.write(fx.make_se(kakutei_jyuni="02", time="1237", time_diff="+009", umaban="02"))
+
+        exit_code = update_data.main(["--from-raw", str(path), "--data-dir", str(tmp_path / "race"),
+                                      "--verify-time-fields"])
+
+        assert exit_code == 1
+        assert "走破タイムの照合" in capsys.readouterr().out
+
     def test_fromdate_is_required_without_raw(self):
         with pytest.raises(SystemExit):
             update_data._parse_args(["--kind", "market"])

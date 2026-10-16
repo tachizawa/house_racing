@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -33,14 +34,39 @@ from keiba.factors import table_factors as tf  # noqa: E402
 from keiba.factors.data import load_runs  # noqa: E402
 from keiba.factors.registry import FACTOR_NAMES, VERSIONS, compute_all, recompute_table_factors, versions_tag  # noqa: E402
 from keiba.features.speed_figure import prepare_runs  # noqa: E402
+from keiba.ingest.store import current_version, read_manifest, version_dir  # noqa: E402
 
 JST = timezone(timedelta(hours=9))
 SUBSETS = {"op": ("OP・重賞", "op"), "mixed": ("3歳以上の古馬混合戦", "mixed")}
 LAMBDA_REPORT_YEARS = (2016, 2017, 2018, 2019, 2025)   # レポートに出す年（全年は lambda.csv）
 
 
+# factors_<データ版>.pkl（血統版・要素の版を名前に入れる前の古い名前）と factors_<データ版>_<血統版>_<印>.pkl
+_CACHE_NAME = re.compile(r"factors_(?P<data>[^_]+)(?:_(?P<blood>[^_]+)_(?P<tag>[^_]+))?\.pkl")
+
+
 def _current(d: Path) -> str:
-    return (d / "CURRENT").read_text(encoding="utf-8").strip()
+    version = current_version(d)
+    if version is None:
+        raise SystemExit(f"CURRENT がありません: {d}")
+    return version
+
+
+def recompute_source_problem(path: Path, data_version: str, blood_version: str) -> str | None:
+    """--recompute-table-from の表が今のデータ版・血統版から作ったものか。違えば理由を返す。
+
+    作り直した表は今の版の名前で保存するので、別の版の表を渡すと中身と名前が食い違ったまま
+    以後の実行で再利用される。版はファイル名からしか分からない（表の中には入っていない）。
+    """
+    m = _CACHE_NAME.fullmatch(path.name)
+    if m is None:
+        return (f"{path.name} から版を読み取れません。factors_<データ版>_<血統版>_<印>.pkl の名前の"
+                "表を渡してください。")
+    if m["data"] != data_version:
+        return f"{path.name} はデータ版 {m['data']} の表です。今のデータ版は {data_version} です。"
+    if m["blood"] is not None and m["blood"] != blood_version:
+        return f"{path.name} は血統版 {m['blood']} の表です。今の血統版は {blood_version} です。"
+    return None
 
 
 def cache_path(cache_dir: Path, data_version: str, blood_version: str, versions: dict[str, str] | None = None) -> Path:
@@ -71,9 +97,9 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     version = _current(args.data_dir)
-    vdir = args.data_dir / "versions" / version
+    vdir = version_dir(args.data_dir, version)
     blood = _current(args.blood_dir)
-    bdir = args.blood_dir / "versions" / blood
+    bdir = version_dir(args.blood_dir, blood)
     stamp = datetime.now(JST).strftime("%Y%m%dT%H%M%S")
     out_dir = args.out_dir or (config.DATA_DIR / "factor_eval" / stamp)
     cache = cache_path(args.cache_dir, version, blood)
@@ -81,16 +107,26 @@ def main(argv: list[str] | None = None) -> int:
     log = lambda m: print(m, flush=True)  # noqa: E731
 
     reused, source = False, None
+    if args.recompute_table_from is not None:
+        problem = recompute_source_problem(args.recompute_table_from, version, blood)
+        if problem:
+            print(problem)
+            return 2
     if cache.exists() and not args.rebuild:
         R = pd.read_pickle(cache)
         reused = True
         print(f"要素の点数をキャッシュから読む: {cache}")
+        if args.recompute_table_from is not None:
+            print("  （作り直した後の表がすでにあるので --recompute-table-from は使っていません。"
+                  "作り直すなら --rebuild も付けてください）")
     elif args.recompute_table_from is not None:
         source = str(args.recompute_table_from)
         print(f"古い点数の表から表の要素だけ作り直す: {source}", flush=True)
         R = recompute_table_factors(pd.read_pickle(args.recompute_table_from), log=log)
     else:
         print("走の表を作る …", flush=True)
+        read_manifest(vdir)          # 書きかけ・壊れた版はここで止める（DataVersionError）
+        read_manifest(bdir)
         R0 = load_runs(vdir, bdir)
         races = pd.read_csv(vdir / "races.csv", dtype=str, na_filter=False)
         horses = pd.read_csv(vdir / "race_horses.csv", dtype=str, na_filter=False)

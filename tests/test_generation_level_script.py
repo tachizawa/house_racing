@@ -67,6 +67,21 @@ def test_coverage_start_uses_fromdate():
     assert generation_level.coverage_start({"fromdate": "20210901000000"}, runs) == date(2021, 9, 1)
 
 
+def test_coverage_start_uses_first_race_when_fromdate_is_older():
+    # option 1 の版: fromdate は 2023-08 でも実データは 2025-09 から
+    runs = pd.DataFrame({"date": [pd.Timestamp("2025-09-27")]})
+    manifest = {"fromdate": "20230801000000",
+                "coverage": {"first_hasso_at": "2025-09-27T09:45:00+09:00"}}
+    assert generation_level.coverage_start(manifest, runs) == date(2025, 9, 27)
+
+
+def test_coverage_start_ignores_correction_redeliveries():
+    runs = pd.DataFrame({"date": [pd.Timestamp("1989-04-01"), pd.Timestamp("2022-01-01")]})
+    manifest = {"fromdate": "20210901000000",
+                "coverage": {"first_hasso_at": "1989-04-01T10:00:00+09:00"}}
+    assert generation_level.coverage_start(manifest, runs) == date(2021, 9, 1)
+
+
 def test_coverage_start_falls_back_to_first_run():
     runs = pd.DataFrame({"date": [pd.Timestamp("2023-05-01"), pd.Timestamp("2024-05-01")]})
     assert generation_level.coverage_start({}, runs) == date(2023, 5, 1)

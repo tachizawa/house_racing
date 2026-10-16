@@ -13,12 +13,15 @@ from tests.fixtures import csv_data as fx
 JST = timezone(timedelta(hours=9))
 
 
-def _open(tmp_path, races, race_horses, *, first_hasso_at=None):
+def _open(tmp_path, races, race_horses, *, first_hasso_at=None, fromdate=None):
     data_dir = fx.write_dataset(tmp_path, races, race_horses, [])
-    if first_hasso_at is not None:
+    if first_hasso_at is not None or fromdate is not None:
         manifest_path = next((tmp_path / "versions").glob("*/manifest.json"))
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        manifest["coverage"] = {"first_hasso_at": first_hasso_at}
+        if first_hasso_at is not None:
+            manifest["coverage"] = {"first_hasso_at": first_hasso_at}
+        if fromdate is not None:
+            manifest["fromdate"] = fromdate
         manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
     store = DataStore.open_current(data_dir)
     return Repository(store), ResultRepository(store)
@@ -27,6 +30,20 @@ def _open(tmp_path, races, race_horses, *, first_hasso_at=None):
 def test_coverage_from_reads_manifest(tmp_path):
     repo, _ = _open(tmp_path, [], [], first_hasso_at="2026-08-01T09:40:00+09:00")
     assert repo.coverage_from == datetime(2026, 8, 1, 9, 40, tzinfo=JST)
+
+
+def test_coverage_from_ignores_correction_redeliveries_before_fromdate(tmp_path):
+    # option 4 では 1989 年の訂正再配信が混じり、first_hasso_at が fromdate よりずっと前になる
+    repo, _ = _open(tmp_path, [], [], first_hasso_at="1989-04-01T10:00:00+09:00",
+                    fromdate="20210901000000")
+    assert repo.coverage_from == datetime(2021, 9, 1, tzinfo=JST)
+
+
+def test_coverage_from_uses_first_race_when_fromdate_is_older(tmp_path):
+    # option 1 では fromdate を古くしても約1年ぶんしか返らない
+    repo, _ = _open(tmp_path, [], [], first_hasso_at="2025-09-27T09:45:00+09:00",
+                    fromdate="20230801000000")
+    assert repo.coverage_from == datetime(2025, 9, 27, 9, 45, tzinfo=JST)
 
 
 def test_coverage_from_is_none_when_manifest_has_no_coverage(tmp_path):

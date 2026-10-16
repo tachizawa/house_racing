@@ -410,6 +410,39 @@ def test_non_final_run_past_pinned_boundary_is_refused(tmp_path):
     assert rc == 2
 
 
+def test_non_final_run_past_pinned_boundary_with_reason_is_logged(tmp_path):
+    """理由を付けて境界を越えた --final なしの実行も final_runs.jsonl に残る
+    （docstring のとおり。記録しないと最終期間の使い直しを後から追えない）。
+    """
+    data_dir = _dataset_dir(tmp_path / "data")
+    backtest_top3_cli.main(_final_cli_args(data_dir, tmp_path / "out1"))
+
+    rc = backtest_top3_cli.main(_final_cli_args(
+        data_dir, tmp_path / "out2", tuning_until="20260401", final=False, reason="調整をやり直す"))
+
+    assert rc == 0
+    log = data_dir / "top3" / "final_runs.jsonl"
+    entries = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()
+               if line.strip()]
+    assert len(entries) == 2
+    assert entries[0]["tuning_until"] == "20260310"       # 境界は1行目のまま
+    assert entries[1]["final"] is False
+    assert entries[1]["reason"] == "調整をやり直す"
+    assert entries[1]["n_final_races"] == 1
+
+
+def test_non_final_run_within_pinned_boundary_writes_no_log(tmp_path):
+    data_dir = _dataset_dir(tmp_path / "data")
+    backtest_top3_cli.main(_final_cli_args(data_dir, tmp_path / "out1"))
+
+    rc = backtest_top3_cli.main(_final_cli_args(
+        data_dir, tmp_path / "out2", tuning_until="20260310", final=False))
+
+    assert rc == 0
+    log = data_dir / "top3" / "final_runs.jsonl"
+    assert len([line for line in log.read_text(encoding="utf-8").splitlines() if line.strip()]) == 1
+
+
 def test_dry_run_final_writes_no_log(tmp_path):
     data_dir = _dataset_dir(tmp_path / "data")
     args = _final_cli_args(data_dir, tmp_path / "out") + ["--dry-run"]

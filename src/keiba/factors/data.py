@@ -14,8 +14,8 @@ import pandas as pd
 
 from keiba import config
 from keiba.data.repository import _pick_by_data_kubun
+from keiba.features.speed_figure import JRA_JYO
 
-JRA_JYO = frozenset(f"{i:02d}" for i in range(1, 11))
 REGION = {"01": "北海道", "02": "北海道", "03": "東", "04": "東", "05": "東", "06": "東",
           "07": "西", "08": "西", "09": "西", "10": "小倉"}
 RUN_COLUMNS = ["race_id", "date", "year", "umaban", "waku", "ketto_num", "barei", "cohort", "futan", "kisyu",

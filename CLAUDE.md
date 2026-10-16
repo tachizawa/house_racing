@@ -129,8 +129,12 @@ scripts/update_data.py --dataspec RACE --fromdate 20230801000000
     読み込み時に捨てるので予想には入らない。1989〜2020年の JRA の訂正再配信も約450レース混じる
   - 5年ぶんにすると過去走が揃い、資料の大きさが増える。2026年1〜6月の1,661レースの
     ドライランで **29件（1.7%）が `STATE_MAX_CHARS` を超えた**（最大 52,664 文字）。対処は未決
-- 版: `DOSSIER_VERSION` 2 / `TOP3_PROMPT_VERSION` 2 / `TOP3_EVAL_RULES_VERSION` 1。
-  `n = 3`（`config.DEFAULT_TOP_N`）。
+- 版: `DOSSIER_VERSION` 3 / `TOP3_PROMPT_VERSION` 2 / `TOP3_EVAL_RULES_VERSION` 1。
+  `n = 3`（`config.DEFAULT_TOP_N`）。上の比較結果は `DOSSIER_VERSION` 2 のもの。
+  3 は 2026-10-17 に収録開始（`coverage_from`）を `fromdate` と `first_hasso_at` の遅いほうに
+  直した版で、形は同じ。option 4 の版では訂正再配信（1989年など）のせいで収録開始が古く出て、
+  「過去走が打ち切られているかもしれない」の注記が一度も付いていなかった。比較に使った1年版
+  （option 1）は `first_hasso_at` の方が遅いので値は変わらない。
 - **最終評価期間 2026-07-01〜09-22 は使用済み**（境界は `data/top3/final_runs.jsonl` に
   固定。最初の `--final` 実行 2026-09-23T13:10:16Z）。同じ境界より後の日付を指定する
   再評価には `--final-rerun-reason` が要り、理由が同ファイルに残る。
