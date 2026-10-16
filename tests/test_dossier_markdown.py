@@ -10,7 +10,8 @@ def _dossier():
            "corner_positions": [None, None, 3, 3], "last_3f_sec": 34.1, "futan_kg": 57.0}
     cond = {"starts": 1, "wins": 0, "top3": 1, "margin_sec_mean": 0.1,
             "period": {"from": "2026-09-06", "to": "2026-09-06"}, "inapplicable_reason": None}
-    undefined = dict(cond, starts=None, wins=None, top3=None,
+    undefined = dict(cond, starts=None, wins=None, top3=None, margin_sec_mean=None,
+                     period={"from": None, "to": None},
                      inapplicable_reason="今回の馬場状態が未入力のため比較できない")
     horse = {"bamei": "テストウマ", "sex_age": "牡4", "futan_kg": 57.0, "waku": "1",
              "kisyu": None,
@@ -55,6 +56,76 @@ def test_render_shows_missing_as_dash_not_zero():
     text = dossier_markdown.render(_dossier())
     assert "今回の馬場状態が未入力のため比較できない" in text
     assert "| 馬場 | — |" in text or "馬場: —" in text
+    # 定義できない条件の行は、出走・勝・3着内・平均着差がすべて「—」（0 ではない）。
+    assert ("| surface_same_going | — | — | — | — | "
+            "今回の馬場状態が未入力のため比較できない |") in text.splitlines()
+    # 0戦は 0 のまま出す（— と区別できる）。
+    d = _dossier()
+    d["horses"]["01"]["conditions"]["surface_exact_distance"] = dict(
+        d["horses"]["01"]["conditions"]["surface_exact_distance"],
+        starts=0, wins=0, top3=0, margin_sec_mean=None)
+    assert "| surface_exact_distance | 0 | 0 | 0 | — | — |" in dossier_markdown.render(d).splitlines()
+
+
+def test_render_uses_japanese_labels_for_course_facts():
+    # course_facts.json の実際のキー（英字）を生のまま出さない。
+    d = _dossier()
+    d["course"] = {
+        "identified": True, "reason": None, "jyo_cd": "01", "track_cd": "17",
+        "track_label": "芝・右", "direction": "right", "kyori_m": 1800,
+        "course_kubun_cd": None,
+        "facts": {"straight_m": 266.1, "circumference_m": 1640.9, "width_m": 25,
+                  "elevation_note": "高低差0.7m", "layout": "内回り"},
+        "start_note": None,
+        "facts_source": {"url": "https://example.com", "retrieved_at": "2026-09-23",
+                         "valid_from": "2000-01-01", "valid_to": None, "rail_basis": None},
+    }
+    text = dossier_markdown.render(d)
+    assert "- 直線距離: 266.1m" in text
+    assert "- 1周の距離: 1640.9m" in text
+    assert "- 幅員: 25m" in text
+    assert "- 高低差: 高低差0.7m" in text
+    assert "- コースの形: 内回り" in text
+    for raw in ("straight_m", "circumference_m", "width_m", "elevation_note", "layout"):
+        assert raw not in text
+
+
+def test_render_recent_runs_header_is_japanese():
+    text = dossier_markdown.render(_dossier())
+    assert "| 日付 | 競馬場 | コース | 距離(m) |" in text
+    assert "track_label" not in text
+    assert "last_3f_sec" not in text
+
+
+def test_render_history_breakdown_is_not_a_dict_repr():
+    d = _dossier()
+    d["field_summary"]["history_status_counts"] = {"found": 1, "unknown": 2}
+    text = dossier_markdown.render(d)
+    assert "- 履歴の内訳: found 1、unknown 2" in text
+    assert "{" not in text
+
+
+def test_render_shows_what_jev_receives_per_horse():
+    # 前走との比較・能力・脚質・計算できなかった項目は Jev に送っている。
+    # 人が見る .md からも読めるようにする。
+    d = _dossier()
+    d["horses"]["01"]["vs_last_run"] = {"days_since_last_run": 14, "distance_change_m": -200,
+                                        "futan_change_kg": 1.0, "class_level_change": None}
+    d["horses"]["01"]["ability"] = {"recent_margin_sec_wavg": 0.35, "runs_used": 3,
+                                    "recent_class_level_wavg": 3.5, "best_class_level": 4,
+                                    "field_rank": 2.0,
+                                    "margin_period": {"from": "2026-08-01", "to": "2026-09-06"}}
+    d["horses"]["01"]["running_style"] = {"corner_pos_mean": 0.25, "corner_pos_stdev": None,
+                                          "corner_pos_starts": 3, "corner_source": "jyuni_3c"}
+    d["data_quality"]["missing"] = {"01": ["transport"]}
+    text = dossier_markdown.render(d)
+    assert "前走からの日数 14" in text
+    assert "距離の変化(m) -200" in text
+    assert "クラス順序値の変化 —" in text
+    assert "近走の着差の加重平均(秒) 0.35" in text
+    assert "着差の集計期間 2026-08-01〜2026-09-06" in text
+    assert "使ったコーナー jyuni_3c" in text
+    assert "- 計算できなかった項目: transport" in text
 
 
 def test_render_lists_recent_run():

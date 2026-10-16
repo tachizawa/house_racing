@@ -91,6 +91,10 @@ TOP3_EVAL_RULES_VERSION = "1"
 # 5 -> 4: 定義文・注記の集約（DOSSIER_VERSION "2"）と合わせて実施。4走・
 # STATE_MAX_CHARS=52,000 での実測（100レース、2026-01..09-22、--dry-run）は
 # max 51,397 文字・0/100 が上限超過（旧: 5走・48,000 文字上限で 17/100 超過）。
+# ただしこの 100レースは約1年ぶんのデータ版での実測。5年ぶんの版
+# （20260924T115403Z）では過去走が揃って資料が大きくなり、2026年1〜6月の
+# 1,661レースのドライランで 29件（1.7%）が上限を超えた（最大 52,664 文字）。
+# 対処は未決（CLAUDE.md）。4走は「上限を超えない値」として確かめた値ではない。
 DEFAULT_DOSSIER_RECENT_RUNS = 4
 # state の上限（json.dumps(state, ensure_ascii=False) の文字数）。
 # 実測: input_tokens / (state_chars + question_chars) = 0.583〜0.590

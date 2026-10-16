@@ -1,10 +1,11 @@
 # house_racing
 
 Jev（TypeSafe AI の System One モデル）を使った競馬予想システム。
-現在入っているのは **Jev へのアクセス層と疎通確認** まで。データ取得（JRA-VAN）と
-予想ロジック本体はこれから。
+JRA-VAN Data Lab からのデータ取得、数値化、Jev への質問（勝率の上位 n 頭と、3着以内に入る馬の選択）、
+重みの学習と較正、バックテストまで端から端まで動く。ほかに Jev を使わない分析として、世代レベルと
+要素別の予想の過去での評価がある。
 
-設計方針は [CLAUDE.md](CLAUDE.md) を参照。
+設計方針と現況（実測した性能を含む）は [CLAUDE.md](CLAUDE.md) と `docs/superpowers/specs/` を参照。
 
 ## 動かす
 
@@ -34,21 +35,25 @@ PowerShell の場合、手順1・3の `.venv/Scripts/python.exe` は `.venv\Scri
 .venv/Scripts/python.exe -m pytest
 ```
 
-API に触れない部分（キーの解決、例外の日本語化、並列実行）だけを検証する。
-実通信の確認は `smoke_test.py` の役目。
+Jev・JV-Link の実通信はしない。実通信の確認は `smoke_test.py` の役目。
 
 ## 構成
 
 | パス | 役割 |
 |---|---|
 | `src/jev_client.py` | Jev への薄いアクセス層。キー解決・例外の日本語化・並列実行だけを持つ |
+| `src/keiba/` | データ取得・読み出し・数値化・予想・学習・評価・記録（詳細は CLAUDE.md の表） |
+| `scripts/` | `update_data` / `predict` / `fit_weights` / `backtest` / `dossier` / `backtest_top3` / `data_coverage` / `generation_level` / `factor_eval` / `smoke_test` |
 | `scripts/smoke_test.py` | 疎通確認。CLAUDE.md の3層構成をダミーデータで実演する |
-| `tests/` | `jev_client` のうち API に触れない部分のテスト |
+| `tests/` | 実通信をしないテスト |
+| `data/` | 取得したデータ版・予想記録・重み。JRA-VAN のデータは再配布不可のため**コミットしない** |
 | `.env` | API キー。**コミットしない**（`.gitignore` 済み） |
 
 `jev_client.py` に予想ロジックと重みは置かない。あそこは通信の都合だけを閉じ込める場所。
 
 ## 軸を足すとき
+
+本番の質問は `src/keiba/predict/questions.py`（変えたら `PROMPT_VERSION` を上げる）。以下は疎通確認の実演の場合。
 
 `scripts/smoke_test.py` の `AXIS_QUESTIONS` に質問を1行、`WEIGHTS` に重みを1つ足す。
 「値が大きいほど不利」を問う軸は `INVERTED_AXES` にも名前を入れる（第3層で `1 - x` に反転される）。
@@ -56,6 +61,4 @@ API に触れない部分（キーの解決、例外の日本語化、並列実�
 
 ## 次にやること
 
-- JRA-VAN Data Lab からのデータ取得（`build_race_state` / `build_horse_state` の中身を差し替える）
-- 軸の確定と重みの決め方
-- 第1層の確率（全頭で合計 1.0）と Noul（1頭ごとに 0–1）のスケールの揃え方
+未解決の項目は CLAUDE.md の「未解決のまま残っていること」を参照。

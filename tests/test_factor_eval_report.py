@@ -34,6 +34,12 @@ def _section(text: str, head: str) -> str:
     return text[start:] if nxt < 0 else text[start:nxt]
 
 
+def test_report_states_the_bootstrap_count_it_was_given():
+    assert "ブートストラップ（1,000回）" in _render()                 # 既定は N_BOOT
+    text = _render(n_boot=200)
+    assert "ブートストラップ（200回）" in text and "1,000回" not in text
+
+
 def test_report_sections():
     text = _render()
     for h in ("# 要素別の予想 — 過去での評価", "## 判定（市場への上乗せ）", "## 根拠: 的中", "## 根拠: 食い違い",

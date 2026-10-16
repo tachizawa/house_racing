@@ -92,3 +92,40 @@ def test_script_rejects_bootstrap_below_one(tmp_path, capsys):
     with pytest.raises(SystemExit) as exc:
         generation_level.main(["--as-of", "20251004", "--data-dir", str(data_dir), "--bootstrap", "0"])
     assert exc.value.code == 2 and "--bootstrap" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("ages", ["", ",", "1", "0,1", "x", "2,a"])
+def test_script_rejects_invalid_ages(tmp_path, capsys, ages):
+    """--ages が空・2 未満・整数でないなら、ブートストラップを回す前に止める。"""
+    with pytest.raises(SystemExit) as exc:
+        generation_level.main(["--as-of", "20251004", "--data-dir", str(tmp_path / "none"),
+                               "--ages", ages])
+    assert exc.value.code == 2 and "--ages" in capsys.readouterr().err
+
+
+class _Store:
+    def __init__(self, rows):
+        self.race_horses = pd.DataFrame(rows)
+
+
+def _horse(umaban, *, barei="03", data_kubun="7", make_date="20251005", bamei=None):
+    return dict(race_id="2025100506010101", umaban=umaban, bamei=bamei or f"ウマ{umaban}",
+                barei=barei, data_kubun=data_kubun, make_date=make_date)
+
+
+def test_examples_ignore_deleted_and_cancelled_records():
+    """作成日が新しくても、削除（0）・中止（9）の行で名前と馬齢を上書きしない。"""
+    store = _Store([_horse("01", make_date="20251005"),
+                    _horse("01", data_kubun="0", make_date="20251010", bamei="消えた", barei="09"),
+                    _horse("02", make_date="20251005"),
+                    _horse("02", data_kubun="9", make_date="20251010", bamei="中止", barei="09")])
+    out = generation_level._examples(store, ["2025100506010101"])["2025100506010101"]
+    assert [(h.umaban, h.bamei, h.age, h.cohort) for h in out] == [
+        ("01", "ウマ01", 3, 2022), ("02", "ウマ02", 3, 2022)]
+
+
+def test_examples_skip_horses_without_a_positive_age():
+    """barei が空・"00" の馬は載せない（"00" を当年生まれにしない、空で止まらない）。"""
+    store = _Store([_horse("01"), _horse("02", barei=""), _horse("03", barei="00")])
+    out = generation_level._examples(store, ["2025100506010101"])["2025100506010101"]
+    assert [h.umaban for h in out] == ["01"]

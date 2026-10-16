@@ -20,6 +20,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from keiba import config  # noqa: E402
+from keiba.data.repository import _pick_by_data_kubun  # noqa: E402
 from keiba.data.store import DataStore  # noqa: E402
 from keiba.data.store import coverage_start as data_coverage_start  # noqa: E402
 from keiba.evaluate.age_curve import age_curve, curve_levels  # noqa: E402
@@ -45,14 +46,22 @@ def coverage_start(manifest: dict, runs: pd.DataFrame) -> date:
     return runs["date"].min().date()
 
 
+#: 例の馬を選ぶデータ区分の優先順位。結果があれば結果、まだ走っていなければ出馬表
+#: （keiba.data.repository の _BEST_AVAILABLE と同じ）。削除（0）・中止（9）は使わない。
+_EXAMPLE_PRIORITY = config.DATA_KUBUN_RESULT_PRIORITY + config.DATA_KUBUN_ENTRY_PRIORITY
+
+
 def _examples(store: DataStore, race_ids: list[str]) -> dict[str, list[ExampleHorse]]:
+    """例のレースの出走馬。馬齢が正の整数として読めない馬は載せない
+    （repository._birth_year_from_race_row と同じく、"00" や空を年齢にしない）。"""
     out = {}
     for race_id in race_ids:
-        rows = store.race_horses[store.race_horses["race_id"] == race_id]
-        rows = rows.sort_values("make_date").drop_duplicates("umaban", keep="last").sort_values("umaban")
+        rows = _pick_by_data_kubun(store.race_horses[store.race_horses["race_id"] == race_id],
+                                   _EXAMPLE_PRIORITY).sort_values("umaban")
         year = int(race_id[:4])
         out[race_id] = [ExampleHorse(umaban=r.umaban, bamei=r.bamei, age=int(r.barei),
-                                     cohort=year - int(r.barei)) for r in rows.itertuples()]
+                                     cohort=year - int(r.barei)) for r in rows.itertuples()
+                        if r.barei.strip().isdigit() and int(r.barei) > 0]
     return out
 
 
@@ -83,7 +92,12 @@ def main(argv: list[str] | None = None) -> int:
 
     as_of = datetime.strptime(args.as_of, "%Y%m%d").date()
     as_of_dt = datetime(as_of.year, as_of.month, as_of.day, tzinfo=JST)
-    requested = sorted({int(a) for a in args.ages.split(",")})
+    try:
+        requested = sorted({int(a) for a in args.ages.split(",") if a.strip()})
+    except ValueError:
+        parser.error(f"--ages は 2 以上の整数をカンマ区切りで指定してください: {args.ages}")
+    if not requested or min(requested) < 2:
+        parser.error(f"--ages は 2 以上の整数をカンマ区切りで指定してください: {args.ages}")
     ages = list(range(2, max(requested) + 1))          # 世代の歩み（§5.4）は2歳時から並べる
     out_dir = args.out_dir or (config.DATA_DIR / "generation" / args.as_of)
 

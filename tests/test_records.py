@@ -468,12 +468,16 @@ def test_no_votes_is_not_stored():
 
 
 def test_trifecta_rows_are_produced_lazily():
-    """3連単は1レコード最大4,896行。リストに溜めずに1行ずつ渡す。"""
-    from collections.abc import Iterator
+    """3連単は1レコード最大4,896行。リストに溜めずに1行ずつ渡す。
+
+    Iterator かどうかでは足りない（作り終えたリストを iter() で包んでも通る）。
+    ジェネレータであること＝行を作るのが取り出すときであることを確かめる。
+    """
+    import inspect
     raw = fx.make_odds("O6", slots=[(i, f"01{i % 17 + 2:02d}{i % 16 + 3:02d}00123450001")
                                     for i in range(0, 4896, 7)])
     rows = records.parse_rows(raw)
-    assert isinstance(rows, Iterator)
+    assert inspect.isgenerator(rows)
     assert sum(1 for key, _ in rows if key == "odds_sanrentan") == len(range(0, 4896, 7))
 
 

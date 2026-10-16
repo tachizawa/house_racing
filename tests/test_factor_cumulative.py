@@ -47,7 +47,9 @@ def test_hetero_estimator_recovers_tau2_where_pooled_is_badly_biased():
     v, keys, tau2 = _unequal_variance_groups()
     sigma2, t2 = eb_variance_components(v, keys)
     assert t2 == pytest.approx(tau2, rel=0.3)
-    lam_true = sigma2 / tau2
+    sigma2_true = (2000 * 10 * 0.25 + 20 * 600 * 0.01) / (2000 * 10 + 20 * 600)   # n_k で重み付けした σ²_k = 0.16
+    assert sigma2 == pytest.approx(sigma2_true, rel=0.05)
+    lam_true = sigma2_true / tau2
     lam_new = eb_lambda_hetero(v, keys)
     assert lam_new == pytest.approx(lam_true, rel=0.3)
     lam_old = eb_lambda(v, keys)
@@ -72,7 +74,17 @@ def test_shrunk_scores_take_the_estimator():
     b = shrunk_prior_scores(R, ["kisyu"], "ae", first_year=2016, lam_fn=eb_lambda)
     c = shrunk_prior_scores(R, ["kisyu"], "ae", first_year=2016, lam_fn=eb_lambda_hetero)
     np.testing.assert_array_equal(a, b)
-    assert np.isfinite(c[(R.year >= 2016).to_numpy()]).all()
+    rows = (R.year >= 2016).to_numpy()
+    assert np.isfinite(c[rows]).all()
+    assert not np.allclose(b[rows], c[rows])                 # 推定を替えると点数が変わる（引数が効いている）
+    # 1行を式 (S − n·μ) / (n + λ) で確かめる（λ は v2 の推定に前年末までの行を渡したもの）
+    i = int(np.flatnonzero((R.year == 2017).to_numpy() & (R.kisyu == STRONG_JOCKEY).to_numpy())[-1])
+    S, n = prior_day_sums(R, ["kisyu"], "ae")
+    allS, alln = prior_day_sums(R.assign(_all=0), ["_all"], "ae")
+    prior = (R.date < pd.Timestamp("2017-01-01")).to_numpy()
+    lam = eb_lambda_hetero(R["ae"].to_numpy(float)[prior], R["kisyu"].astype(str).to_numpy()[prior])
+    assert lam is not None
+    assert c[i] == pytest.approx((S[i] - n[i] * allS[i] / alln[i]) / (n[i] + lam))
 
 
 def test_shrunk_scores_recover_strong_jockey():

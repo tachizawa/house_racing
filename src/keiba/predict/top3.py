@@ -28,9 +28,19 @@ __all__ = ["PaceUnavailableError", "PlanBPartialFailure", "Top3Answer",
 
 
 class Top3IncompleteError(RuntimeError):
-    def __init__(self, missing: list[str]) -> None:
+    """応答は返ったが、必要な答えが欠けていた。
+
+    応答が返った時点で課金は確定しているので、その応答の利用量
+    （``input_tokens`` / ``requests``）を持って上へ投げる。呼び出し側は
+    これを usage に足す（足さないと使用量と費用を過少報告する）。
+    """
+
+    def __init__(self, missing: list[str], *, input_tokens: int = 0,
+                 requests: int = 0) -> None:
         super().__init__(f"3着内の答えが欠けています: {missing}")
         self.missing = missing
+        self.input_tokens = input_tokens
+        self.requests = requests
 
 
 class PaceUnavailableError(RuntimeError):
@@ -63,7 +73,8 @@ def _ask_top3(client: Any, dossier: dict, state: dict, *, with_pace_forecast: bo
     missing = [tq.question_name(u) for u in dossier["horses"]
                if tq.question_name(u) not in response.nouls]
     if missing:
-        raise Top3IncompleteError(missing)
+        raise Top3IncompleteError(missing, input_tokens=response.usage.input_tokens or 0,
+                                  requests=1)
     top3 = {u: float(response.nouls[tq.question_name(u)].noul) for u in dossier["horses"]}
     winner_probs: dict[str, float] = {}
     winner_missing: list[str] = []
@@ -105,6 +116,8 @@ class PlanBPartialFailure(RuntimeError):
     上へ投げる（final review I-4b）。``cause`` が元の例外
     （Top3IncompleteError / JevRequestError / StateTooLargeError）。
     ``requests_sent`` は2回目を送る前に止めたなら 1、送ったなら 2。
+    ``input_tokens`` は利用量が読めた応答の合計（pace と、``cause`` が
+    Top3IncompleteError なら2回目の応答のぶんも含む）。
     """
 
     def __init__(self, cause: Exception, *, input_tokens: int, requests_sent: int,
@@ -142,10 +155,10 @@ def run_plan_b(client: Any, dossier: dict, *, pace_definition: dict | None) -> T
                      limit=config.STATE_MAX_CHARS)
     pace_q = tq.pace_questions()
     pace_response = ask(client, pace_state, pace_q)
-    if "pace" not in pace_response.choices:
-        raise Top3IncompleteError(["pace"])
-    pace_probs = {k: float(v) for k, v in pace_response.choices["pace"].probabilities.items()}
     pace_tokens = pace_response.usage.input_tokens or 0
+    if "pace" not in pace_response.choices:
+        raise Top3IncompleteError(["pace"], input_tokens=pace_tokens, requests=1)
+    pace_probs = {k: float(v) for k, v in pace_response.choices["pace"].probabilities.items()}
 
     # 最尤区分だけでなく分布のまま渡す（確定した事実として扱わせない）。
     state = to_state(dossier, pace_forecast=_pace_forecast(pace_probs, pace_definition))
@@ -154,8 +167,10 @@ def run_plan_b(client: Any, dossier: dict, *, pace_definition: dict | None) -> T
             client, dossier, state, with_pace_forecast=True)
     except (Top3IncompleteError, JevRequestError, StateTooLargeError) as error:
         # StateTooLargeError は送る前に弾いている（上の事前検査があるので通常は来ない）。
+        # Top3IncompleteError は2回目の応答が返っているので、その利用量も足す。
+        second_tokens = error.input_tokens if isinstance(error, Top3IncompleteError) else 0
         raise PlanBPartialFailure(
-            error, input_tokens=pace_tokens,
+            error, input_tokens=pace_tokens + second_tokens,
             requests_sent=1 if isinstance(error, StateTooLargeError) else 2,
             seconds=time.perf_counter() - started) from error
     return Top3Answer(

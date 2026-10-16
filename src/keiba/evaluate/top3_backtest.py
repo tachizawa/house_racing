@@ -270,12 +270,16 @@ def run(races: Sequence[RaceRow], repo: Repository, results: ResultRepository, c
                                            answer=answer), answer.sent
             except top3.PlanBPartialFailure as failure:
                 # 案Bで pace のリクエストが成功した後の失敗。pace の代金は分かって
-                # いるので落とさない。2回目を送っていれば、その分は請求額の読めない
-                # 課金として failed_requests に数える（final review I-4b）。
+                # いるので落とさない。2回目を送って応答が返らなかったなら、その分は
+                # 請求額の読めない課金として failed_requests に数える（final review I-4b）。
+                # 2回目の答えが欠けただけ（Top3IncompleteError）なら応答の利用量は
+                # failure.input_tokens に入っているので、failed_requests には数えない。
+                unknown_cost = (failure.requests_sent == 2
+                                and not isinstance(failure.cause, top3.Top3IncompleteError))
                 usage[method] = {"input_tokens": failure.input_tokens,
                                  "requests": failure.requests_sent,
                                  "seconds": failure.seconds, "state_chars": None,
-                                 "failed_requests": 1 if failure.requests_sent == 2 else 0}
+                                 "failed_requests": 1 if unknown_cost else 0}
                 skipped = _partial_failure_skip(failure.cause)
                 skip_detail = _skip_detail(method, failure.cause)
                 break
@@ -294,13 +298,14 @@ def run(races: Sequence[RaceRow], repo: Repository, results: ResultRepository, c
                 skip_detail = _skip_detail(method, error)
                 break
             except top3.Top3IncompleteError as error:
-                # 応答は返ってきている＝課金は発生した（トークン数は例外側が
-                # 持っていないので不明のまま 0 にする。案Bの2回目の欠けは
-                # PlanBPartialFailure で来る）。failed_requests で
-                # 「請求額が読めない課金がある」ことを report() に見せる
-                # （Minor 5: 費用の可視性）。
-                usage[method] = {"input_tokens": 0, "requests": 0, "seconds": 0.0,
-                                 "state_chars": None, "failed_requests": 1}
+                # 応答は返ってきている＝課金は発生した。例外が応答の利用量を
+                # 持っているので、それを usage に足す（足さないと使用量と費用を
+                # 過少報告する）。トークン数が読めているので failed_requests には
+                # 数えない。案Bの2回目の欠けは PlanBPartialFailure で来る。
+                usage[method] = {"input_tokens": error.input_tokens,
+                                 "requests": error.requests, "seconds": 0.0,
+                                 "state_chars": None,
+                                 "failed_requests": 0 if error.requests else 1}
                 skipped = "incomplete_answer"
                 skip_detail = _skip_detail(method, error)
                 break
@@ -401,8 +406,9 @@ def report(rows: Sequence[Top3Row], *, n: int, run_info: dict) -> dict:
             total["requests"] += u["requests"]
             total["seconds"] += u["seconds"]
             total["races"] += 1
-            # 応答が欠けた／失敗したが課金は発生した可能性がある呼び出しの数
-            # （トークン数が読めないので input_tokens には足し込めない。
+            # 失敗して応答が読めなかったが課金は発生した可能性がある呼び出しの数
+            # （トークン数が読めないので input_tokens には足し込めない。答えが
+            # 欠けただけの応答は利用量が読めるので、ここではなく input_tokens に入る。
             # Minor 5: このカウントを見て「usage の合計は下限」と読むこと）。
             total["failed_requests"] += u.get("failed_requests", 0)
     for total in usage.values():

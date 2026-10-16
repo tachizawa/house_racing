@@ -63,7 +63,11 @@ def _nll_grad(w, X, y, codes, starts, n_r):
 
 
 def fit_stages(d: pd.DataFrame, feats: list[str]) -> list[np.ndarray]:
-    """段1〜3の重みを最尤推定する。d は valid な行だけで、race_id ごとにまとまって並ぶこと。"""
+    """段1〜3の重みを最尤推定する。d は valid な行だけで、race_id ごとにまとまって並ぶこと。
+
+    収束しなかった段があれば止める（収束していない重みで Δ を出さない）。2026-10-11 の v2 の実行
+    （20261011T143147）の 420 回の推定はすべて収束していた（反復は最大 25 回）。
+    """
     weights = []
     for s in STAGES:
         f = _stage_rows(d, s)
@@ -71,6 +75,8 @@ def fit_stages(d: pd.DataFrame, feats: list[str]) -> list[np.ndarray]:
         X = f[feats].to_numpy(float)
         r = minimize(_nll_grad, np.zeros(len(feats)), args=(X, f["_y"].to_numpy(), codes, starts, n_r),
                      jac=True, method="L-BFGS-B", options={"maxiter": 2000, "gtol": 1e-8})
+        if not r.success:
+            raise RuntimeError(f"段{s}の重みの推定が収束しませんでした（特徴量 {feats}、反復 {r.nit} 回）: {r.message}")
         weights.append(r.x)
     return weights
 
@@ -96,13 +102,15 @@ def _order_dist(etas: list[np.ndarray]) -> np.ndarray:
     P2 = e[1][None, :] / (e[1].sum() - e[1])[:, None]
     np.fill_diagonal(P2, 0)
     d3 = e[2].sum() - e[2][:, None] - e[2][None, :]
-    with np.errstate(divide="ignore", invalid="ignore"):
-        P3 = e[2][None, None, :] / d3[:, :, None]
+    # 3段目の分母（1・2着の馬を除いた合計）が桁落ちで 0 以下になった組は確率 0 にする（inf を巨大な値にしない）。
+    # 2026-10-11 の v2 の実行では分母の最小は 0.229（合計に対して 12.5%）で、ここに当たる組は無かった
+    P3 = np.divide(e[2][None, None, :], d3[:, :, None], out=np.zeros(d3.shape + (len(p1),)),
+                   where=d3[:, :, None] > 0)
     idx = np.arange(len(p1))
     P3[idx, idx, :] = 0
     P3[:, idx, idx] = 0
     P3[idx, :, idx] = 0
-    return p1[:, None, None] * P2[:, :, None] * np.nan_to_num(P3)
+    return p1[:, None, None] * P2[:, :, None] * P3
 
 
 def place_probabilities(d: pd.DataFrame, feats: list[str], weights: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:

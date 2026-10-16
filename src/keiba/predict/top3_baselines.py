@@ -22,11 +22,13 @@ class BaselineRanking:
 
 
 def ability_ranking(dossier: dict) -> BaselineRanking:
+    # 馬番は数値として並べる（"10" を "2" より前にしない。ゼロ埋めの無い馬番の入力もある）。
     horses = dossier["horses"]
-    ranked = sorted((h["ability"]["field_rank"], u) for u, h in horses.items()
+    ranked = sorted((h["ability"]["field_rank"], int(u), u) for u, h in horses.items()
                     if h["ability"]["field_rank"] is not None)
-    unranked = sorted(u for u, h in horses.items() if h["ability"]["field_rank"] is None)
-    return BaselineRanking(ranking=tuple(u for _, u in ranked) + tuple(unranked),
+    unranked = sorted((u for u, h in horses.items() if h["ability"]["field_rank"] is None),
+                      key=int)
+    return BaselineRanking(ranking=tuple(u for _, _, u in ranked) + tuple(unranked),
                            all_tied=not ranked, n_unranked=len(unranked))
 
 

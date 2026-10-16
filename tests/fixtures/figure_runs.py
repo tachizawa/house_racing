@@ -75,12 +75,13 @@ def season_runs(*, years=(2024, 2025), days_per_year=4, field=12, seed=0) -> pd.
                                         day=day, date=pd.Timestamp(day), year=year, kyori_m=kyori,
                                         time_sec=times[k], rank=float(rank), barei=age, cohort=year - age))
             young_id = f"{day}-1600-Y"
+            young_times = [(S_TRUE[1600] + 1.0 - ability[2][i] + v) * 1.6 for i in range(field)]
+            young_rank = np.argsort(np.argsort(young_times)) + 1     # 古馬戦と同じく速い順に着順を振る
             for i in range(field):
                 rows.append(run_row(race_id=young_id, umaban=f"{i + 1:02d}", ketto_num=f"C{year - 2}-{i}",
                                     day=day, date=pd.Timestamp(day), year=year, syubetu_cd="11",
-                                    class_level=1.0,
-                                    time_sec=(S_TRUE[1600] + 1.0 - ability[2][i] + v) * 1.6,
-                                    rank=float(i + 1), barei=2, cohort=year - 2))
+                                    class_level=1.0, time_sec=young_times[i],
+                                    rank=float(young_rank[i]), barei=2, cohort=year - 2))
     return pd.DataFrame(rows)
 
 

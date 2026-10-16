@@ -100,9 +100,37 @@ def _threshold_text(value: float) -> str:
     return repr(float(value))
 
 
+class _PastRunsCache:
+    """Repository の past_runs だけを覚えておく薄い包み。
+
+    build_context が各馬の過去走を引いた後、build_dossier が同じ馬・同じ
+    as_of でもう一度引く。past_runs は race_horses 全体を走査するので、
+    バックテストで1レースごとに2回ずつ走らせない（PR #2 レビュー）。
+    それ以外の属性はそのまま repo に回す。
+    """
+
+    def __init__(self, repo: Repository) -> None:
+        self._repo = repo
+        self._runs: dict[tuple, list] = {}
+
+    def past_runs(self, ketto_num: str, *, as_of, limit: int | None = None) -> list:
+        key = (ketto_num, as_of, limit)
+        if key not in self._runs:
+            self._runs[key] = self._repo.past_runs(ketto_num, as_of=as_of, limit=limit)
+        # 呼び出し側が並べ替えても他の呼び出し側に響かないよう、毎回コピーを返す。
+        return list(self._runs[key])
+
+    def __getattr__(self, name: str):
+        return getattr(self._repo, name)
+
+
 def build_dossier(race_input: RaceInput, repo: Repository, *,
                   max_recent_runs: int = config.DEFAULT_DOSSIER_RECENT_RUNS) -> dict:
+    if max_recent_runs < 0:
+        # 負の値を切り出しに使うと、古い走から黙って落ちる（runs[:-1] など）。
+        raise ValueError(f"max_recent_runs は0以上で指定してください: {max_recent_runs}")
     as_of = race_input.prediction_cutoff
+    repo = _PastRunsCache(repo)
     ctx = build_context(race_input, repo)
     conditions = (repo.race_conditions(race_input.race_id, as_of=as_of)
                   if race_input.race_id is not None else None)
@@ -174,9 +202,13 @@ def build_dossier(race_input: RaceInput, repo: Repository, *,
             "n_with_history": sum(1 for h in horses.values() if h["history"]["runs_found"] > 0),
             "history_status_counts": dict(sorted(statuses.items())),
             "n_front_runners": n_front,
+            # running_style は4角の通過順が1走も無い馬を3角→2角で測る
+            # （derive.running_style）。文言もその測り方を名指しする。
             "front_runner_definition": (
                 "近走の4角の相対位置（通過順÷頭数）の平均が "
-                f"{_threshold_text(config.FRONT_RUNNER_MAX_CORNER_POS)} 以下の馬"),
+                f"{_threshold_text(config.FRONT_RUNNER_MAX_CORNER_POS)} 以下の馬"
+                "（4角の通過順が1走も無い馬は3角、それも無ければ2角で測る。"
+                "どれを使ったかは各馬の running_style.corner_source）"),
         },
         "data_quality": quality,
     }

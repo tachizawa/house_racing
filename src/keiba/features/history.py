@@ -125,6 +125,19 @@ class TodayConditions:
 
 _TOL = config.SAME_DISTANCE_TOLERANCE_M
 
+
+def _course_undefined_reason(t: TodayConditions) -> str | None:
+    """競馬場・トラックコードのどちらかが不明なら比較できない。
+
+    競馬場が不明なまま一致判定すると全走が偽になり、「同じコースを0戦」と
+    馬についての主張に読めてしまう。
+    """
+    if not t.track_cd:
+        return "今回のコース（トラックコード）が特定できないため比較できない"
+    if not t.jyo_cd:
+        return "今回の競馬場が不明のため比較できない"
+    return None
+
 # (キー, 定義文, 定義できない理由を返す関数, 一致判定)
 _COMBINED: tuple[tuple[str, str,
                        Callable[[TodayConditions], str | None],
@@ -139,7 +152,7 @@ _COMBINED: tuple[tuple[str, str,
      lambda r, t: r.race.track_kind == t.track_kind and abs(r.race.kyori_m - t.kyori_m) <= _TOL),
     ("course_exact_distance",
      "競馬場・コース（トラックコード）・距離がすべて今回と同じ過去走",
-     lambda t: None if t.track_cd else "今回のコース（トラックコード）が特定できないため比較できない",
+     _course_undefined_reason,
      lambda r, t: (r.race.jyo_cd == t.jyo_cd and r.race.track_cd == t.track_cd
                    and r.race.kyori_m == t.kyori_m)),
     ("surface_same_going",

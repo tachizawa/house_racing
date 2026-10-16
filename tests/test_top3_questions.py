@@ -4,14 +4,13 @@ import re
 
 from typesafe_sdk import Choice, Noul
 
+from keiba.features import dossier as dossier_mod
 from keiba.predict import top3_questions as tq
+from tests.test_dossier import _dataset, _race_input
 
 DOSSIER = {"course": {}, "race": {}, "field_summary": {}, "data_quality": {},
            "horses": {"01": {"bamei": "イチ", "sex_age": "牡4", "futan_kg": 57.0},
                       "02": {"bamei": "ニ", "sex_age": "牝3", "futan_kg": 55.0}}}
-STATE_KEYS = {"course", "race", "horses", "field_summary", "data_quality",
-              "prediction_cutoff", "dossier_version", "condition_definitions",
-              "history_status_notes"}
 
 
 def test_one_noul_per_horse_plus_winner():
@@ -41,12 +40,18 @@ def test_pace_forecast_mentioned_only_when_present():
     assert "pace_forecast" in with_
 
 
-def test_instructions_reference_only_existing_state_keys():
+def test_instructions_reference_only_existing_state_keys(tmp_path):
     # 「state のキー」として名指しするのは ASCII の識別子。存在しないキーを名指ししない。
+    # 許すキーは手で写さず、本物の build_dossier → to_state の出力から取る
+    # （資料のキーが変わったときに、古いキーを名指しする文言を検出できるように）。
+    real = dossier_mod.build_dossier(_race_input(), _dataset(tmp_path))
     for with_pace in (False, True):
-        allowed = STATE_KEYS | ({"pace_forecast"} if with_pace else set())
-        for q in tq.top3_questions(DOSSIER, with_pace_forecast=with_pace).values():
+        state = dossier_mod.to_state(
+            real, pace_forecast={"probabilities": {}} if with_pace else None)
+        allowed = set(state)
+        for q in tq.top3_questions(real, with_pace_forecast=with_pace).values():
             named = set(re.findall(r"\b([a-z_]+)：", q.instructions))
+            assert named, "名指ししているキーが1つも見つからない（正規表現の前提が崩れた）"
             assert named <= allowed, named - allowed
 
 

@@ -20,6 +20,12 @@ def test_horses_without_rank_go_last_in_umaban_order():
     assert r.n_unranked == 2
 
 
+def test_umaban_order_is_numeric_not_string():
+    # ゼロ埋めの無い馬番でも "10" を "2" より前にしない（欠けた馬・同順位の両方）。
+    r = tb.ability_ranking(d({"10": None, "2": None, "11": 1.0, "3": 1.0}))
+    assert r.ranking == ("3", "11", "2", "10")
+
+
 def test_all_missing_is_reported_as_tied():
     r = tb.ability_ranking(d({"01": None, "02": None}))
     assert r.all_tied is True

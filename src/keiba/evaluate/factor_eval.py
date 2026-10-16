@@ -95,6 +95,7 @@ def evaluate(R: pd.DataFrame, factors: list[str], *, years=EVAL_YEARS, log=print
         rid = te["race_id"].to_numpy()
         top3 = te["top3"].to_numpy(float)
         e3 = te["e3"].to_numpy(float) if "e3" in te else np.full(len(te), np.nan)
+        has_e3 = np.isfinite(e3)     # 見込み（e3）の平均は e3 のある馬だけで取る（欠けを 0 として薄めない）
         w_odds = topk_weights(-te["odds"].to_numpy(float), rid)
         w_mm = topk_weights(p_m, rid)
         # 列を1本ずつ DataFrame に足すと断片化して遅くなる（PerformanceWarning）ので、辞書に集めて最後に1回で作る
@@ -122,8 +123,10 @@ def evaluate(R: pd.DataFrame, factors: list[str], *, years=EVAL_YEARS, log=print
             mo = w_odds * (1 - w_solo)
             cols[f"solo:{f}"] = w_solo * top3
             cols[f"comb:{f}"] = w_comb * top3
-            cols[f"fo_n:{f}"], cols[f"fo_hit:{f}"], cols[f"fo_e3:{f}"] = fo, fo * top3, fo * np.nan_to_num(e3)
-            cols[f"mo_n:{f}"], cols[f"mo_hit:{f}"], cols[f"mo_e3:{f}"] = mo, mo * top3, mo * np.nan_to_num(e3)
+            for tag, wt in (("fo", fo), ("mo", mo)):
+                cols[f"{tag}_n:{f}"], cols[f"{tag}_hit:{f}"] = wt, wt * top3
+                cols[f"{tag}_e3:{f}"] = np.where(has_e3, wt * np.nan_to_num(e3), 0.0)
+                cols[f"{tag}_e3n:{f}"] = np.where(has_e3, wt, 0.0)
         agg = pd.DataFrame(cols).groupby("race_id", sort=False).sum()
         extra = {f"delta:{f}": deltas[f].reindex(agg.index).to_numpy() for f in factors}
         extra.update({f"measured:{f}": np.full(len(agg), measured[f]) for f in factors})
@@ -152,6 +155,12 @@ def _cluster_boot(per_race: pd.DataFrame, cols: list[str], n_boot: int, seed: in
         w = np.bincount(rng.integers(0, len(uniq), len(uniq)), minlength=len(uniq)).astype(float)
         means[b] = (w @ sums) / (w @ counts)
     return means
+
+
+def _e3_mean(per_race: pd.DataFrame, tag: str, f: str) -> float:
+    """食い違った馬（tag = fo / mo）の見込み3着内率の平均。e3 の無い馬は分母にも入れない。"""
+    n = per_race[f"{tag}_e3n:{f}"].sum()
+    return per_race[f"{tag}_e3:{f}"].sum() / n if n else np.nan
 
 
 def summarize(per_race: pd.DataFrame, factors: list[str], *, n_boot: int = N_BOOT, seed: int = SEED,
@@ -186,9 +195,9 @@ def summarize(per_race: pd.DataFrame, factors: list[str], *, n_boot: int = N_BOO
             mkt_odds=per_race["mkt_odds_hits"].mean(), comb=per_race[f"comb:{f}"].mean(),
             mkt_model=per_race["mkt_model_hits"].mean(), fo_n=fo_n,
             fo_rate=per_race[f"fo_hit:{f}"].sum() / fo_n if fo_n else np.nan,
-            fo_e3=per_race[f"fo_e3:{f}"].sum() / fo_n if fo_n else np.nan, mo_n=mo_n,
+            fo_e3=_e3_mean(per_race, "fo", f), mo_n=mo_n,
             mo_rate=per_race[f"mo_hit:{f}"].sum() / mo_n if mo_n else np.nan,
-            mo_e3=per_race[f"mo_e3:{f}"].sum() / mo_n if mo_n else np.nan))
+            mo_e3=_e3_mean(per_race, "mo", f)))
     return pd.DataFrame(rows).set_index("factor")
 
 
@@ -212,6 +221,6 @@ def by_year(per_race: pd.DataFrame, factors: list[str]) -> pd.DataFrame:
                 n = g[f"{tag}_n:{f}"].sum()
                 row[f"{tag}_n"] = n
                 row[f"{tag}_rate"] = g[f"{tag}_hit:{f}"].sum() / n if n else np.nan
-                row[f"{tag}_e3"] = g[f"{tag}_e3:{f}"].sum() / n if n else np.nan
+                row[f"{tag}_e3"] = _e3_mean(g, tag, f)
             rows.append(row)
     return pd.DataFrame(rows).set_index(["year", "factor"])

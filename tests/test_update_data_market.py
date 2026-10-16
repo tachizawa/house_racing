@@ -1,5 +1,7 @@
 """update_data の --kind market と --from-raw。COM は叩かない。"""
 
+import json
+
 import pytest
 
 from keiba.ingest import rawdump, store
@@ -91,6 +93,37 @@ class TestFromRaw:
 
         assert exit_code == 1
         assert "走破タイムの照合" in capsys.readouterr().out
+
+    def test_missing_spec_file_is_refused(self, tmp_path, raw_dir):
+        """manifest に載っている種別のファイルが無ければ、欠けた版を作らない。"""
+        (raw_dir / "HR.bin.gz").unlink()
+        out_dir = tmp_path / "market"
+        with pytest.raises(SystemExit, match="HR.bin.gz"):
+            update_data.main(["--kind", "market", "--from-raw", str(raw_dir),
+                              "--data-dir", str(out_dir)])
+        assert store.current_version(out_dir) is None
+
+    def test_count_mismatch_with_manifest_is_refused(self, tmp_path, raw_dir):
+        path = raw_dir / "manifest.json"
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        manifest["counts"]["HR"] = 2
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+        out_dir = tmp_path / "market"
+        with pytest.raises(SystemExit, match="件数が manifest と合いません"):
+            update_data.main(["--kind", "market", "--from-raw", str(raw_dir),
+                              "--data-dir", str(out_dir)])
+        assert store.current_version(out_dir) is None
+
+    def test_race_kind_without_ra_is_refused(self, tmp_path):
+        """DIFF だけの生レコードは RA を運ばない。レースの無い版に CURRENT を向けない。"""
+        path = tmp_path / "raw_diff"
+        with rawdump.RawDumpWriter(path, dataspec="DIFF", fromdate="20210901000000",
+                                   option=4) as writer:
+            writer.write(fx.make_um())
+        out_dir = tmp_path / "race"
+        with pytest.raises(SystemExit, match="RA が1件もありません"):
+            update_data.main(["--from-raw", str(path), "--data-dir", str(out_dir)])
+        assert store.current_version(out_dir) is None
 
     def test_fromdate_is_required_without_raw(self):
         with pytest.raises(SystemExit):

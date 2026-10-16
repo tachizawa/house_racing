@@ -56,6 +56,19 @@ def test_reads_the_format_written_by_the_first_dump(tmp_path):
     assert list(rawdump.iter_records(tmp_path)) == [raw]
 
 
+@pytest.mark.parametrize("content", ["[]", "null", "1"])
+def test_manifest_that_is_not_an_object_is_an_error(tmp_path, content):
+    (tmp_path / "manifest.json").write_text(content, encoding="utf-8")
+    with pytest.raises(rawdump.RawDumpError, match="壊れています"):
+        rawdump.read_manifest(tmp_path)
+
+
+def test_missing_file_for_a_requested_spec_is_an_error(tmp_path):
+    _dump(tmp_path, [fx.make_ra()])
+    with pytest.raises(rawdump.RawDumpError, match="SE.bin.gz が見つかりません"):
+        list(rawdump.iter_records(tmp_path, ["RA", "SE"]))
+
+
 def test_truncated_file_is_an_error(tmp_path):
     raw = fx.make_ra()
     with gzip.open(tmp_path / "RA.bin.gz", "wb") as handle:

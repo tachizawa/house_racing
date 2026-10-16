@@ -54,8 +54,13 @@ def test_report_shows_missing_standard_count():
 def test_report_renders_missing_values_as_dash():
     inputs = _inputs()
     point = {k: float("nan") for k in inputs.point}
-    text = render(_inputs(point=point))
-    assert "—" in text and "判定できない" in text
+    text = render(_inputs(point=point, ci=inputs.ci * float("nan")))   # 判定は区間で出すので区間も欠けさせる
+    assert "—" in text
+    section = _section(text, "## 見立て（4歳 > 5歳 > 3歳）の照合", "## 仮説③")
+    rows = [line for line in section.splitlines() if line.startswith("| ") and "歳 − " in line]
+    assert rows and all("判定できない" in line for line in rows)
+    for other in ("見立てと合う", "見立てと逆", "差があるとは言えない"):
+        assert other not in section
 
 
 def test_report_handles_empty_curve():

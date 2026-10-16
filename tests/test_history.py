@@ -126,6 +126,33 @@ def test_course_exact_distance_inapplicable_without_track_cd():
     assert record.inapplicable_reason is not None
 
 
+def test_course_exact_distance_inapplicable_without_jyo_cd():
+    # 競馬場が不明なのに 0戦 と出すと「同じコースを走ったことがない」と読める。
+    _, record = history.combined_condition_records(
+        [run_at(9, 6, jyo_cd="04", track_cd="11")],
+        today=today(jyo_cd=None))["course_exact_distance"]
+    assert record.starts is None
+    assert record.inapplicable_reason == "今回の競馬場が不明のため比較できない"
+
+
+def test_combined_record_counts_wins_top3_margin_and_period():
+    # 同じ馬場（baba_cd "1"）の芝3走: 1着・3着（どちらも時計あり）・中止（時計なし）。
+    # 別の馬場の1走は数えない。
+    runs = [run_at(9, 6, kakutei_jyuni=1, margin_sec=-0.2),
+            run_at(8, 23, kakutei_jyuni=3, margin_sec=0.4),
+            run_at(8, 9, kakutei_jyuni=None, margin_sec=None, ijyo_cd="4"),
+            run_at(8, 2, kakutei_jyuni=1, margin_sec=-0.5, baba_cd="3")]
+    _, record = history.combined_condition_records(
+        runs, today=today(baba_cd="1"))["surface_same_going"]
+    assert record.starts == 3
+    assert record.wins == 1
+    assert record.top3 == 2
+    assert abs(record.margin_sec_mean - 0.1) < 1e-9
+    assert record.period_from == date(2026, 8, 9)
+    assert record.period_to == date(2026, 9, 6)
+    assert record.inapplicable_reason is None
+
+
 def test_same_going_inapplicable_without_baba():
     _, record = history.combined_condition_records(
         [run_at(9, 6)], today=today(baba_cd=None))["surface_same_going"]

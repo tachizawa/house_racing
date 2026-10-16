@@ -85,6 +85,18 @@ def test_table_factor_versions_differ_only_in_lambda(fn, R):
     assert np.isfinite(a[rows]).all() and np.isfinite(b[rows]).all()
     assert np.isnan(b[~rows]).all()
     assert np.array_equal(fn(R), b, equal_nan=True)    # 既定は今の版（v2）
+    # 点数が違うのは λ が違う年だけ（λ が同じ年は同じ点数、違う年は違う点数）
+    lam = tf.lambda_table(R, [2016, 2017], names=(fn.__name__,)).set_index("year")
+    for y in (2016, 2017):
+        same_lam = (np.isnan(lam.at[y, "lambda_v1"]) and np.isnan(lam.at[y, "lambda_v2"])) \
+            or lam.at[y, "lambda_v1"] == lam.at[y, "lambda_v2"]
+        yr = (R.year == y).to_numpy()
+        assert np.array_equal(a[yr], b[yr]) == same_lam, y
+
+
+def test_table_factor_versions_differ_somewhere(R):
+    """v1 と v2 で点数が変わる要素が作り物でも少なくとも1つある（version の引数が推定を選んでいる）。"""
+    assert any(not np.array_equal(fn(R, version="v1"), fn(R, version="v2"), equal_nan=True) for fn in TABLE)
 
 
 def test_lambda_table_has_both_estimators(R):

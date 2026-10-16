@@ -15,8 +15,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import factor_eval as script  # noqa: E402
 
 from keiba.factors import table_factors as tf  # noqa: E402
-from keiba.factors.registry import compute_all, versions_tag  # noqa: E402
+from keiba.factors.registry import VERSIONS, compute_all, versions_tag  # noqa: E402
 from tests.fixtures.factor_runs import make_factor_runs, to_runs_all  # noqa: E402
+
+# 表の要素だけ v1 の版の組の印（v2 にする前の点数の表の名前に入っていた印）
+V1_TABLE_TAG = versions_tag({**VERSIONS, **{name: "v1" for name in tf.TABLE_FACTORS}})
 
 
 def test_cache_path_includes_data_blood_and_factor_versions(tmp_path):
@@ -40,7 +43,7 @@ def old_table(tmp_path_factory) -> Path:
     out = compute_all(R, to_runs_all(R), years=[2016, 2017], log=lambda *_: None)
     for name, fn in tf.TABLE_FACTORS.items():
         out[name] = fn(out, version="v1")
-    path = tmp_path_factory.mktemp("old") / "factors_D1_B1_0ld0ta90.pkl"
+    path = tmp_path_factory.mktemp("old") / f"factors_D1_B1_{V1_TABLE_TAG}.pkl"
     out.to_pickle(path)
     return path
 
@@ -55,11 +58,16 @@ def _dirs(tmp_path: Path) -> list[str]:
 
 def test_recompute_source_must_match_current_versions(tmp_path):
     ok = script.recompute_source_problem
-    assert ok(tmp_path / "factors_D1_B1_abcd1234.pkl", "D1", "B1") is None
-    assert ok(tmp_path / "factors_D1.pkl", "D1", "B1") is None          # 血統版を名前に入れる前の古い名前
-    assert "D0" in ok(tmp_path / "factors_D0_B1_abcd1234.pkl", "D1", "B1")
-    assert "B0" in ok(tmp_path / "factors_D1_B0_abcd1234.pkl", "D1", "B1")
+    assert ok(tmp_path / f"factors_D1_B1_{V1_TABLE_TAG}.pkl", "D1", "B1") is None
+    assert ok(tmp_path / f"factors_D1_B1_{versions_tag()}.pkl", "D1", "B1") is None    # 今の版の表
+    assert ok(tmp_path / "factors_D1.pkl", "D1", "B1") is not None      # 古い名前は血統版を確かめられないので使わない
+    assert "D0" in ok(tmp_path / f"factors_D0_B1_{V1_TABLE_TAG}.pkl", "D1", "B1")
+    assert "B0" in ok(tmp_path / f"factors_D1_B0_{V1_TABLE_TAG}.pkl", "D1", "B1")
     assert ok(tmp_path / "old.pkl", "D1", "B1") is not None             # 版が読めない名前は使わない
+    # 表の要素以外（引き継ぐ列）の版が今と違う表は使わない
+    other = versions_tag({**VERSIONS, "time_figure": "v0"})
+    assert "印" in ok(tmp_path / f"factors_D1_B1_{other}.pkl", "D1", "B1")
+    assert ok(tmp_path / "factors_D1_B1_abcd1234.pkl", "D1", "B1") is not None
 
 
 def test_recompute_from_other_data_version_is_refused(tmp_path, old_table, capsys):
@@ -95,4 +103,51 @@ def test_recompute_from_old_table_then_reuse_cache(tmp_path, old_table, capsys):
     assert m2["cache_reused"] is True and m2["cache_source"] is None
     text = (tmp_path / "out2" / "report.md").read_text(encoding="utf-8")
     assert "## この版（v2）について" in text and "## 前の実行との判定の比較" in text
+    assert "ブートストラップ（20回）" in text                       # --n-boot の回数をそのまま書く
     capsys.readouterr()
+
+
+def test_recompute_takes_precedence_over_existing_cache(tmp_path, old_table, capsys):
+    """--recompute-table-from を付けたら、同じ名前のキャッシュがあっても作り直して置き換える。"""
+    base = _dirs(tmp_path)
+    cache = script.cache_path(tmp_path / "cache", "D1", "B1")
+    cache.parent.mkdir(parents=True)
+    pd.read_pickle(old_table).assign(jockey=123.0).to_pickle(cache)          # 古い中身のキャッシュ
+    assert script.main(base + ["--out-dir", str(tmp_path / "out"), "--recompute-table-from", str(old_table)]) == 0
+    R = pd.read_pickle(cache)
+    np.testing.assert_array_equal(R["jockey"].to_numpy(), tf.jockey(pd.read_pickle(old_table), version="v2"))
+    m = json.loads((tmp_path / "out" / "manifest.json").read_text(encoding="utf-8"))
+    assert m["cache_reused"] is False and m["cache_source"] == str(old_table)
+    assert not list(cache.parent.glob("*.tmp"))
+    capsys.readouterr()
+
+
+def test_cache_missing_an_evaluation_year_is_refused(tmp_path, old_table, capsys):
+    """キャッシュの名前に評価の年は入らないので、走があるのに年ごとの要素が無い年があれば止める。"""
+    base = _dirs(tmp_path)
+    cache = script.cache_path(tmp_path / "cache", "D1", "B1")
+    cache.parent.mkdir(parents=True)
+    R = pd.read_pickle(old_table)
+    R.loc[R.year == 2017, list(script.YEARLY_FACTOR_NAMES)] = np.nan       # 2017年を計算していない表
+    R.to_pickle(cache)
+    assert script.main(base + ["--out-dir", str(tmp_path / "out")]) == 2
+    assert "2017" in capsys.readouterr().out and not (tmp_path / "out").exists()
+    assert script.missing_years(pd.read_pickle(old_table), [2016, 2017, 2030]) == []   # 走の無い年は数えない
+
+
+def test_cache_is_written_atomically(tmp_path, old_table, monkeypatch):
+    """書き込みが途中で失敗しても、キャッシュの名前のファイルは残らない（次の実行が壊れた表を読まない）。"""
+    R = pd.read_pickle(old_table)
+    target = tmp_path / "cache" / "factors_D1_B1_abcd1234.pkl"
+
+    def broken(self, path, *a, **k):
+        Path(path).write_bytes(b"truncated")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(pd.DataFrame, "to_pickle", broken)
+    with pytest.raises(OSError):
+        script.save_atomically(R, target)
+    assert not target.exists() and not list(target.parent.iterdir())
+    monkeypatch.undo()
+    script.save_atomically(R, target)
+    assert len(pd.read_pickle(target)) == len(R) and [p.name for p in target.parent.iterdir()] == [target.name]

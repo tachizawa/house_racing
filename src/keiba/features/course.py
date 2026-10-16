@@ -90,6 +90,11 @@ def identify(race_input: RaceInput, conditions: RaceConditions | None) -> Course
             identified=False, jyo_cd=race_input.jyo_cd, track_cd=None,
             kyori_m=race_input.kyori_m, track=None, course_kubun_cd=None, reason=reason)
 
+    if conditions is None and race_input.race_id is None:
+        # レースIDが無いとトラックコードを引きに行っていない。「データ版に無い」とは言えない。
+        return not_identified(
+            "対象レースのレースIDが無いためトラックコードを引いておらず、"
+            "内外回りなどのコースを特定できない。")
     if conditions is None or not conditions.track_cd:
         return not_identified(
             "対象レースのトラックコードがデータ版に無いため、内外回りなどのコースを特定できない。")

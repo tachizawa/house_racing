@@ -150,9 +150,32 @@ def test_plan_b_second_step_incomplete_keeps_pace_tokens():
     with pytest.raises(top3.PlanBPartialFailure) as info:
         top3.run_plan_b(client, DOSSIER, pace_definition=PACE_DEF)
     assert isinstance(info.value.cause, top3.Top3IncompleteError)
-    assert info.value.input_tokens == 300
+    # pace（300）＋答えが欠けた2回目の応答（500）。2回目も応答は返って課金済み。
+    assert info.value.input_tokens == 800
     assert info.value.requests_sent == 2
     assert len(client.calls) == 2
+
+
+def test_missing_top3_answer_keeps_response_usage():
+    # 応答が返った時点で課金は確定している。欠けた答えの例外にも利用量を持たせる。
+    def handler(state, questions):
+        return Resp(nouls={"top3_01": noul(0.7)}, tokens=432)
+    with pytest.raises(top3.Top3IncompleteError) as info:
+        top3.run_plan_a(Client(handler), DOSSIER)
+    assert info.value.input_tokens == 432
+    assert info.value.requests == 1
+
+
+def test_plan_b_missing_pace_answer_keeps_response_usage():
+    def handler(state, questions):
+        return Resp(choices={}, tokens=300)
+    client = Client(handler)
+    with pytest.raises(top3.Top3IncompleteError) as info:
+        top3.run_plan_b(client, DOSSIER, pace_definition=PACE_DEF)
+    assert info.value.missing == ["pace"]
+    assert info.value.input_tokens == 300
+    assert info.value.requests == 1
+    assert len(client.calls) == 1
 
 
 def test_plan_b_second_step_api_error_keeps_pace_tokens():

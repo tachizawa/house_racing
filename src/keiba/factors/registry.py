@@ -51,6 +51,7 @@ _TABLE = tf.TABLE_FACTORS
 _HISTORY = {"distance_fit": hf.distance_fit, "course_fit": hf.course_fit, "weight_carried": hf.weight_carried}
 _YEARLY = {"time_figure": time_figure_scores, "opponents": opponents_scores, "age": age_scores,
            "late_age": late_age_scores, "cohort_level": cohort_level_scores}
+YEARLY_FACTOR_NAMES = tuple(_YEARLY)   # 年ごとの物差しから作る要素（compute_all に渡した年だけ値が入る）
 
 
 def compute_all(R: pd.DataFrame, runs_all: pd.DataFrame, *, years, log=print) -> pd.DataFrame:

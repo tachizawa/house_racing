@@ -21,6 +21,9 @@ from keiba import config
 from keiba.data.repository import _pick_by_data_kubun
 
 JRA_JYO = frozenset(f"{i:02d}" for i in range(1, 11))
+# 確定成績（data_kubun 7、月曜）だけを使う（仕様 §3.1）。速報（3〜6）は確定前の値なので、7 がまだ届いていない
+# レースは含めない（2026-10 のデータ版 20261010T155433Z では対象のレース・走はすべて 7 で、この限定で落ちる行は 0）
+FINAL_DATA_KUBUN = ("7",)
 FLAT = ("turf", "dirt")
 OLDER_SYUBETU = frozenset({"13", "14"})   # 3歳以上・4歳以上
 KEY = ["jyo_cd", "track_cd", "kyori_m"]    # 基準タイムの単位（track_cd は芝ダと内外回りを含む）
@@ -55,12 +58,12 @@ def prepare_runs(races: pd.DataFrame, race_horses: pd.DataFrame, *, as_of: datet
     """
     if as_of.tzinfo is None:
         raise ValueError("as_of にはタイムゾーンが必要です（日本時間の 0:00 など）")
-    r = _pick_by_data_kubun(races, config.DATA_KUBUN_RESULT_PRIORITY)
+    r = _pick_by_data_kubun(races, FINAL_DATA_KUBUN)
     r = r[r["jyo_cd"].isin(JRA_JYO) & r["track_kind"].isin(FLAT)]
     hasso = pd.to_datetime(r["hasso_at"], errors="coerce", utc=True)
     r = r[hasso < pd.Timestamp(as_of).tz_convert("UTC")]
     h = race_horses[race_horses["race_id"].isin(r["race_id"])]
-    h = _pick_by_data_kubun(h, config.DATA_KUBUN_RESULT_PRIORITY)
+    h = _pick_by_data_kubun(h, FINAL_DATA_KUBUN)
     h = h[~h["result_ijyo_cd"].isin(_EXCLUDED_IJYO)]
     m = h.merge(r[_RACE_FIELDS], on="race_id", how="inner")
     m = m.assign(time_sec=pd.to_numeric(m["result_time_sec"], errors="coerce"),

@@ -25,9 +25,10 @@ from keiba.ingest import jvlink, rawdump, records, store  # noqa: E402
 
 #: 取り込む系統ごとの既定。blood を race と同じ保存先に書くと、commit() が
 #: CURRENT をレースの無い版に切り替えて予想を壊す。
+#: required は --from-raw で1件も無ければ版を作らない種別（今は race の RA だけ）。
 _KINDS: dict[str, dict] = {
     "race": {"dataspecs": config.DEFAULT_DATASPECS, "data_dir": config.DATA_DIR,
-             "files": store.RACE_FILES},
+             "files": store.RACE_FILES, "required": "RA"},
     "blood": {"dataspecs": config.DEFAULT_BLOOD_DATASPECS,
               "data_dir": config.BLOOD_DATA_DIR, "files": store.BLOOD_FILES},
     # 払戻・オッズも RACE が運ぶが、レースの版とは別の系統に置く（config.MARKET_DATA_DIR）。
@@ -157,12 +158,28 @@ def _from_raw(args: argparse.Namespace) -> int:
     try:
         # 表に書かれない種別（JG など）はパースもしないので、組に関係する種別だけ読む。
         specs = [spec for spec in raw_manifest.get("counts", {}) if _is_saved(spec, files)]
-        for raw in rawdump.iter_records(args.from_raw, specs):
-            _consume(raw, counts, writer, se_rows)
+        try:
+            for raw in rawdump.iter_records(args.from_raw, specs):
+                _consume(raw, counts, writer, se_rows)
+        except rawdump.RawDumpError as error:
+            raise SystemExit(f"生レコードを使えません: {error}") from error
         print(f"生レコード {args.from_raw} から読んだレコード数:")
         for spec in sorted(raw_manifest.get("counts", {})):
             note = "" if spec in counts else "（保存対象外）"
             print(f"  {spec}: {counts.get(spec, raw_manifest['counts'][spec])}{note}")
+        # ファイルが途中で終わっていても長さの欄の切れ目なら iter_records は気づけない。
+        # manifest の件数と合わなければ、欠けたまま版を作らない。
+        short = {spec: (counts.get(spec, 0), raw_manifest["counts"][spec]) for spec in specs
+                 if counts.get(spec, 0) != raw_manifest["counts"][spec]}
+        if short:
+            raise SystemExit("生レコードの件数が manifest と合いません（読んだ件数, manifest）: "
+                             f"{short}。取り直してください。")
+        required = _KINDS[args.kind].get("required")
+        if required is not None and not counts.get(required):
+            # DIFF だけの生レコードなどは RA を運ばない。レースの無い版に CURRENT を
+            # 切り替えると予想が壊れる。
+            raise SystemExit(f"生レコードに {required} が1件もありません（dataspec {dataspec}）。"
+                             f" --kind {args.kind} の版にはできません。")
         if args.dry_run:
             writer.abort()
             print("\n--dry-run のため CURRENT は変更していません（保存内容は破棄しました）。")

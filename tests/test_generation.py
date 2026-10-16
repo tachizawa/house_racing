@@ -303,4 +303,32 @@ def test_pair_difference_against_usual_gap_removes_survivorship():
             assert pdf.loc[(pair, m), "did"] == pytest.approx(0.0, abs=1e-9)
     stats = replicate_stats(fig, as_of=E2E_AS_OF, years=E2E_YEARS, ages=[2, 3, 4, 5], curve_levels=levels)
     assert stats["did|4-3|median"] == pytest.approx(0.0, abs=1e-9)
-    assert verdict(-0.1 + stats["did|4-3|median"], 0.1 + stats["did|4-3|median"]) == "差があるとは言えない"
+
+
+def _runs_from_figures(fig: pd.DataFrame) -> pd.DataFrame:
+    """指数の表を prepare_runs の形の走に戻す（1走 = 1レースの1着、1600m の芝、1勝クラス）。
+
+    走破タイムは「基準 60 秒/1000m − 指数」から作る。2歳の走は2歳戦（物差しの推定に入らない）にする。
+    """
+    f = fig.reset_index(drop=True)
+    day = f["date"].dt.strftime("%Y%m%d")
+    return pd.DataFrame({
+        "race_id": day + "-" + f.index.astype(str), "umaban": "01", "ketto_num": f["ketto_num"], "day": day,
+        "date": f["date"], "year": f["year"], "jyo_cd": "05", "track_cd": "17", "track_kind": "turf",
+        "kyori_m": 1600, "syubetu_cd": np.where(f["barei"] == 2, "11", "13"), "class_level": 2.0,
+        "time_sec": (60.0 - f["figure"] / 1.6) * 1.6, "rank": 1.0, "barei": f["barei"], "cohort": f["cohort"]})
+
+
+def test_survivorship_verdict_from_bootstrap_interval():
+    """生き残りの偏りしか無い集団では、ブートストラップの区間（bootstrap_intervals）で出した判定が「差なし」になる。"""
+    from keiba.evaluate.age_curve import age_curve, curve_levels
+
+    runs = _runs_from_figures(stable_population_fig())
+    fig = apply_figures(runs, fit_model(runs))
+    levels = curve_levels(age_curve(fig, years=E2E_YEARS, before=E2E_AS_OF, n_boot=5, seed=1))
+    kw = dict(as_of=E2E_AS_OF, years=E2E_YEARS, ages=[2, 3, 4, 5], curve_levels=levels)
+    assert replicate_stats(fig, **kw)["did|4-3|median"] == pytest.approx(0.0, abs=1e-6)
+    ci = bootstrap_intervals(runs, n_boot=20, seed=1, **kw)
+    lo, hi = ci.at["did|4-3|median", "lo"], ci.at["did|4-3|median", "hi"]
+    assert lo < hi                                                     # 区間に幅がある（作り物の点ではない）
+    assert verdict(lo, hi) == "差があるとは言えない"

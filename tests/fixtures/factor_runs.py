@@ -29,7 +29,7 @@ def make_factor_runs(*, years=(2015, 2016, 2017), days_per_year=8, races_per_day
                 jyo = "05" if r % 2 == 0 else "08"
                 kind = "turf" if r % 3 else "dirt"
                 kyori = 1600 if r % 2 == 0 else 2000
-                track_cd = "24" if kind == "turf" else "23"
+                track_cd = "17" if kind == "turf" else "23"     # config.track_kind: 10〜22 芝、23〜29 ダート
                 race_id = f"{date:%Y%m%d}{jyo}0101{r + 1:02d}"
                 horses = rng.choice(n_horses, field, replace=False)
                 jockeys = rng.choice([f"J{j}" for j in range(12)], field, replace=False)

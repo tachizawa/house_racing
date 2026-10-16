@@ -84,6 +84,15 @@ def test_prepare_runs_prefers_result_over_entry_rows():
     assert len(runs) == 1 and runs.iloc[0].time_sec == 96.0
 
 
+def test_prepare_runs_uses_final_results_only():
+    """確定成績（7）がまだ無く速報（3〜6）しかないレース・走は使わない（仕様 §3.1）。"""
+    races, horses = frames(
+        [race_row(OK), race_row(OK, data_kubun="5", make_date="20250107"), race_row(JUMP, data_kubun="5")],
+        [horse_row(OK, "01"), horse_row(OK, "02", data_kubun="6"), horse_row(JUMP, data_kubun="5")])
+    runs = prepare_runs(races, horses, as_of=jst(2025, 2, 1))
+    assert runs.race_id.tolist() == [OK] and runs.umaban.tolist() == ["01"]
+
+
 def test_prepare_runs_requires_timezone():
     races, horses = frames([race_row(OK)], [horse_row(OK)])
     with pytest.raises(ValueError):
@@ -122,9 +131,11 @@ def test_slow_two_year_olds_are_not_absorbed_into_variant():
 
 def test_non_winners_do_not_enter_the_fit():
     base = fit_model(older_runs())
-    extra = pd.DataFrame([run_row(race_id="20250101-1600-2", umaban="02", rank=2.0, time_sec=200.0)])
+    # 1着のいない別のレースにする（同じ race_id だと drop_duplicates で消え、着順の条件を確かめられない）
+    extra = pd.DataFrame([run_row(race_id="20250101-1600-X", umaban="02", rank=2.0, time_sec=200.0)])
     model = fit_model(pd.concat([older_runs(), extra], ignore_index=True))
     pd.testing.assert_series_equal(model.variants, base.variants)
+    assert model.n_races == base.n_races
 
 
 def test_dead_heat_winner_counted_once():

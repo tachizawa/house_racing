@@ -17,11 +17,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from keiba import config  # noqa: E402
 from keiba.data.repository import Repository, ResultRepository  # noqa: E402
-from keiba.data.store import DataStore  # noqa: E402
+from keiba.data.store import DataStore, DataVersionError  # noqa: E402
 from keiba.evaluate.backtest import race_input_from_history  # noqa: E402
 from keiba.features import dossier as dossier_mod  # noqa: E402
 from keiba.features import dossier_markdown  # noqa: E402
-from keiba.input.schema import load_race_input  # noqa: E402
+from keiba.input.schema import InputError, load_race_input  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -33,8 +33,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-recent-runs", type=int, default=config.DEFAULT_DOSSIER_RECENT_RUNS)
     parser.add_argument("--data-dir", type=Path, default=config.DATA_DIR)
     args = parser.parse_args(argv)
+    if args.max_recent_runs < 0:
+        parser.error("--max-recent-runs は 0 以上にしてください")
 
-    store = DataStore.open_current(args.data_dir)
+    # scripts/predict.py と同じく、版が無い・入力が読めないときは traceback ではなく
+    # 理由を1行出して 1 で終える。
+    try:
+        store = DataStore.open_current(args.data_dir)
+    except DataVersionError as error:
+        print(f"データ版を開けません: {error}")
+        return 1
     repo = Repository(store)
     if args.race_id:
         results = ResultRepository(store)
@@ -47,7 +55,11 @@ def main(argv: list[str] | None = None) -> int:
         race_input = race_input_from_history(race, entries, top_n=config.DEFAULT_TOP_N)
         stem = args.race_id
     else:
-        race_input = load_race_input(args.input)
+        try:
+            race_input = load_race_input(args.input)
+        except InputError as error:
+            print(f"入力を読み込めません: {error}")
+            return 1
         stem = args.input.stem
 
     d = dossier_mod.build_dossier(race_input, repo, max_recent_runs=args.max_recent_runs)

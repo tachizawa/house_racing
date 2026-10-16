@@ -302,10 +302,13 @@ class TestBloodKind:
             records_by_dataspec={"BLDN": [fx.make_sk(), fx.make_hn(), fx.make_bt()]},
         )
         monkeypatch.setattr(update_data.jvlink, "open_link", lambda *a, **k: link)
+        # --data-dir を渡さず、系統ごとの既定の保存先をここへ向ける。渡すと保存先が
+        # 引数で決まり、blood がレースの既定の保存先に書く誤りを捕まえられない。
+        monkeypatch.setitem(update_data._KINDS["race"], "data_dir", race_dir)
+        monkeypatch.setitem(update_data._KINDS["blood"], "data_dir", blood_dir)
 
         exit_code = update_data.main([
             "--kind", "blood", "--fromdate", "19860101000000", "--option", "4",
-            "--data-dir", str(blood_dir),
         ])
 
         assert exit_code == 0

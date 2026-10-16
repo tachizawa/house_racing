@@ -197,3 +197,41 @@ def test_front_runner_definition_states_the_threshold_exactly(tmp_path, monkeypa
     monkeypatch.setattr(config, "FRONT_RUNNER_MAX_CORNER_POS", 0.3412345)
     d = dossier.build_dossier(_race_input(), _dataset(tmp_path / "c"))
     assert "0.3412345 以下" in d["field_summary"]["front_runner_definition"]
+
+
+def test_front_runner_definition_names_the_corner_fallback(tmp_path):
+    # running_style は4角が無い馬を3角→2角で測る。文言が4角だけを名指しすると
+    # その馬について別の物差しを読ませる。
+    text = dossier.build_dossier(_race_input(),
+                                 _dataset(tmp_path))["field_summary"]["front_runner_definition"]
+    assert "3角" in text and "2角" in text
+    assert "corner_source" in text
+
+
+def test_negative_max_recent_runs_is_rejected(tmp_path):
+    # 負の値は runs[:-1] のように古い走を黙って落とす。
+    with pytest.raises(ValueError):
+        dossier.build_dossier(_race_input(), _dataset(tmp_path), max_recent_runs=-1)
+
+
+def test_zero_max_recent_runs_gives_no_recent_runs(tmp_path):
+    d = dossier.build_dossier(_race_input(), _dataset(tmp_path), max_recent_runs=0)
+    assert all(h["recent_runs"] == [] for h in d["horses"].values())
+
+
+def test_past_runs_are_read_once_per_horse(tmp_path):
+    # build_context が引いた過去走を build_dossier がもう一度引かない。
+    repo = _dataset(tmp_path)
+    calls = []
+    original = repo.past_runs
+
+    def counting(ketto_num, **kw):
+        calls.append(ketto_num)
+        return original(ketto_num, **kw)
+
+    repo.past_runs = counting
+    d = dossier.build_dossier(_race_input(), repo)
+    assert sorted(calls) == ["A", "B"]
+    # 2回目の読み出しを省いても中身は変わらない。
+    plain = dossier.build_dossier(_race_input(), _dataset(tmp_path / "b"))
+    assert d["horses"] == plain["horses"]

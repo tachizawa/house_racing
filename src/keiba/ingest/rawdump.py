@@ -7,6 +7,13 @@
 形式（2026-09-26 の最初の取得 tmp/fetch_raw/dump_raw.py と同じ）:
   <dir>/<レコード種別>.bin.gz … 「4バイトのビッグエンディアンの長さ + cp932 のバイト列」の繰り返しを gzip
   <dir>/manifest.json         … dataspec / fromdate / option / counts / completed
+
+リポジトリの中で使っているのは読み戻し（read_manifest / iter_records。
+scripts/update_data.py --from-raw）だけ。RawDumpWriter を呼ぶ取得経路は
+scripts/ に無い——data/raw/20260925T172902Z は使い捨ての tmp/fetch_raw/dump_raw.py
+（.gitignore 済み。RawDumpWriter は使わず同じ形式を直接書く）で作った。
+RawDumpWriter は次にセットアップ取得を生のまま保存するときに、そうした
+使い捨てのスクリプトから使う想定で置いている。
 """
 
 from __future__ import annotations
@@ -81,7 +88,9 @@ def read_manifest(directory: Path) -> dict:
         raise RawDumpError(f"manifest が見つかりません: {path}") from error
     except (json.JSONDecodeError, UnicodeDecodeError) as error:
         raise RawDumpError(f"manifest が壊れています: {path} / {error}") from error
-    if not isinstance(manifest, dict) or manifest.get("completed") is not True:
+    if not isinstance(manifest, dict):
+        raise RawDumpError(f"manifest が壊れています: {path}（JSON のオブジェクトではありません）")
+    if manifest.get("completed") is not True:
         raise RawDumpError(
             f"生レコードの保存が完了していません: {path}（{manifest.get('error', '理由不明')}）。"
             " 途中までのレコードで版を作ると欠けたまま気づけないので、取り直してください。")
@@ -91,14 +100,16 @@ def read_manifest(directory: Path) -> dict:
 def iter_records(directory: Path, specs: Iterable[str] | None = None) -> Iterator[bytes]:
     """保存したレコードを種別ごとのファイル順に返す（種別の間の順序は保存時と違う）。
 
-    specs を渡せばその種別だけ。長さの途中でファイルが終わっていたら止める。
+    specs を渡せばその種別だけ。渡した種別のファイルが無ければ止める（manifest に
+    載っている種別が欠けたまま版を作ると、欠けに気づけない）。長さの途中で
+    ファイルが終わっていたら止める。
     """
     directory = Path(directory)
     paths = (sorted(directory.glob("*.bin.gz")) if specs is None
              else [directory / f"{spec}.bin.gz" for spec in specs])
     for path in paths:
         if not path.exists():
-            continue
+            raise RawDumpError(f"{path.name} が見つかりません: {directory}")
         with gzip.open(path, "rb") as handle:
             while True:
                 head = handle.read(_LENGTH.size)

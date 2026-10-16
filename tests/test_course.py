@@ -58,6 +58,15 @@ def test_identify_without_race_id_is_not_identified():
     assert result.identified is False
     assert result.track is None
     assert "トラックコード" in result.reason
+    # 引いていないのに「データ版に無い」とは言わない。
+    assert "レースIDが無い" in result.reason
+    assert "データ版に無い" not in result.reason
+
+
+def test_identify_race_not_in_data_says_so():
+    result = course.identify(make_race_input(race_id="2026080104020311"), None)
+    assert result.identified is False
+    assert "データ版に無い" in result.reason
 
 
 def test_identify_rejects_surface_mismatch():

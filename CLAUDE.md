@@ -134,7 +134,8 @@ scripts/update_data.py --dataspec RACE --fromdate 20230801000000
   3 は 2026-10-17 に収録開始（`coverage_from`）を `fromdate` と `first_hasso_at` の遅いほうに
   直した版で、形は同じ。option 4 の版では訂正再配信（1989年など）のせいで収録開始が古く出て、
   「過去走が打ち切られているかもしれない」の注記が一度も付いていなかった。比較に使った1年版
-  （option 1）は `first_hasso_at` の方が遅いので値は変わらない。
+  （option 1）は `first_hasso_at` の方が遅いので値は変わらない。同じ版で、先行力の定義文
+  （`front_runner_definition`）に4角が無いとき3角・2角を使うことを書き足した（全レースで文が変わる）。
 - **最終評価期間 2026-07-01〜09-22 は使用済み**（境界は `data/top3/final_runs.jsonl` に
   固定。最初の `--final` 実行 2026-09-23T13:10:16Z）。同じ境界より後の日付を指定する
   再評価には `--final-rerun-reason` が要り、理由が同ファイルに残る。
@@ -210,7 +211,10 @@ scripts/update_data.py --dataspec RACE --fromdate 20230801000000
   `docs/superpowers/specs/2026-10-11-factor-predictions-design.md` §3〜§5、実装 `src/keiba/factors/`・`src/keiba/evaluate/factor_eval.py`
 - `scripts/factor_eval.py --data-dir data/_long`（Jev は呼ばない）。要素の点数は
   `data/factor_eval/factors_<データ版>_<血統版>_<要素の版の印>.pkl` に保存して再利用（`--cache-dir`、`--rebuild`）。
-  `--recompute-table-from <古い pkl>` で表の要素7つだけ作り直せる（年ごとの要素の30分以上を省く）
+  `--recompute-table-from <古い pkl>` で表の要素7つだけ作り直せる（年ごとの要素の30分以上を省く）。
+  2026-10-17 から、元の pkl は `factors_<データ版>_<血統版>_<印>.pkl` の名前で今の版と一致しなければ拒否する
+  （旧名 `factors_<データ版>.pkl` は血統版を確かめられないので不可。v2 の実行はこの旧名から作った）。
+  指定するとキャッシュがあっても作り直して置き換える。評価年に年ごとの要素が欠けた表は使わない（exit 2）
 - **現在の結果は v2 の実行 `data/factor_eval/20261011T143147/`**（データ版 `20261010T155433Z`、評価に使ったレース 29,789、
   除いた 175 は全部「1〜3着が一意でない」）。v1 の実行 `20261011T140120/` は記録として残す。最初の実行
   `20261011T134627/` は年齢・父の芝ダ適性の Δ が壊れていたので使わない
@@ -539,7 +543,7 @@ venv は `.venv`（Python 3.13.3 / 64bit）。コマンドは `.venv` の python
 # 依存（初回のみ）
 .venv/Scripts/python.exe -m pip install -r requirements.txt
 
-# テスト全体（2026-10-11 実行: 1493 passed）
+# テスト全体（2026-10-17 実行: 1554 passed）
 .venv/Scripts/python.exe -m pytest
 
 # テスト1件だけ

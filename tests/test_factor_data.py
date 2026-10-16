@@ -43,3 +43,33 @@ def test_build_runs_rows_and_columns():
     assert c.top3 == 0.0 and np.isnan(c.fin_pct) and np.isnan(c.time_sec)
     assert np.isnan(R.set_index("ketto_num").loc["B"].zogen)
     assert R.set_index("ketto_num").loc["C"].sire_num == ""
+
+
+def _second_race(races: pd.DataFrame, horses: pd.DataFrame, **horse_over) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """1つ目と同じ形の芝のレースを足す（2頭立て。1頭目に horse_over を当てる）。"""
+    rid = "2025010505010103"
+    races = pd.concat([races, races.iloc[[0]].assign(race_id=rid)], ignore_index=True)
+    first = horses.iloc[[0]].assign(race_id=rid, umaban="01", ketto_num="X", **horse_over)
+    second = horses.iloc[[1]].assign(race_id=rid, umaban="02", ketto_num="Y")
+    return races, pd.concat([horses, first, second], ignore_index=True)
+
+
+def test_build_runs_drops_whole_race_when_an_age_is_unreadable():
+    """馬齢が空・0（不明）の馬がいるレースは、頭数の欠けた出走で評価しないようレースごと除く。"""
+    races, horses, ped = frames()
+    for barei in ("", "00"):
+        r2, h2 = _second_race(races, horses, barei=barei)
+        R = build_runs(r2, h2, ped)
+        assert R.ketto_num.tolist() == ["A", "B", "C"]
+        assert (R.barei > 0).all()
+
+
+def test_build_runs_uses_final_results_only():
+    """確定成績（7）が無く速報（3〜6）しか無いレースは使わない。"""
+    races, horses, ped = frames()
+    r2, h2 = _second_race(races, horses)
+    rid = "2025010505010103"
+    r2.loc[r2.race_id == rid, "data_kubun"] = "5"
+    h2.loc[h2.race_id == rid, "data_kubun"] = "5"
+    assert build_runs(r2, h2, ped).ketto_num.tolist() == ["A", "B", "C"]
+    assert build_runs(*_second_race(races, horses), ped).ketto_num.tolist() == ["A", "B", "C", "X", "Y"]

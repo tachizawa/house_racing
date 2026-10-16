@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from keiba.evaluate.factor_eval import ALPHA, MIN_YEARS_IMPROVED, N_COMPARE, Z_CLIP, ZERO_TOL
+from keiba.evaluate.factor_eval import ALPHA, MIN_YEARS_IMPROVED, N_BOOT, N_COMPARE, Z_CLIP, ZERO_TOL
 
 JA = {"time_figure": "タイム指数", "opponents": "相手関係", "jockey": "騎手", "trainer": "調教師",
       "sire_surface": "父の芝ダ適性", "late_age": "晩成度×年齢", "age": "年齢", "cohort_level": "世代レベル",
@@ -118,11 +118,11 @@ def _previous_section(summary: pd.DataFrame, previous: pd.DataFrame, label: str)
 
 def render(summary: pd.DataFrame, yearly: pd.DataFrame, subsets: dict, excluded: dict, *, data_version: str,
            years: list[int], lambdas: pd.DataFrame | None = None, versions: dict[str, str] | None = None,
-           previous: pd.DataFrame | None = None, previous_label: str = "") -> str:
+           previous: pd.DataFrame | None = None, previous_label: str = "", n_boot: int = N_BOOT) -> str:
     """report.md の本文。
 
     lambdas（表の要素の λ の v1・v2 の比較）を渡すと「この版（v2）について」の節を、previous（前の実行の
-    summary.csv）を渡すと判定の比較の節を足す。
+    summary.csv）を渡すと判定の比較の節を足す。n_boot は summary の区間を出したブートストラップの回数（方法の説明に書く）。
     """
     total = len(years)
     base = float(summary["base_nll"].iloc[0])
@@ -137,7 +137,7 @@ def render(summary: pd.DataFrame, yearly: pd.DataFrame, subsets: dict, excluded:
         L += _previous_section(summary, previous, previous_label)
     L += ["## 判定（市場への上乗せ）", "",
           "Δ = 市場だけの着順モデルの −対数尤度（1〜3着の順番）− 市場＋要素の −対数尤度。**正なら要素で良くなった**。"
-          "重みは評価年より前の年だけで推定。区間は開催日単位のブートストラップ（1,000回）。",
+          f"重みは評価年より前の年だけで推定。区間は開催日単位のブートストラップ（{n_boot:,}回）。",
           f"市場だけのモデルの −対数尤度は1レースあたり平均 **{base:.4f}**（{total}年まとめ）。"
           "「Δ / 市場の −対数尤度」はそれに対する Δ の割合で、上乗せの大きさの目安。",
           f"判定: 95% 区間の下限 > 0 かつ {total}年中{MIN_YEARS_IMPROVED}年以上で改善 → 上乗せあり（仕様 §5.2）。"

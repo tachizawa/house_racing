@@ -86,7 +86,8 @@ def test_by_year_has_disagreement_columns_matching_pooled():
 def test_by_year_disagreement_nan_when_empty():
     pr = pd.DataFrame({"year": [2017], "delta:f": [0.0], "solo:f": [0.0], "comb:f": [0.0], "mkt_odds_hits": [0.0],
                        "mkt_model_hits": [0.0], "fo_n:f": [0.0], "fo_hit:f": [0.0], "fo_e3:f": [0.0],
-                       "mo_n:f": [0.0], "mo_hit:f": [0.0], "mo_e3:f": [0.0], "measured:f": [True],
+                       "fo_e3n:f": [0.0], "mo_n:f": [0.0], "mo_hit:f": [0.0], "mo_e3:f": [0.0], "mo_e3n:f": [0.0],
+                       "measured:f": [True],
                        "clip_n:f": [0.0], "n_runners": [8.0], "nll_mkt": [5.0]})
     t = by_year(pr, ["f"])
     assert t.loc[(2017, "f"), "fo_n"] == 0 and np.isnan(t.loc[(2017, "f"), "fo_rate"])
@@ -149,6 +150,27 @@ def test_disagreement_counts_hand_checked():
     assert r["mo_e3:good"] == pytest.approx(10 + 30 / 3)
     assert r["solo:good"] == pytest.approx(1 + 2 / 3)         # 2番(3着内) と 4番(3着内)の2/3
     assert r["mkt_odds_hits"] == pytest.approx(2.0)           # 1番・2番が3着内、3番は圏外
+    assert r["fo_e3n:good"] == pytest.approx(4 / 3) and r["mo_e3n:good"] == pytest.approx(4 / 3)
+
+
+def test_missing_e3_is_left_out_of_the_expected_rate():
+    """e3 の無い馬は見込みの平均の分母にも入れない（0 として数えると見込みが低く出る）。"""
+    train = synth_eval(n_per_year=30)
+    train = train[train.year == 2016]
+    n = 6
+    hand = pd.DataFrame(dict(
+        race_id="H0001", date=pd.Timestamp(2017, 5, 1), year=2017, umaban=[f"{i + 1:02d}" for i in range(n)],
+        jyuni=[3.0, 1.0, 6.0, 2.0, 4.0, 5.0], top3=[1.0, 1.0, 0.0, 1.0, 0.0, 0.0], field=n,
+        odds=[2.0, 3.0, 4.0, 5.0, 6.0, 7.0], e3=[10.0, 20.0, 30.0, np.nan, 50.0, 60.0],
+        class_level=2.0, syubetu="13", good=[0.0, 9.0, 7.0, 7.0, 7.0, np.nan]))
+    pr = evaluate(pd.concat([train, hand], ignore_index=True), ["good"], years=[2017], log=lambda *_: None)["per_race"]
+    # 要素だけが選ぶ馬 = 4番（e3 なし）・5番に各2/3 → 見込みは 5番の 50 だけで決まる（分母は 2/3）
+    assert pr.iloc[0]["fo_n:good"] == pytest.approx(4 / 3)
+    assert pr.iloc[0]["fo_e3n:good"] == pytest.approx(2 / 3)
+    s = summarize(pr, ["good"], n_boot=10)
+    assert s.loc["good", "fo_e3"] == pytest.approx(50.0)
+    assert s.loc["good", "mo_e3"] == pytest.approx((10 + 30 / 3) / (4 / 3))
+    assert by_year(pr, ["good"]).loc[(2017, "good"), "fo_e3"] == pytest.approx(50.0)
 
 
 

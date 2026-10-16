@@ -171,11 +171,12 @@ def test_incomplete_answer_is_skipped_with_reason(tmp_path):
             return response
     rows = _run(tmp_path, methods=("plan_a",), client=Partial())
     assert rows[0].skipped == "incomplete_answer"
-    # 応答は返ってきている＝課金は発生した。トークン数は不明のまま
-    # failed_requests で「請求額が読めない課金がある」ことを可視化する
-    # （fix round 1 Minor 5）。
+    # 応答は返ってきている＝課金は発生した。応答の利用量は読めるので
+    # usage に足す（failed_requests ではなく requests / input_tokens に入る）。
     rep = tbt.report(rows, n=3, run_info={"note": "test"})
-    assert rep["usage"]["plan_a"]["failed_requests"] == 1
+    assert rep["usage"]["plan_a"]["requests"] == 1
+    assert rep["usage"]["plan_a"]["input_tokens"] == 100
+    assert rep["usage"]["plan_a"]["failed_requests"] == 0
 
 
 def test_plan_b_skips_when_pace_definition_unavailable(tmp_path):
@@ -203,7 +204,10 @@ def test_plan_b_incomplete_top3_answer_is_skipped_with_failed_request(tmp_path):
                    data_dir=tmp_path, pace_definition_for=lambda ri: PACE_DEF)
     assert rows[0].skipped == "incomplete_answer"
     rep = tbt.report(rows, n=3, run_info={"note": "test"})
-    assert rep["usage"]["plan_b"]["failed_requests"] == 1
+    # 2回目の応答も返っているので、両方の利用量が読める。
+    assert rep["usage"]["plan_b"]["requests"] == 2
+    assert rep["usage"]["plan_b"]["input_tokens"] == 200
+    assert rep["usage"]["plan_b"]["failed_requests"] == 0
 
 
 def test_plan_b_records_pace_pair(tmp_path):
@@ -467,6 +471,65 @@ def test_final_run_with_no_final_races_writes_no_log(tmp_path):
     assert not (data_dir / "top3" / "final_runs.jsonl").exists()
 
 
+def test_final_run_that_predicts_no_final_race_writes_no_log(tmp_path):
+    """最終期間のレースがサンプルにあっても、すべて予想せずに飛ばした（no_result）
+    なら境界を使っていないので記録しない。"""
+    races = [fx.make_race(race_id=TUNING_RACE, hasso_at="2026-03-01T15:00:00+09:00"),
+             fx.make_race(race_id=FINAL_RACE, hasso_at="2026-03-21T15:25:00+09:00")]
+    race_horses = [fx.make_race_horse(
+        race_id=race_id, umaban=f"{i:02d}", ketto_num=f"{race_id}{i}",
+        bamei=f"ウマ{race_id[-4:]}{i}",
+        result_kakutei_jyuni=str(i) if race_id == TUNING_RACE else "")
+        for race_id in (TUNING_RACE, FINAL_RACE) for i in range(1, 6)]
+    data_dir = fx.write_dataset(tmp_path / "data", races, race_horses, [])
+
+    rc = backtest_top3_cli.main(_final_cli_args(data_dir, tmp_path / "out"))
+
+    assert rc == 0
+    rows_files = list((tmp_path / "out").glob("*/rows.jsonl"))
+    skipped = {json.loads(line)["race_id"]: json.loads(line)["skipped"]
+               for line in rows_files[0].read_text(encoding="utf-8").splitlines() if line.strip()}
+    assert skipped[FINAL_RACE] == "no_result"
+    assert not (data_dir / "top3" / "final_runs.jsonl").exists()
+
+
+def test_final_run_aborted_after_a_final_race_is_still_logged(tmp_path, monkeypatch):
+    """最終期間のレースを1件予想した後に打ち切られても、境界は記録される
+    （記録を実行の最後に回すと、打ち切った実行が理由なしで再実行できてしまう）。"""
+    data_dir = _dataset_dir(tmp_path / "data")
+    real_run = tbt.run
+
+    def run_then_abort(races, *args, on_row=None, **kwargs):
+        rows = real_run(races, *args, on_row=on_row, **kwargs)
+        assert any(r.race_id == FINAL_RACE and r.skipped is None for r in rows)
+        raise tbt.ConsecutiveJevFailures(rows, "打ち切り")
+
+    monkeypatch.setattr(backtest_top3_cli.tbt, "run", run_then_abort)
+
+    rc = backtest_top3_cli.main(_final_cli_args(data_dir, tmp_path / "out"))
+
+    assert rc == 3
+    log = data_dir / "top3" / "final_runs.jsonl"
+    assert len([line for line in log.read_text(encoding="utf-8").splitlines() if line.strip()]) == 1
+
+
+def test_duplicate_methods_run_once(tmp_path, monkeypatch):
+    """同じ方式を重ねて指定しても1回だけ回す（2回課金して usage が1回分になるのを防ぐ）。"""
+    seen = {}
+
+    def fake_run(races, *args, methods, **kwargs):
+        seen["methods"] = list(methods)
+        return []
+
+    monkeypatch.setattr(backtest_top3_cli.tbt, "run", fake_run)
+    data_dir = _dataset_dir(tmp_path / "data")
+    args = _final_cli_args(data_dir, tmp_path / "out", final=False)
+    args[args.index("--methods") + 1] = "python, python,python"
+
+    assert backtest_top3_cli.main(args) == 0
+    assert seen["methods"] == ["python"]
+
+
 # ===============================================================================
 # final review の修正（I-4 / I-5 / M-6 / I-1 / save_records）
 # ===============================================================================
@@ -498,9 +561,9 @@ def test_plan_b_partial_failure_keeps_pace_usage(tmp_path):
     rows = _run_b(tmp_path, PartialPlanB())
     assert rows[0].skipped == "incomplete_answer"
     usage = rows[0].usage["plan_b"]
-    assert usage["input_tokens"] == 100  # pace の分
+    assert usage["input_tokens"] == 200  # pace の分＋答えが欠けた2回目の応答の分
     assert usage["requests"] == 2
-    assert usage["failed_requests"] == 1
+    assert usage["failed_requests"] == 0
 
 
 def test_jev_failed_skip_detail_has_sdk_exception_class(tmp_path):
