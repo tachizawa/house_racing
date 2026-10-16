@@ -153,6 +153,35 @@ def test_verify_time_fields_exits_nonzero_on_mismatch(tmp_path, monkeypatch):
     assert exit_code == 1
 
 
+class _RecordingWriter:
+    def __init__(self):
+        self.rows = []
+
+    def add(self, key, row):
+        self.rows.append(key)
+
+
+def test_consume_without_se_rows_still_writes_se():
+    """走破タイムを照合しないときは SE の行を溜めない（40年ぶんでは数GBになる）。"""
+    from collections import Counter
+
+    writer = _RecordingWriter()
+    counts = Counter()
+    update_data._consume(fx.make_se(), counts, writer, None)
+
+    assert writer.rows == ["SE"]
+    assert counts["SE"] == 1
+
+
+def test_consume_collects_se_rows_when_given_a_list():
+    from collections import Counter
+
+    se_rows = []
+    update_data._consume(fx.make_se(), Counter(), _RecordingWriter(), se_rows)
+
+    assert len(se_rows) == 1
+
+
 class TestDataspecArgument:
     """RACE だけでは UM が取れない。--dataspec は繰り返せて、既定は RACE + DIFF。
 

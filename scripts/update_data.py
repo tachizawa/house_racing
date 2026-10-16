@@ -109,12 +109,16 @@ def _is_saved(spec: str, files: store.FileSet) -> bool:
 
 
 def _consume(raw: bytes, counts: Counter, writer: store.VersionWriter,
-             se_rows: list[dict]) -> None:
-    """1レコードを数えて、表の行に分けて書く。組に無い表の行は writer が捨てる。"""
+             se_rows: list[dict] | None) -> None:
+    """1レコードを数えて、表の行に分けて書く。組に無い表の行は writer が捨てる。
+
+    se_rows は走破タイムを照合するとき（--verify-time-fields）だけ渡す。None なら
+    SE の行を溜めない。40年ぶんの SE は数百万行あり、溜めると10GB前後になる。
+    """
     counts[records.record_spec(raw)] += 1
     for key, row in records.parse_rows(raw):
         writer.add(key, row)
-        if key == "SE":
+        if key == "SE" and se_rows is not None:
             se_rows.append(row)
 
 
@@ -138,12 +142,11 @@ def _from_raw(args: argparse.Namespace) -> int:
                 "raw_counts": raw_manifest.get("counts")},
     )
     counts: Counter[str] = Counter()
-    se_rows: list[dict] = []
     try:
         # 表に書かれない種別（JG など）はパースもしないので、組に関係する種別だけ読む。
         specs = [spec for spec in raw_manifest.get("counts", {}) if _is_saved(spec, files)]
         for raw in rawdump.iter_records(args.from_raw, specs):
-            _consume(raw, counts, writer, se_rows)
+            _consume(raw, counts, writer, None)
         print(f"生レコード {args.from_raw} から読んだレコード数:")
         for spec in sorted(raw_manifest.get("counts", {})):
             note = "" if spec in counts else "（保存対象外）"
@@ -182,7 +185,7 @@ def main(argv: list[str] | None = None) -> int:
     # dataspec ごとの内訳を見せないと「UM が0件」に気づけない。
     counts_by_dataspec: dict[str, Counter[str]] = {}
     open_codes: dict[str, int] = {}
-    se_rows: list[dict] = []
+    se_rows: list[dict] | None = [] if args.verify_time_fields else None
 
     # VersionWriter は「構築したら必ず commit() か abort() のどちらかで終わる」
     # という不変条件を保つ。読み取りループの中だけでなく commit() 自身が失敗
