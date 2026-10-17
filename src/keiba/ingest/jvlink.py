@@ -14,6 +14,7 @@ from __future__ import annotations
 import sys
 import time
 from collections.abc import Iterator, Sequence
+from contextlib import closing
 from typing import Any
 
 __all__ = [
@@ -22,6 +23,7 @@ __all__ = [
     "open_dataspec",
     "open_link",
     "read_open_dataspec",
+    "read_open_dataspec_files",
     "read_records",
     "verify_time_fields",
 ]
@@ -138,6 +140,25 @@ def read_open_dataspec(link, download_count, *, buffer_size=110000) -> Iterator[
     呼び出し側が print するとコンソール上では化けるので、表示は読み終えてから行う。
     コンソールが無ければ（コードページ 0）触らない。
     """
+    with closing(read_open_dataspec_files(link, download_count,
+                                          buffer_size=buffer_size)) as events:
+        for _fname, raw in events:
+            if raw is not None:
+                yield raw
+
+
+def read_open_dataspec_files(link, download_count, *,
+                             buffer_size=110000) -> Iterator[tuple[str | None, bytes | None]]:
+    """read_open_dataspec() と同じ読み方で、(読み込み中のファイル名, レコード) を返す。
+
+    ファイル切替（JVRead の -1）では (None, None) を返す。セットアップ取得を中断・
+    再開するために使う（インターフェース仕様書 p.19: 読み終えたファイル名を残し、
+    再開時は同じ条件で JVOpen して済んだファイルを JVSkip する）。
+
+    呼び出し側はレコードを受け取った直後に link.JVSkip() を呼べば、そのファイルの
+    残りを読み飛ばせる。(None, None) を受け取った直後には呼ばないこと——次の
+    ファイルが丸ごと飛ぶ（同 p.30）。
+    """
     while link.JVStatus() < download_count:
         time.sleep(0.2)
     saved_cp = _get_console_cp()
@@ -146,10 +167,11 @@ def read_open_dataspec(link, download_count, *, buffer_size=110000) -> Iterator[
         _set_console_cp(_CP932)
     try:
         while True:
-            code, text, _size, _fname = link.JVRead("", buffer_size, "")
+            code, text, _size, fname = link.JVRead("", buffer_size, "")
             if code == 0:
                 return
             if code == -1:          # ファイル切替。レコードではない
+                yield None, None
                 continue
             if code < -1:
                 raise JVLinkError(f"JVRead がエラーを返しました (code={code})。")
@@ -164,7 +186,7 @@ def read_open_dataspec(link, download_count, *, buffer_size=110000) -> Iterator[
                 raise JVLinkError(
                     f"JVRead のレコード長 {code} と cp932 に戻した長さ {len(raw)} が"
                     f"食い違います（先頭 {raw[:2]!r}）。固定長の位置がずれるため中断します。")
-            yield raw
+            yield fname, raw
     finally:
         if switch:
             _set_console_cp(saved_cp)

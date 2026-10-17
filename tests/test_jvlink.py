@@ -182,6 +182,27 @@ class TestConsoleCodepage:
         assert console["cp"] == 0
 
 
+class TestReadOpenDataspecFiles:
+    """セットアップ取得の中断・再開のため、レコードを読み込み中のファイル名と一緒に返す。"""
+
+    def test_yields_file_names_and_file_switches(self):
+        link = FakeLink([
+            (3, "RA1", 110000, "RAVM1986.jvd"), (3, "RA2", 110000, "RAVM1986.jvd"),
+            (-1, "", 110000, ""),
+            (3, "SE1", 110000, "SEVM1986.jvd"),
+            (-1, "", 110000, ""),
+        ])
+        assert list(jvlink.read_open_dataspec_files(link, 0)) == [
+            ("RAVM1986.jvd", b"RA1"), ("RAVM1986.jvd", b"RA2"), (None, None),
+            ("SEVM1986.jvd", b"SE1"), (None, None),
+        ]
+
+    def test_read_open_dataspec_still_yields_only_records(self):
+        link = FakeLink([(3, "RA1", 110000, "a.jvd"), (-1, "", 110000, ""),
+                         (3, "SE1", 110000, "b.jvd")])
+        assert list(jvlink.read_open_dataspec(link, 0)) == [b"RA1", b"SE1"]
+
+
 class TestOpenDataspec:
     """fix round 4: open_code を呼び出し側（update_data.py）に渡すための下請け。
 

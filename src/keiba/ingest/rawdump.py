@@ -7,12 +7,17 @@
 形式（2026-09-26 の最初の取得 tmp/fetch_raw/dump_raw.py と同じ）:
   <dir>/<レコード種別>.bin.gz … 「4バイトのビッグエンディアンの長さ + cp932 のバイト列」の繰り返しを gzip
   <dir>/manifest.json         … dataspec / fromdate / option / counts / completed
+
+ResumableRawDump（scripts/dump_raw.py）は同じ形式を、jvd ファイル1つごとに gzip の
+member を足しながら書く。gzip は複数 member のファイルを1本として読めるので、
+読み戻し（iter_records）は区別しない。途中の状態は <dir>/resume.json に残る。
 """
 
 from __future__ import annotations
 
 import gzip
 import json
+import os
 import struct
 from collections.abc import Iterable, Iterator
 from datetime import datetime, timezone
@@ -112,3 +117,142 @@ def iter_records(directory: Path, specs: Iterable[str] | None = None) -> Iterato
                     raise RawDumpError(
                         f"{path.name} が途中で切れています（{length} バイトのはずが {len(raw)}）。")
                 yield raw
+
+
+class ResumableRawDump:
+    """jvd ファイル1つを読み終えるたびに確定させる保存先。中断しても続きから読める。
+
+    40年ぶんのセットアップ取得は JVRead が遅く（2026-10-17 実測で約35件/秒）30時間
+    ほどかかるので、途中で止まっても最初からやり直さずに済むようにする。
+
+    レコードはファイルの終わりまでメモリに溜め、終わったら種別ごとの gz に gzip の
+    member を1つ足し、それから resume.json（済んだファイル名・各 gz の大きさ・件数）を
+    置き換える。gz を書いた後・resume.json の前に落ちた分は、再開時に記録した大きさ
+    まで切り詰めて捨てる。manifest.json は全部読み終えたときにだけ書く。
+    """
+
+    STATE_NAME = "resume.json"
+
+    def __init__(self, directory: Path, *, dataspec: str, fromdate: str, option: int) -> None:
+        self.directory = Path(directory)
+        self._state_path = self.directory / self.STATE_NAME
+        params = {"dataspec": dataspec, "fromdate": fromdate, "option": option}
+        if self._state_path.exists():
+            self._state = json.loads(self._state_path.read_text(encoding="utf-8"))
+            recorded = {key: self._state.get(key) for key in params}
+            if recorded != params:
+                raise RawDumpError(
+                    f"{self.directory} は別の条件 {recorded} で取り始めたものです"
+                    f"（今回 {params}）。同じ条件で再開するか、別の保存先を指定してください。")
+            if not self.finished:
+                self._truncate_to_state()
+        elif self.directory.exists() and any(self.directory.iterdir()):
+            raise RawDumpError(f"保存先が空ではなく、再開の記録（{self.STATE_NAME}）もありません:"
+                               f" {self.directory}")
+        else:
+            self.directory.mkdir(parents=True, exist_ok=True)
+            self._state = {**params,
+                           "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                           "done_files": [], "sizes": {}, "counts": {}, "bytes": 0}
+            self._save_state()
+        self._done = set(self._state["done_files"])
+        self._current: str | None = None
+        self._pending: list[bytes] = []
+
+    @property
+    def finished(self) -> bool:
+        path = self.directory / "manifest.json"
+        if not path.exists():
+            return False
+        return json.loads(path.read_text(encoding="utf-8")).get("completed") is True
+
+    @property
+    def done_file_count(self) -> int:
+        return len(self._done)
+
+    @property
+    def record_count(self) -> int:
+        return sum(self._state["counts"].values())
+
+    def is_done(self, fname: str) -> bool:
+        return fname in self._done
+
+    def add(self, fname: str, raw: bytes) -> None:
+        """読み込み中のファイル名つきでレコードを溜める。ファイル名が変われば前を確定する。"""
+        if self._current is not None and fname != self._current:
+            self.end_file()
+        self._current = fname
+        self._pending.append(raw)
+
+    def end_file(self) -> None:
+        """溜めたファイルの分を gz に足し、済んだファイルとして記録する。"""
+        if self._current is None:
+            return
+        by_spec: dict[str, list[bytes]] = {}
+        for raw in self._pending:
+            by_spec.setdefault(raw[:2].decode("ascii", errors="replace"), []).append(raw)
+        for spec, raws in by_spec.items():
+            path = self.directory / f"{spec}.bin.gz"
+            with open(path, "ab") as handle:
+                with gzip.GzipFile(fileobj=handle, mode="wb", compresslevel=6) as member:
+                    for raw in raws:
+                        member.write(_LENGTH.pack(len(raw)))
+                        member.write(raw)
+                handle.flush()
+                os.fsync(handle.fileno())
+            self._state["sizes"][spec] = path.stat().st_size
+            self._state["counts"][spec] = self._state["counts"].get(spec, 0) + len(raws)
+            self._state["bytes"] += sum(len(raw) for raw in raws)
+        self._state["done_files"].append(self._current)
+        self._done.add(self._current)
+        self._save_state()
+        self._current = None
+        self._pending = []
+
+    def discard_pending(self) -> None:
+        """読みかけのファイルの分を捨てる（次の再開でそのファイルを最初から読む）。"""
+        self._current = None
+        self._pending = []
+
+    def complete(self) -> None:
+        """最後のファイルを確定し、manifest.json を書く。これで read_manifest が通る。"""
+        self.end_file()
+        manifest = {
+            "dataspec": self._state["dataspec"], "fromdate": self._state["fromdate"],
+            "option": self._state["option"], "started_at": self._state["started_at"],
+            "format": "4-byte big-endian length + cp932 bytes, gzip",
+            "completed": True,
+            "counts": dict(sorted(self._state["counts"].items())),
+            "records": self.record_count,
+            "bytes": self._state["bytes"],
+            "files": len(self._state["done_files"]),
+            "finished_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+        (self.directory / "manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _truncate_to_state(self) -> None:
+        sizes = self._state["sizes"]
+        for path in self.directory.glob("*.bin.gz"):
+            spec = path.name[: -len(".bin.gz")]
+            recorded = sizes.get(spec)
+            actual = path.stat().st_size
+            if recorded is None:
+                path.unlink()                   # 1ファイルも確定しないうちに落ちた種別
+            elif actual > recorded:
+                with open(path, "r+b") as handle:
+                    handle.truncate(recorded)
+            elif actual < recorded:
+                raise RawDumpError(f"{path.name} が記録（{recorded} バイト）より小さい"
+                                   f" {actual} バイトです。保存先が壊れています。")
+        for spec in sizes:
+            if not (self.directory / f"{spec}.bin.gz").exists():
+                raise RawDumpError(f"{spec}.bin.gz が見つかりません。保存先が壊れています。")
+
+    def _save_state(self) -> None:
+        tmp = self._state_path.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(self._state, handle, ensure_ascii=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, self._state_path)
