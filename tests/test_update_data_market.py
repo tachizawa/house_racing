@@ -49,6 +49,17 @@ class TestMarketKind:
         assert _manifest(tmp_path)["record_counts"] == {"RA": 1, "SE": 0, "UM": 0}
         assert "HR: 1（保存対象外）" in capsys.readouterr().out
 
+    def test_race_kind_does_not_parse_records_it_does_not_save(self, tmp_path, monkeypatch, capsys):
+        """保存しない種別はパースしない。長さが仕様と違う O1 でも race の版の取り込みは止まらない。"""
+        broken_o1 = fx.make_o1()[:-10]
+        link = DataspecAwareLink(open_codes={"RACE": 0},
+                                 records_by_dataspec={"RACE": [fx.make_ra(), broken_o1]})
+        monkeypatch.setattr(update_data.jvlink, "open_link", lambda *a, **k: link)
+        assert update_data.main(["--dataspec", "RACE", "--fromdate", "20260801000000",
+                                 "--data-dir", str(tmp_path)]) == 0
+        assert _manifest(tmp_path)["record_counts"] == {"RA": 1, "SE": 0, "UM": 0}
+        assert "O1: 1（保存対象外）" in capsys.readouterr().out
+
 
 class TestFromRaw:
     """--from-raw は保存した生レコードから版を作る。JV-Link は呼ばない。"""

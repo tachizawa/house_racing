@@ -110,13 +110,19 @@ def _is_saved(spec: str, files: store.FileSet) -> bool:
 
 
 def _consume(raw: bytes, counts: Counter, writer: store.VersionWriter,
-             se_rows: list[dict] | None) -> None:
-    """1レコードを数えて、表の行に分けて書く。組に無い表の行は writer が捨てる。
+             se_rows: list[dict] | None, files: store.FileSet) -> None:
+    """1レコードを数えて、表の行に分けて書く。
+
+    files の組に書かれない種別は数えるだけでパースしない（race の版に来る O1〜O6 など）。
+    使わない種別のパースに時間を使わず、その種別の形式が変わっていても取り込みを止めない。
 
     se_rows は --verify-time-fields のときだけ渡す（None なら溜めない）。5年ぶんの
     セットアップ取得では SE が数十万行あり、使わないのに全部をメモリに持つことになる。
     """
-    counts[records.record_spec(raw)] += 1
+    spec = records.record_spec(raw)
+    counts[spec] += 1
+    if not _is_saved(spec, files):
+        return
     for key, row in records.parse_rows(raw):
         writer.add(key, row)
         if key == "SE" and se_rows is not None:
@@ -160,7 +166,7 @@ def _from_raw(args: argparse.Namespace) -> int:
         specs = [spec for spec in raw_manifest.get("counts", {}) if _is_saved(spec, files)]
         try:
             for raw in rawdump.iter_records(args.from_raw, specs):
-                _consume(raw, counts, writer, se_rows)
+                _consume(raw, counts, writer, se_rows, files)
         except rawdump.RawDumpError as error:
             raise SystemExit(f"生レコードを使えません: {error}") from error
         print(f"生レコード {args.from_raw} から読んだレコード数:")
@@ -238,7 +244,7 @@ def main(argv: list[str] | None = None) -> int:
                 if open_code == 0:
                     counts = counts_by_dataspec.setdefault(dataspec, Counter())
                     for raw in jvlink.read_open_dataspec(link, download_count):
-                        _consume(raw, counts, writer, se_rows)
+                        _consume(raw, counts, writer, se_rows, files)
                 elif open_code != -1:
                     # -1 (該当データなし) はエラーではないので読まずに次へ進む。
                     # それ以外は本当のエラーなので版全体を捨てる。

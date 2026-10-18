@@ -25,16 +25,16 @@
 
 今回確認した主な資料・実装:
 
-- [既存の作業報告](../../../tmp/keiba-report/report.md)
-- [プロンプトと修正状況の続編](../../../tmp/keiba-report/report2-prompts-and-fix-plan.md)
+- 既存の作業報告（`tmp/keiba-report/report.md`）
+- プロンプトと修正状況の続編（`tmp/keiba-report/report2-prompts-and-fix-plan.md`）
 - [現行の質問定義](../../../src/keiba/predict/questions.py)
 - [入力stateの組み立て](../../../src/keiba/features/summary.py)
 - [条件別実績の集計](../../../src/keiba/features/derive.py)
 - [各層へのリクエスト処理](../../../src/keiba/predict/layers.py)
 - [予想パイプライン](../../../src/keiba/predict/pipeline.py)
-- [現行データ版のmanifest](../../../data/versions/20260922T070053Z/manifest.json)
+- 現行データ版のmanifest（`data/versions/20260922T070053Z/manifest.json`）
 
-`tmp/` と `data/` 配下のリンク先（本文中の `data/top3/final_runs.jsonl` や `task16-results.md` なども同じ）は所有者の手元にだけあるファイルで、リポジトリには含めていません（JRA-VAN のデータは再配布不可のため `.gitignore` 済み）。
+`tmp/` と `data/` 配下のファイル（本文中の `data/top3/final_runs.jsonl` や `task16-results.md` なども同じ）は所有者の手元にだけあるファイルで、リポジトリには含めていません（JRA-VAN のデータは再配布不可のため `.gitignore` 済み）。
 
 コードと資料の読み取りを行いました。既存レポートの統計検定やバックテストは再実行していません。
 

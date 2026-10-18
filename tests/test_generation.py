@@ -327,7 +327,10 @@ def test_survivorship_verdict_from_bootstrap_interval():
     fig = apply_figures(runs, fit_model(runs))
     levels = curve_levels(age_curve(fig, years=E2E_YEARS, before=E2E_AS_OF, n_boot=5, seed=1))
     kw = dict(as_of=E2E_AS_OF, years=E2E_YEARS, ages=[2, 3, 4, 5], curve_levels=levels)
-    assert replicate_stats(fig, **kw)["did|4-3|median"] == pytest.approx(0.0, abs=1e-6)
+    stats = replicate_stats(fig, **kw)
+    # 走に戻して物差しを推定し直しても生き残りの偏りが残っている（消えていれば did が 0 でも意味が無い）
+    assert abs(stats["pair_adj|4-3|median"]) > 0.5
+    assert stats["did|4-3|median"] == pytest.approx(0.0, abs=1e-6)
     ci = bootstrap_intervals(runs, n_boot=20, seed=1, **kw)
     lo, hi = ci.at["did|4-3|median", "lo"], ci.at["did|4-3|median", "hi"]
     assert lo < hi                                                     # 区間に幅がある（作り物の点ではない）

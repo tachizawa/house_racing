@@ -86,14 +86,15 @@ def recompute_source_problem(path: Path, data_version: str, blood_version: str) 
     if m is None:
         return (f"{path.name} から版を読み取れません（血統版の無い古い名前 factors_<データ版>.pkl も、血統版を"
                 "確かめられないので使いません）。factors_<データ版>_<血統版>_<印>.pkl の名前の表を渡すか、"
-                "--rebuild で作り直してください。")
+                "--recompute-table-from を外し、--rebuild を付けて作り直してください。")
     if m["data"] != data_version:
         return f"{path.name} はデータ版 {m['data']} の表です。今のデータ版は {data_version} です。"
     if m["blood"] != blood_version:
         return f"{path.name} は血統版 {m['blood']} の表です。今の血統版は {blood_version} です。"
     if m["tag"] not in _tags_with_current_non_table_versions():
         return (f"{path.name} の要素の版の印 {m['tag']} は、表の要素以外を今の版にした組のどれとも合いません"
-                "（表の要素以外の版が違う表は、その列を引き継げません）。--rebuild で作り直してください。")
+                "（表の要素以外の版が違う表は、その列を引き継げません）。"
+                "--recompute-table-from を外し、--rebuild を付けて作り直してください。")
     return None
 
 
@@ -169,7 +170,7 @@ def main(argv: list[str] | None = None) -> int:
         old = pd.read_pickle(args.recompute_table_from)
         if miss := missing_years(old, years):
             print(f"{source} には {miss} 年の年ごとの要素がありません（評価の年 {years[0]}〜{years[-1]}）。"
-                  "--rebuild で作り直してください。")
+                  "--recompute-table-from を外し、--rebuild を付けて作り直してください。")
             return 2
         R = recompute_table_factors(old, log=log)
     elif cache.exists() and not args.rebuild:

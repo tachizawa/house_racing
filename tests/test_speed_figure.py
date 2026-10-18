@@ -85,10 +85,13 @@ def test_prepare_runs_prefers_result_over_entry_rows():
 
 
 def test_prepare_runs_uses_final_results_only():
-    """確定成績（7）がまだ無く速報（3〜6）しかないレース・走は使わない（仕様 §3.1）。"""
+    """確定成績（7）がまだ無く速報（3〜6）しかないレース・走は使わない（仕様 §3.1）。
+
+    速報しかないレース（ENTRY）は平地にする。障害だと track_kind でも落ちるので、速報の除外を確かめられない。
+    """
     races, horses = frames(
-        [race_row(OK), race_row(OK, data_kubun="5", make_date="20250107"), race_row(JUMP, data_kubun="5")],
-        [horse_row(OK, "01"), horse_row(OK, "02", data_kubun="6"), horse_row(JUMP, data_kubun="5")])
+        [race_row(OK), race_row(OK, data_kubun="5", make_date="20250107"), race_row(ENTRY, data_kubun="5")],
+        [horse_row(OK, "01"), horse_row(OK, "02", data_kubun="6"), horse_row(ENTRY, data_kubun="5")])
     runs = prepare_runs(races, horses, as_of=jst(2025, 2, 1))
     assert runs.race_id.tolist() == [OK] and runs.umaban.tolist() == ["01"]
 

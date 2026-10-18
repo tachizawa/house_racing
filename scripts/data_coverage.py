@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from keiba import config, console  # noqa: E402
 from keiba.data.repository import Repository, ResultRepository  # noqa: E402
-from keiba.data.store import DataStore  # noqa: E402
+from keiba.data.store import DataStore, DataVersionError  # noqa: E402
 from keiba.evaluate import coverage  # noqa: E402
 from keiba.evaluate.backtest import hasso_window_for_cutoff_window  # noqa: E402
 
@@ -36,7 +36,11 @@ def main(argv: list[str] | None = None) -> int:
     start, end = hasso_window_for_cutoff_window(
         datetime.strptime(args.date_from, "%Y%m%d").replace(tzinfo=JST),
         datetime.strptime(args.date_to, "%Y%m%d").replace(hour=23, minute=59, second=59, tzinfo=JST))
-    store = DataStore.open_current(args.data_dir)
+    try:
+        store = DataStore.open_current(args.data_dir)
+    except DataVersionError as error:
+        print(f"データ版を開けません: {error}")
+        return 1
     repo, results = Repository(store), ResultRepository(store)
     report = coverage.measure(results.races_between(start, end), repo, results)
 

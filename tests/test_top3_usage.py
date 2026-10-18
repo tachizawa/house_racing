@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import time
 import types
 
 from keiba.evaluate import top3_backtest as tbt
@@ -33,3 +34,20 @@ def test_missing_pace_answer_usage_is_counted(tmp_path):
     rep = tbt.report(rows, n=3, run_info={"note": "test"})
     assert rep["usage"]["plan_b"]["input_tokens"] == 123
     assert rep["usage"]["plan_b"]["requests"] == 1
+
+
+class SlowMissingPaceClient(MissingPaceClient):
+    """答えの欠けた応答を、時間をかけて返す。"""
+
+    def system_one(self, state, questions, **kw):
+        time.sleep(0.02)
+        return super().system_one(state, questions, **kw)
+
+
+def test_missing_answer_request_time_is_counted(tmp_path):
+    """答えが欠けて飛ばしたレースも、リクエストにかかった時間を usage に残す（seconds を 0 にしない）。"""
+    rows = _run_b(tmp_path, SlowMissingPaceClient())
+    assert rows[0].skipped == "incomplete_answer"
+    assert rows[0].usage["plan_b"]["seconds"] >= 0.02
+    rep = tbt.report(rows, n=3, run_info={"note": "test"})
+    assert rep["usage"]["plan_b"]["seconds"] >= 0.02

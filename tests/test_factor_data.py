@@ -73,3 +73,15 @@ def test_build_runs_uses_final_results_only():
     h2.loc[h2.race_id == rid, "data_kubun"] = "5"
     assert build_runs(r2, h2, ped).ketto_num.tolist() == ["A", "B", "C"]
     assert build_runs(*_second_race(races, horses), ped).ketto_num.tolist() == ["A", "B", "C", "X", "Y"]
+
+
+def test_build_runs_drops_race_with_unreadable_distance():
+    """距離が空・0（RA の "0000" は 0 のまま残る）のレースは除く。指数・着差の計算は距離で割る。"""
+    races, horses, ped = frames()
+    rid = "2025010505010103"
+    for kyori in ("", "0"):
+        r2, h2 = _second_race(races, horses)
+        r2.loc[r2.race_id == rid, "kyori_m"] = kyori
+        R = build_runs(r2, h2, ped)
+        assert R.ketto_num.tolist() == ["A", "B", "C"], kyori
+        assert (R.kyori > 0).all()

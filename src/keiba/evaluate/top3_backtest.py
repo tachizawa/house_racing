@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import statistics
+import time
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -232,6 +233,8 @@ def run(races: Sequence[RaceRow], repo: Repository, results: ResultRepository, c
         skipped = None
         skip_detail = None
         for method in methods:
+            # 答えが欠けて Top3IncompleteError で来たときの所要時間（例外は時間を持たない）
+            started = time.perf_counter()
             try:
                 if method == "python":
                     base = top3_baselines.ability_ranking(dossier)
@@ -303,7 +306,8 @@ def run(races: Sequence[RaceRow], repo: Repository, results: ResultRepository, c
                 # 過少報告する）。トークン数が読めているので failed_requests には
                 # 数えない。案Bの2回目の欠けは PlanBPartialFailure で来る。
                 usage[method] = {"input_tokens": error.input_tokens,
-                                 "requests": error.requests, "seconds": 0.0,
+                                 "requests": error.requests,
+                                 "seconds": time.perf_counter() - started,
                                  "state_chars": None,
                                  "failed_requests": 0 if error.requests else 1}
                 skipped = "incomplete_answer"

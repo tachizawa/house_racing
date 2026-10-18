@@ -81,6 +81,10 @@ TIE_BAND = 0.03
 # "3": data_quality.coverage_from（と履歴の found_may_be_truncated の判定）を
 #      fromdate と first_hasso_at の遅いほうにした。option 4 の版では訂正再配信の
 #      1989年などが入り、打ち切りの可能性が一度も付かなかった。形は "2" と同じ。
+#      同じ "3" に、先行力の定義文（front_runner_definition）への3角・2角の代用の
+#      追記、競馬場が不明なときの course_exact_distance の比較不能、コースを
+#      特定できない理由文の書き分けも含む（PR #2 のレビュー対応。"3" で作った
+#      記録が1件も無いうちに入れたので、版を分けていない）。
 DOSSIER_VERSION = "3"
 # 「3着以内」の 3。表示頭数（DEFAULT_TOP_N）とは別物なので分けて持つ。
 TOP3_PLACE = 3

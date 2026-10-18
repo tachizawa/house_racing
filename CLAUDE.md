@@ -134,8 +134,10 @@ scripts/update_data.py --dataspec RACE --fromdate 20230801000000
   3 は 2026-10-17 に収録開始（`coverage_from`）を `fromdate` と `first_hasso_at` の遅いほうに
   直した版で、形は同じ。option 4 の版では訂正再配信（1989年など）のせいで収録開始が古く出て、
   「過去走が打ち切られているかもしれない」の注記が一度も付いていなかった。比較に使った1年版
-  （option 1）は `first_hasso_at` の方が遅いので値は変わらない。同じ版で、先行力の定義文
-  （`front_runner_definition`）に4角が無いとき3角・2角を使うことを書き足した（全レースで文が変わる）。
+  （option 1）は `first_hasso_at` の方が遅いので値は変わらない。3 には、先行力の定義文
+  （`front_runner_definition`）に4角が無いとき3角・2角を使うことの書き足し（全レースで文が変わる）、
+  競馬場が不明なときの同コース同距離の比較不能、コースを特定できない理由文の書き分けも含む。
+  どれも 3 で作った記録が1件も無いうち（同じ PR の未マージの変更）に入れたので、版を分けていない
 - **最終評価期間 2026-07-01〜09-22 は使用済み**（境界は `data/top3/final_runs.jsonl` に
   固定。最初の `--final` 実行 2026-09-23T13:10:16Z）。同じ境界より後の日付を指定する
   再評価には `--final-rerun-reason` が要り、理由が同ファイルに残る。
@@ -543,7 +545,7 @@ venv は `.venv`（Python 3.13.3 / 64bit）。コマンドは `.venv` の python
 # 依存（初回のみ）
 .venv/Scripts/python.exe -m pip install -r requirements.txt
 
-# テスト全体（2026-10-17 実行: 1554 passed）
+# テスト全体（2026-10-18 実行: 1560 passed）
 .venv/Scripts/python.exe -m pytest
 
 # テスト1件だけ

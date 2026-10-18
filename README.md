@@ -35,7 +35,7 @@ PowerShell の場合、手順1・3の `.venv/Scripts/python.exe` は `.venv\Scri
 .venv/Scripts/python.exe -m pytest
 ```
 
-Jev・JV-Link の実通信はしない。実通信の確認は `smoke_test.py` の役目。
+Jev・JV-Link の実通信はしない。Jev の実通信の確認は `smoke_test.py` の役目（JV-Link には接続しない）。
 
 ## 構成
 
@@ -53,7 +53,7 @@ Jev・JV-Link の実通信はしない。実通信の確認は `smoke_test.py` �
 
 ## 軸を足すとき
 
-本番の質問は `src/keiba/predict/questions.py`（変えたら `PROMPT_VERSION` を上げる）。以下は疎通確認の実演の場合。
+本番の質問は勝率予想が `src/keiba/predict/questions.py`（変えたら `PROMPT_VERSION` を上げる）、3着内予想が `src/keiba/predict/top3_questions.py`（変えたら `TOP3_PROMPT_VERSION` を上げる）。以下は疎通確認の実演の場合。
 
 `scripts/smoke_test.py` の `AXIS_QUESTIONS` に質問を1行、`WEIGHTS` に重みを1つ足す。
 「値が大きいほど不利」を問う軸は `INVERTED_AXES` にも名前を入れる（第3層で `1 - x` に反転される）。

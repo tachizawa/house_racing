@@ -32,7 +32,7 @@ def build_runs(races: pd.DataFrame, race_horses: pd.DataFrame, pedigrees: pd.Dat
     """取消・除外（走っていない）は除き、中止・失格は出走として残す（着順 0 → 3着内ではない）。
 
     確定成績（data_kubun 7）だけを使う（speed_figure.FINAL_DATA_KUBUN）。馬齢が読めない（空・0 以下）馬や距離が
-    読めないレースは、その馬だけ落とすと頭数・着順の割合が欠けた出走で作られるので、レースごと除く
+    読めない（空・0 以下）レースは、その馬だけ落とすと頭数・着順の割合が欠けた出走で作られるので、レースごと除く
     （データ版 20261010T155433Z では該当 0 件）。
     """
     r = _pick_by_data_kubun(races, FINAL_DATA_KUBUN)
@@ -56,7 +56,8 @@ def build_runs(races: pd.DataFrame, race_horses: pd.DataFrame, pedigrees: pd.Dat
         "kyori": _num(m["kyori_m"]), "class_level": _num(m["class_level"]), "grade": m["grade_cd"].to_numpy(),
         "syubetu": m["syubetu_cd"].to_numpy(),
     })
-    ok = (out["barei"] > 0) & out["kyori"].notna()          # NaN > 0 は False なので空の馬齢もここで落ちる
+    # NaN > 0 は False なので空の馬齢・距離もここで落ちる。距離 0（RA の "0000"）も読めない距離として落とす
+    ok = (out["barei"] > 0) & (out["kyori"] > 0)
     bad_races = out.loc[~ok, "race_id"].unique()
     out = out[~out["race_id"].isin(bad_races)].copy()
     out["barei"] = out["barei"].astype(int)

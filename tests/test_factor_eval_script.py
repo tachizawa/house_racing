@@ -70,6 +70,21 @@ def test_recompute_source_must_match_current_versions(tmp_path):
     assert ok(tmp_path / "factors_D1_B1_abcd1234.pkl", "D1", "B1") is not None
 
 
+def test_refused_recompute_source_tells_to_drop_the_option(tmp_path, old_table, capsys):
+    """--recompute-table-from を付けたままでは --rebuild を足しても作り直しの分岐に入るので、外すよう案内する。"""
+    ok = script.recompute_source_problem
+    other = versions_tag({**VERSIONS, "time_figure": "v0"})
+    for name in ("factors_D1.pkl", f"factors_D1_B1_{other}.pkl"):
+        assert "--recompute-table-from を外し" in ok(tmp_path / name, "D1", "B1"), name
+    base = _dirs(tmp_path)
+    R = pd.read_pickle(old_table)
+    R.loc[R.year == 2017, list(script.YEARLY_FACTOR_NAMES)] = np.nan       # 2017年の年ごとの要素が無い古い表
+    src = tmp_path / old_table.name
+    R.to_pickle(src)
+    assert script.main(base + ["--out-dir", str(tmp_path / "out"), "--recompute-table-from", str(src)]) == 2
+    assert "--recompute-table-from を外し" in capsys.readouterr().out
+
+
 def test_recompute_from_other_data_version_is_refused(tmp_path, old_table, capsys):
     base = _dirs(tmp_path)
     (tmp_path / "data" / "CURRENT").write_text("D2", encoding="utf-8")

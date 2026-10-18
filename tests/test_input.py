@@ -137,6 +137,13 @@ class TestLoadRaceInput:
         with pytest.raises(schema.InputError):
             schema.load_race_input(path)
 
+    def test_load_rejects_non_utf8_file(self, tmp_path: Path):
+        """Windows で Shift-JIS のまま保存した入力も、traceback でなく InputError にする。"""
+        path = tmp_path / "sjis.json"
+        path.write_bytes(json.dumps(make_payload(), ensure_ascii=False).encode("cp932"))
+        with pytest.raises(schema.InputError, match="UTF-8"):
+            schema.load_race_input(path)
+
 
 class TestResolveJyoCd:
     def test_resolves_name_to_code(self):

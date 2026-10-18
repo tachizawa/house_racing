@@ -41,3 +41,9 @@ def test_enables_utf8_output(tmp_path, monkeypatch):
     data_coverage.main(["--from", "20260228", "--to", "20260228",
                         "--data-dir", str(_data_dir(tmp_path))])
     assert calls == [1]
+
+
+def test_missing_data_version_is_reported_without_traceback(tmp_path, capsys):
+    assert data_coverage.main(["--from", "20260228", "--to", "20260228",
+                               "--data-dir", str(tmp_path / "none")]) == 1
+    assert "データ版を開けません" in capsys.readouterr().out
