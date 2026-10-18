@@ -112,6 +112,30 @@ def test_feature_set_has_no_result_columns():
     assert fs.frame.loc[0, "ped_SS"] == "NA"
 
 
+def test_ancestors_are_not_categorical_features_by_default():
+    """祖先カテゴリは ordered TS で本人の過去走を数えるので既定で渡さない。祖先は st_* で入る。"""
+    from dataclasses import replace
+    df = _frame([("2020-01-01", "r1", "A", "S1", "d1", 1, 10)])
+    fs = build_features(df, pedigree=PedigreeConfig(generations=3, inbreeding_generations=3,
+                                                    stat_paths=("S", "D")),
+                        features=FeatureConfig())
+    assert not [c for c in fs.columns if c.startswith("ped_")]
+    assert {"st_S_ae_top3", "st_D_ae_top3"} <= set(fs.num_features)
+    fs = build_features(df, pedigree=replace(PED, categorical_exclude=("D", "DD")),
+                        features=FeatureConfig())
+    assert "ped_S" in fs.cat_features and "ped_DS" in fs.cat_features
+    assert "ped_D" not in fs.columns and "ped_DD" not in fs.columns
+
+
+def test_categorical_exclude_must_be_within_categorical_generations():
+    from keiba_ml.config import MLConfig, validate
+    with pytest.raises(ValueError, match="categorical_exclude"):
+        validate(MLConfig(pedigree=PedigreeConfig(categorical_generations=1,
+                                                  categorical_exclude=("DS",))))
+    with pytest.raises(ValueError, match="categorical_exclude"):
+        validate(MLConfig(pedigree=PedigreeConfig(categorical_exclude=("D",))))
+
+
 # --- metrics ---------------------------------------------------------------
 
 def _race(scores, ranks, race_id="r1"):

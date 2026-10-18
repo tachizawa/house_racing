@@ -19,7 +19,11 @@ kazoe_age_until_year = 2000
 
 [pedigree]
 generations = 5                # 4世代目以降は HN の父母リンクで埋める
-categorical_generations = 3    # CatBoost のカテゴリにする祖先は3世代14枠
+# 祖先の繁殖登録番号を CatBoost のカテゴリにする世代数。0 = 使わない（実データで決めた。
+# ordered TS は本人・近親の過去走を数え、学習期間の値で固定されるため。docs/ml/README.md §4.2）
+categorical_generations = 0
+# categorical_generations > 0 のとき、カテゴリから外す位置（例: ["D", "DD"]）
+categorical_exclude = []
 inbreeding_generations = 5
 stat_paths = ["S", "D", "DS", "SS"]
 shrinkage = 10.0               # A/E の縮小推定（階層ベイズの採否は未決定）

@@ -121,9 +121,18 @@ class PedigreeConfig:
     #: 既定は configs/ml/pedigree.toml と同じ5世代（inbreeding_generations 以上に
     #: しておかないと、設定ファイルで省いたときに validate() が通らない）。
     generations: int = 5
-    #: カテゴリ特徴量として CatBoost に渡す祖先の位置の世代上限。
-    #: 深い世代ほど同じ祖先を共有する馬が増えて情報が薄まるので、既定は3世代。
-    categorical_generations: int = 3
+    #: カテゴリ特徴量として CatBoost に渡す祖先の位置の世代上限。0 なら渡さない（既定）。
+    #:
+    #: CatBoost の ordered target statistics は「同じカテゴリの、その行より前の行」の
+    #: 結果を数えるので本人や近親の過去走が混ざり（exclude_self が効かない）、しかも
+    #: 数値は学習期間の結果で固定される。実データ（2014〜2023年で学習、2024年で検証、
+    #: 2025年でテスト。2026-10-19）では、カテゴリを入れると母・母母が重要度の 30〜40% を
+    #: 占めて 35〜37 反復で過学習し、検証からテストへの落ち方が 0.16〜0.17 頭と大きかった
+    #: （入れない場合は 0.04 頭。テストの的中数は 0.889 → 1.001）。祖先の情報は本人を除いた
+    #: as-of の産駒成績（st_<位置>_*）で入れる。docs/ml/README.md §4.2。
+    categorical_generations: int = 0
+    #: categorical_generations > 0 のとき、カテゴリから外す祖先の位置（例: ("D", "DD")）。
+    categorical_exclude: tuple[str, ...] = ()
     #: 近交係数（Wright の近似）とクロス数を数える世代数。
     inbreeding_generations: int = 5
     #: 産駒成績（as-of の A/E）を集計する祖先の位置。
@@ -302,8 +311,13 @@ def validate(config: MLConfig) -> None:
     p = config.pedigree
     if p.generations < 1:
         raise ValueError("pedigree.generations は 1 以上にしてください。")
-    if not 1 <= p.categorical_generations <= p.generations:
-        raise ValueError("pedigree.categorical_generations は 1〜generations にしてください。")
+    if not 0 <= p.categorical_generations <= p.generations:
+        raise ValueError("pedigree.categorical_generations は 0〜generations にしてください。")
+    categorical = all_paths(p.categorical_generations) if p.categorical_generations else ()
+    bad = [x for x in p.categorical_exclude if x not in categorical]
+    if bad:
+        raise ValueError(
+            f"pedigree.categorical_exclude に categorical_generations を超える位置があります: {bad}")
     if not 1 <= p.inbreeding_generations <= p.generations:
         raise ValueError("pedigree.inbreeding_generations は 1〜generations にしてください。")
     if not p.stat_paths:
