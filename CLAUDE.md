@@ -250,18 +250,25 @@ scripts/update_data.py --dataspec RACE --fromdate 20230801000000
 ## 機械学習系（`src/keiba_ml/`、2026-10-16 追加）
 
 開発方針「CatBoost を中心に個別モデルを段階的に作る」の Phase 1（データ基盤）と
-Phase 2（血統モデル）。**実データでは未検証**（開発環境に JV-Link と SDK が無く、
-合成データでのみ端から端まで確認した）。使い方・設計・未決定事項は `docs/ml/README.md`。
+Phase 2（血統モデル）。**2026-10-19 に実データで端から端まで確認した**（データセット作成 →
+学習 → テスト評価 → 出馬表の予想）。使い方・設計・確認の内容・結果は `docs/ml/README.md` §7〜8。
 
 - **既存モデルとの境界を崩さないこと。** `keiba_ml` → `keiba` は JV-Link 層・データ版の
-  場所・コード表だけを借りる。`keiba` → `keiba_ml` の import は作らない。既存のデータ版
-  （`data/versions/`）には書かない。出力は `data/ml/`
-- 依存は `requirements-ml.txt`（catboost / pyarrow）。既存のテストはこれ無しで通る
-- 血統レコード（SK/HN/UM の3代血統）の位置は仕様書から写しただけ。
-  **学習の前に `scripts/ml/check_offsets.py` と `build_dataset.py` の整合性レポート
-  （`pedigree_parent_link`）で確かめる**
+  場所と読み方・コード表だけを借りる。`keiba` → `keiba_ml` の import は作らない。既存のデータ版
+  （`data/versions/` `data/blood/`）には書かない。出力は `data/ml/`
+- 依存は `requirements-ml.txt`（catboost / pyarrow。2026-10-19 に `.venv` へ導入済み）。既存のテストはこれ無しで通る
+- **血統は既存の BLDN の版（`data/blood/`）を読む**（`data.pedigree_source = "blood"`、既定）。
+  `scripts/ml/update_pedigree.py` は UM で補いたいときだけ。BLOD は使わない
+- 手順: `build_dataset.py --race-data-dir data\_40y` → `train_pedigree.py --years 10` →
+  `predict_pedigree.py --model data\ml\runs\<run_id>\10y`。現在の最終モデルは `data/ml/runs/20261019_final/10y`
+- 結果（テスト 2025年 3,335レース、上位3頭の的中数）: **血統モデル 1.0015 [0.974, 1.027]**、
+  父×芝ダ×距離の A/E 0.854、父の A/E 0.826、偶然 0.689。ECE 0.0023。市場（オッズ）との比較はしていない
+- **祖先の繁殖登録番号を CatBoost のカテゴリにしない**（`categorical_generations = 0`）。ordered TS は
+  本人・近親の過去走を数え（`exclude_self` が効かない）、学習期間の値で固定される。入れると母・母母が
+  重要度 30〜40% を占めて35反復前後で過学習し、テストの的中数は 0.889。この判断はテストを見た後のもの
 - 産駒成績の特徴量は as-of（レース日より前・本人の過去走を除く）。この規律を外すと
   未来情報や本人の成績が血統モデルに混ざる。`tests/ml/test_ml_features_metrics.py` が固定している
+- 学習期間の比較（`--compare`、10/20/30/40年）は**未実行**。2026-10-19 に PC のメモリ逼迫で止められた
 
 ## 何を作るのか
 
@@ -563,7 +570,7 @@ venv は `.venv`（Python 3.13.3 / 64bit）。コマンドは `.venv` の python
 # 依存（初回のみ）
 .venv/Scripts/python.exe -m pip install -r requirements.txt
 
-# テスト全体（2026-10-19 実行: 1666 passed, 3 skipped）
+# テスト全体（2026-10-19 実行: 1687 passed。catboost を入れると skip は 0）
 .venv/Scripts/python.exe -m pytest
 
 # テスト1件だけ
