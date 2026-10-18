@@ -1,18 +1,20 @@
 """血統系の JV-Data レコード（SK / HN / UM の3代血統）を dict にする。
 
-位置は 1 始まり。JV-Data仕様書 4.9 のフォーマットに従って写したが、
-**この開発環境には vendor/（SDK）が無く、実データとの照合はできていない。**
-自分の PC で次の2つを必ず実行してから学習に進むこと:
-
-1. ``scripts/ml/check_offsets.py`` … SDK の ``JVData_Struct.py`` と位置・長さを照合
-2. ``scripts/ml/build_dataset.py`` の整合性レポートの ``pedigree_parent_link``
-   … SK の「父父」と HN の「父の父」が一致する率。位置がずれていれば 0% 近くになる
+位置は 1 始まり。JV-Data仕様書 4.9 のフォーマットから写し、2026-10-19 に
+``scripts/ml/check_offsets.py`` で SDK 5.0.0 の ``JVData_Struct.py`` と照合した（全項目一致）。
+SK/HN の位置は既存の ``keiba.ingest.records.parse_sk`` / ``parse_hn`` とも同じで、
+既存の血統の版（BLDN）から作った祖先表では ``pedigree_parent_link`` が 99.85%。
 
 | 種別 | 内容 | dataspec | 長さ |
 |---|---|---|---|
-| SK | 産駒マスタ。血統登録番号 → 3代血統の繁殖登録番号14個 | BLOD | 208 |
-| HN | 繁殖馬マスタ。繁殖登録番号 → 馬名・生年・父母の繁殖登録番号 | BLOD | 251 |
+| SK | 産駒マスタ。血統登録番号 → 3代血統の繁殖登録番号14個 | BLDN | 208 |
+| HN | 繁殖馬マスタ。繁殖登録番号 → 馬名・生年・父母の繁殖登録番号 | BLDN | 251 |
 | UM | 競走馬マスタ。3代血統の繁殖登録番号と馬名14組（SK の補完） | DIFF/DIFN | 1609 |
+
+**BLOD は使わない。** BLOD は JV-Data 4.9.0（2023-08）より前の形式（繁殖登録番号8桁）の
+まま 2023-07 作成分で止まっており、この長さ・位置で読むと全部ずれる（CLAUDE.md）。
+SK/HN だけなら、既存の ``update_data.py --kind blood`` が取った版をそのまま読める
+（``DataConfig.pedigree_source = "blood"``、既定）。この層で取るのは UM で補いたいときだけ。
 
 既存の ``keiba.ingest.records.parse_um`` は3代血統を読まない（過去成績を持たない列
 だけを読む方針）。既存の版の形式を変えないよう、血統はこちらで別に読む。

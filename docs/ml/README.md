@@ -4,9 +4,9 @@
 `src/keiba_ml/` に置く。本書は Phase 1（データ基盤）と Phase 2（血統モデル）の
 使い方と設計判断をまとめる。
 
-> **実データでの動作は未確認。** 開発環境に JV-Link と SDK（`vendor/`）が無いため、
-> 合成データ（`tests/fixtures/ml_synthetic.py`）でのみ端から端まで検証した。
-> 自分の PC で最初に「[1. まず確かめること](#1-まず確かめること)」を実行すること。
+> **2026-10-19 に実データで端から端まで確認した**（40年ぶんのレースの版 × 既存の血統の版
+> BLDN）。確認の内容と、実データを見て直した点は「[7. 実データでの確認](#7-実データでの確認2026-10-19)」、
+> 結果は「[8. 結果](#8-結果2026-10-19)」。
 
 ## 0. 置き場所
 
@@ -46,23 +46,23 @@
 ```
 
 位置は JV-Data仕様書 4.9 から写したもの（SK 208バイト・HN 251バイト・UM 1609バイト）。
-取得時に長さが合わないレコードがあると `update_pedigree.py` が警告し、manifest の
-`length_mismatch` に件数が残る。
+2026-10-19 に SDK 5.0.0 と照合して全項目一致した。
 
 ## 2. 実行手順
 
 ```powershell
-# Phase 1-1. レースデータ（既存の取得スクリプト）。30〜40年に広げるなら fromdate を戻す。
+# Phase 1-1. レースデータ（既存の取得スクリプト）。40年ぶんは data/_40y に作ってある（2026-10-19 時点）。
 #            期間を分けて取った版は configs/ml/pedigree.toml の data.race_versions に並べれば束ねられる
-.venv\Scripts\python.exe scripts\update_data.py --dataspec RACE --fromdate 19860101000000
+.venv\Scripts\python.exe scripts\update_data.py --dataspec RACE --fromdate 19860101000000 --option 4
 
-# Phase 1-2. 血統（BLOD = SK 産駒マスタ / HN 繁殖馬マスタ）。初回はセットアップ取得が要ることがある
-.venv\Scripts\python.exe scripts\ml\update_pedigree.py --fromdate 19860101000000 --option 4
-#            UM の3代血統でも補うなら: --dataspec BLOD --dataspec DIFN
-#            （UM が DIFN と DIFF のどちらで来るかは契約・取得状況で違う。未確認。0件なら DIFF を試す）
+# Phase 1-2. 血統。既存の取得スクリプトの版（data/blood/。dataspec BLDN）をそのまま読む。
+#            BLOD は旧形式のまま止まっているので使わない（CLAUDE.md「血統データ」）
+.venv\Scripts\python.exe scripts\update_data.py --kind blood --option 4 --fromdate 19860101000000
+#            UM の3代血統でも補いたいときだけ、この層の取得を使い data.pedigree_source = "ml" にする:
+#            .venv\Scripts\python.exe scripts\ml\update_pedigree.py --fromdate 19860101000000 --option 4 --dataspec BLDN --dataspec DIFN
 
 # Phase 1-3. データセット作成 + 整合性検査（FAIL があると終了コード 1）
-.venv\Scripts\python.exe scripts\ml\build_dataset.py
+.venv\Scripts\python.exe scripts\ml\build_dataset.py --race-data-dir data\_40y
 
 # Phase 2-1. 10年で基準モデル
 .venv\Scripts\python.exe scripts\ml\train_pedigree.py --years 10
@@ -85,8 +85,8 @@
 True になり `actual_train_start` に実際の開始日が出る。40年と書いて実は10年で学習した、
 ということが表から分かるようにしてある。
 
-目安（合成データで計測）: 特徴量生成は 10年・37万行で約1分。40年なら1期間あたり
-4〜5分。CatBoost の学習時間は行数と iterations 次第。
+目安（実データで計測、2026-10-19）: データセット作成（40年・180万行）は約1分。
+10年の学習（特徴量生成 + CatBoost 約1,300反復）は §8 の表の所要時間を参照。
 
 ## 3. 出力
 
@@ -138,8 +138,12 @@ Phase 4 の統合モデルはこの表だけを受け取ればよい。
 
 特徴量（`features/pedigree.py`）:
 
-1. **祖先のカテゴリ** `ped_<位置>`（3世代14枠の繁殖登録番号）。CatBoost の
-   ordered target statistics で数値化する。学習データは日付順に並べて `has_time=True`。
+1. **祖先のカテゴリ** `ped_<位置>`（繁殖登録番号）。**既定では使わない**
+   （`categorical_generations = 0`。2026-10-19 に実データで決めた。§7.3）。CatBoost の
+   ordered target statistics は「同じカテゴリの、その行より前の行」の結果を数えるので、
+   本人や近親の過去走が混ざり（`exclude_self` が効かない）、数値は学習期間の結果で固定される。
+   比べたいときは `categorical_generations = 3` と `categorical_exclude` で組を作る。
+   使う場合、学習データは日付順に並べて `has_time=True` で渡す。
 2. **祖先の産駒成績（as-of）** `st_<位置>_...`（既定の位置: 父 S・母 D・母父 DS・父父 SS）。
    産駒の3着以内数 ÷ 偶然の期待3着以内数（出走 n 頭なら min(3,n)/n の和）= A/E を、
    縮小推定（`shrinkage`）して出す。全体・芝ダ・距離区分・芝ダ×距離・馬場（良/道悪）・
@@ -177,15 +181,15 @@ CatBoost がこれらを超えないなら、学習の意味がない。
 | 未決定事項（開発方針 §9） | このコードでの扱い |
 |---|---|
 | CatBoost の目的関数 | `model.loss_function` で切替。Logloss（既定）と YetiRank などを同じ入口で比較できる |
-| 血統のエンコーディング | CatBoost のカテゴリ（ordered TS）＋ as-of A/E の両方を入れてある。どちらが効くかは `feature_importance.csv` と、`pedigree.stat_paths` / `categorical_generations` を変えた比較で判断 |
+| 血統のエンコーディング | **as-of A/E だけ**を既定にした（§7.3）。CatBoost のカテゴリ（ordered TS）は `categorical_generations` / `categorical_exclude` で足して比べられる |
 | 階層ベイズの必要性 | 未実装。A/E の縮小推定（経験ベイズの最も軽い形）だけ入れてある |
 | 晩成型・早熟型の定義 | ラベルは付けず連続量（`maturity`）。`growth_report.py` が定義を決める材料を出す |
 | 三連複確率への変換・統合方式・購入基準 | Phase 4 以降。予測は共通形式で保存してあるので、統合側から読める |
 
 ## 6. 既知の限界
 
-- **実データ未検証。** レコードの位置（§1）、`kazoe_age_until_year`、競走条件コードの
-  年代別の対応は、実データで `check_offsets.py` と整合性レポートを見て確かめること。
+- UM の3代血統による補完は実データで通していない（既存の血統の版は UM を持たない）。
+  BLDN の SK で出走馬の 99.8% が埋まるので、補完が無くても困らない。
 - 4世代目以降は HN（繁殖馬マスタ）に父母が登録されている馬までしか辿れない。
   輸入種牡馬の祖先は欠けやすい（`fill_rate_by_generation` で確認）。
 - `exclude_self` は「本人」だけを除く。全兄弟（同じ父母）の成績は母の産駒成績に入る。

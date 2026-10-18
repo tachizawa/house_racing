@@ -2,9 +2,12 @@
 
     .venv/Scripts/python.exe scripts/ml/update_pedigree.py --fromdate 19860101000000 --option 4
 
-- 既定の dataspec は BLOD（SK 産駒マスタ・HN 繁殖馬マスタ・BT 系統情報を運ぶ）。
-  UM（競走馬マスタ）の3代血統で補いたいときは ``--dataspec BLOD --dataspec DIFN``
-  のように足す（DIFN / DIFF のどちらで UM が来るかは契約・取得状況で違う）。
+- **SK/HN だけなら、このスクリプトは要らない。** 既存の ``scripts/update_data.py --kind blood``
+  の版（data/blood/）を build_dataset.py がそのまま読む（data.pedigree_source = "blood"）。
+- 既定の dataspec は BLDN（SK 産駒マスタ・HN 繁殖馬マスタ・BT 系統情報を運ぶ）。
+  BLOD は旧形式（繁殖登録番号8桁）のまま 2023-07 で止まっているので使わない。
+  UM（競走馬マスタ）の3代血統で補いたいときは ``--dataspec BLDN --dataspec DIFN``
+  のように足す（DIFN / DIFF のどちらで UM が来るかは契約・取得状況で違う。未確認）。
 - 蓄積系は初回にセットアップ取得（--option 3 か 4）が要ることがある。-1（該当データ
   なし）が返ったらまずそれを疑う。
 - 保存先は data/ml/pedigree/versions/<version_id>/。既存モデルの data/versions/ には
@@ -30,7 +33,7 @@ from keiba_ml.ingest import pedigree_records, pedigree_store  # noqa: E402
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="血統系レコードを取得して保存する。")
     parser.add_argument("--dataspec", action="append", dest="dataspecs", metavar="SPEC",
-                        help="JVOpen の dataspec。繰り返し指定できる（既定: BLOD）")
+                        help="JVOpen の dataspec。繰り返し指定できる（既定: BLDN）")
     parser.add_argument("--fromdate", required=True, help="取得開始日時。例: 19860101000000")
     parser.add_argument("--option", type=int, default=1,
                         help="JVOpen の option（1 通常 / 3・4 セットアップ。既定 %(default)s）")
@@ -42,7 +45,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     console.enable_utf8_output()
     args = _parse_args(argv)
-    dataspecs = args.dataspecs or ["BLOD"]
+    dataspecs = args.dataspecs or ["BLDN"]
     # dataspecs の重複・版 id の衝突は writer が拒否する。JV-Link を開く前に確かめる。
     writer = pedigree_store.PedigreeVersionWriter(
         args.ml_data_dir, pedigree_store.new_version_id(),
