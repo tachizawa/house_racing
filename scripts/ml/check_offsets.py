@@ -8,12 +8,14 @@ keiba_ml/ingest/pedigree_records.py の位置は仕様書から写したもの�
 SetDataB に現れる (位置, 長さ) の組に、こちらが使う組が含まれているかを調べる。
 
 照合は名前ではなく (位置, 長さ) の組で行う。SDK 側の変数名の付け方に依存しないため。
-配列（3代血統の14枠など）は先頭の位置だけを比べる。
+配列（3代血統の14枠など）は先頭の位置だけを比べる（位置の式を添字 0 で計算する）。
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
+import operator
 import re
 import sys
 from pathlib import Path
@@ -59,7 +61,10 @@ EXPECTED = {
 # self.KettoNum = MidB2S(bBuff, 12, 10)
 # self.HansyokuNum[i] = MidB2S(bBuff, 67 + (10 * i), 10)
 # self.Ketto3Info[i].SetDataB(MidB2B(bBuff, 205 + (46 * i), 46)) のような書き方を拾う。
-_CALL = re.compile(r"([\w.\[\]]+)\s*(?:=\s*|\.SetDataB\(\s*)\w+\(\s*\w+\s*,\s*([^,]+?)\s*,\s*(\d+)\s*\)")
+# SDK 5.0.0 の Python 版は代入せずに並べる（MidB2S(b, 12, 10), や
+# [MidB2S(b, 67 + 10 * i, 10) for i in range(14)]）ので、変数名の部分は省略可にする。
+_CALL = re.compile(r"(?:([\w.\[\]]+)\s*(?:=\s*|\.SetDataB\(\s*))?"
+                   r"\b\w+\(\s*\w+\s*,\s*([^,()]+(?:\([^()]*\)[^,()]*)*?)\s*,\s*(\d+)\s*\)")
 
 
 def class_block(text: str, names: tuple[str, ...]) -> str | None:
@@ -71,13 +76,39 @@ def class_block(text: str, names: tuple[str, ...]) -> str | None:
 
 
 def extract(block: str) -> list[tuple[str, str, int]]:
-    """(変数名, 位置の式, 長さ) を拾う。位置が式（配列の添字計算）でもそのまま残す。"""
-    return [(m.group(1), m.group(2), int(m.group(3))) for m in _CALL.finditer(block)]
+    """(変数名, 位置の式, 長さ) を拾う。位置が式（配列の添字計算）でもそのまま残す。
+
+    変数名の無い書き方では変数名を "" にする。
+    """
+    return [(m.group(1) or "", m.group(2), int(m.group(3))) for m in _CALL.finditer(block)]
 
 
-def first_int(expr: str) -> int | None:
-    match = re.search(r"\d+", expr)
-    return int(match.group(0)) if match else None
+_BINARY_OPS = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
+               ast.FloorDiv: operator.floordiv}
+
+
+def base_offset(expr: str) -> int | None:
+    """位置の式を、添字などの名前をすべて 0 として計算する（= 配列の先頭の位置）。
+
+    "205 + (46 * i)" も "(i * 46) + 205" も 205 になる。整数と + - * // 以外を含む式は
+    計算せず None を返す（eval はしない）。
+    """
+    def walk(node: ast.AST) -> int:
+        if isinstance(node, ast.Constant) and isinstance(node.value, int):
+            return node.value
+        if isinstance(node, ast.Name):
+            return 0
+        if isinstance(node, ast.BinOp) and type(node.op) in _BINARY_OPS:
+            return _BINARY_OPS[type(node.op)](walk(node.left), walk(node.right))
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+            value = walk(node.operand)
+            return -value if isinstance(node.op, ast.USub) else value
+        raise ValueError(expr)
+
+    try:
+        return walk(ast.parse(expr, mode="eval").body)
+    except (SyntaxError, ValueError, ZeroDivisionError):
+        return None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -97,6 +128,9 @@ def main(argv: list[str] | None = None) -> int:
             break
         except UnicodeDecodeError:
             continue
+    else:
+        print(f"UTF-8 でも CP932 でも読めません: {args.struct}")
+        return 2
     exit_code = 0
     for spec, (class_names, expected) in EXPECTED.items():
         block = class_block(text, class_names)
@@ -105,11 +139,11 @@ def main(argv: list[str] | None = None) -> int:
             exit_code = 1
             continue
         found = extract(block)
-        pairs = {(first_int(expr), length) for _, expr, length in found}
+        pairs = {(base_offset(expr), length) for _, expr, length in found}
         print(f"[{spec}] {class_names[0]}: SDK 側で {len(found)} 項目を検出")
         if args.show:
             for name, expr, length in found:
-                print(f"    {name:<28} pos={expr:<16} len={length}")
+                print(f"    {name or '-':<28} pos={expr:<16} len={length}")
         for name, pos, length in expected:
             lengths = length if isinstance(length, tuple) else (length,)
             ok = any((pos, n) in pairs for n in lengths)

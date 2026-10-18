@@ -200,6 +200,24 @@ def check_asof_sample(history: pd.DataFrame, feature_frame: pd.DataFrame, *, pat
                    checked=int(len(picked)), mismatches=mismatches[:10])
 
 
+def check_asof_samples(history: pd.DataFrame, feature_frame: pd.DataFrame, *,
+                       paths: Sequence[str], shrinkage: float, exclude_self: bool,
+                       sample: int = 200, seed: int = 0) -> dict:
+    """check_asof_sample を産駒成績を出す全ての位置で行い、1つの結果にまとめる。
+
+    先頭の位置だけでは、他の位置（母・母父 …）の未来情報の混入を見逃す。
+    """
+    by_path = {path: check_asof_sample(history, feature_frame, path=path, shrinkage=shrinkage,
+                                       exclude_self=exclude_self, sample=sample, seed=seed)
+               for path in paths}
+    order = {"ok": 0, "warn": 1, "fail": 2}
+    status = max((r["status"] for r in by_path.values()), key=order.__getitem__, default="warn")
+    return _result("asof_sample", status,
+                   f"産駒成績の A/E（{', '.join(paths)}）を総当たりで検算して一致するか",
+                   by_path={p: {"status": r["status"], "message": r["message"], **r["detail"]}
+                            for p, r in by_path.items()})
+
+
 def summarize(checks: Sequence[dict]) -> str:
     lines = []
     for check in checks:

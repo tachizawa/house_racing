@@ -27,10 +27,12 @@ PREDICTION_COLUMNS: tuple[str, ...] = (
 
 def rank_within_race(frame: pd.DataFrame, score_col: str = "score") -> pd.Series:
     """レース内の順位。score 降順、同点は馬番の若い順（決定的にするため）。"""
-    ordered = frame.sort_values(["race_id", score_col, "umaban"],
-                                ascending=[True, False, True], kind="mergesort")
-    ranks = ordered.groupby("race_id").cumcount() + 1
-    return ranks.reindex(frame.index)
+    # 位置で並べて位置で戻す。index のラベルが重複していても（ignore_index 無しの
+    # concat など）reindex で落ちないように。
+    ordered = frame.reset_index(drop=True).sort_values(
+        ["race_id", score_col, "umaban"], ascending=[True, False, True], kind="mergesort")
+    ranks = (ordered.groupby("race_id").cumcount() + 1).sort_index()
+    return pd.Series(ranks.to_numpy(), index=frame.index)
 
 
 def make_predictions(rows: pd.DataFrame, score: np.ndarray, *, model_name: str,

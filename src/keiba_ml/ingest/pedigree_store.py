@@ -55,6 +55,8 @@ def read_manifest(path: Path) -> dict:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError) as error:
         raise PedigreeVersionError(f"manifest が壊れています: {manifest_path}") from error
+    if not isinstance(manifest, dict):
+        raise PedigreeVersionError(f"manifest の形式が想定と違います: {manifest_path}")
     if manifest.get("status") != "complete":
         raise PedigreeVersionError(f"血統の版 {path.name} は書き込みが完了していません。")
     return manifest
@@ -92,12 +94,22 @@ class PedigreeVersionWriter:
                  dataspecs: Sequence[str], fromdate: str, option: int) -> None:
         if isinstance(dataspecs, str):
             raise TypeError("dataspecs は ['BLOD'] のようなシーケンスで渡してください。")
+        dataspecs = tuple(dataspecs)
+        if not dataspecs:
+            raise ValueError("dataspecs が空です。何も取得しない版は版として作れません。")
+        if len(set(dataspecs)) != len(dataspecs):
+            raise ValueError(
+                f"dataspecs に重複があります: {dataspecs}"
+                "（同じ dataspec を2回読むと、レコードが二重に取り込まれます）")
         self.ml_data_dir = Path(ml_data_dir)
         self.version_id = version_id
-        self.dataspecs = tuple(dataspecs)
+        self.dataspecs = dataspecs
         self.fromdate = fromdate
         self.option = option
         self.fetched_at = datetime.now().astimezone().isoformat(timespec="seconds")
+        # 完成済みの版と同じ id なら、取得を始める前に止める。commit() まで気づかないと、
+        # 取得し終えたデータを abort() で捨てることになる（new_version_id() は秒精度）。
+        self._check_final_absent()
         self._partial = version_dir(self.ml_data_dir, version_id + ".partial")
         try:
             self._partial.mkdir(parents=True, exist_ok=False)
@@ -136,8 +148,14 @@ class PedigreeVersionWriter:
         self._close()
         shutil.rmtree(self._partial, ignore_errors=True)
 
+    def _check_final_absent(self) -> None:
+        if version_dir(self.ml_data_dir, self.version_id).exists():
+            raise PedigreeVersionError(f"血統の版 {self.version_id} は既にあります。")
+
     def commit(self) -> Path:
         self._close()
+        # manifest（status: complete）を書く前に確かめる。
+        self._check_final_absent()
         files = []
         for spec, (name, _) in FILES.items():
             path = self._partial / name
@@ -159,8 +177,6 @@ class PedigreeVersionWriter:
         (self._partial / "manifest.json").write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
         final = version_dir(self.ml_data_dir, self.version_id)
-        if final.exists():
-            raise PedigreeVersionError(f"血統の版 {self.version_id} は既にあります。")
         self._partial.rename(final)
         (pedigree_root(self.ml_data_dir) / "CURRENT").write_text(
             self.version_id, encoding="utf-8")

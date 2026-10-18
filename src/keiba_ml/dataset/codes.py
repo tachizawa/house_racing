@@ -52,12 +52,12 @@ def blank_to_none(value: str | None) -> str | None:
 
 def jyoken_tier(code: str | None) -> int | None:
     """競走条件コードを段階（0〜5）にする。決まらなければ None。"""
-    code = (code or "").strip()
-    if not code:
+    code = blank_to_none(code)    # ゼロ埋め（"0", "00", "000" ...）は未設定
+    if code is None:
         return None
     if code in JYOKEN_TIER_OVERRIDES:
         return JYOKEN_TIER_OVERRIDES[code]
-    if code.isdigit() and code != "000":
+    if code.isdigit():
         value = int(code)
         if value <= 100:
             for upper, tier in JYOKEN_PRIZE_TIERS:
@@ -117,11 +117,4 @@ def age_from_barei(barei: str | int | None, race_year: int, *,
     if value <= 0:
         return None
     age = value - 1 if race_year <= kazoe_until_year else value
-    return age if age >= 1 else None
-
-
-def age_from_birth_year(birth_year: int | None, race_year: int) -> int | None:
-    if birth_year is None:
-        return None
-    age = race_year - birth_year
     return age if age >= 1 else None

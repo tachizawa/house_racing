@@ -67,10 +67,47 @@ def build(config: MLConfig, *, race_data_dir: Path, ml_data_dir: Path
     return df, ped, names, report
 
 
+def manifest_config(config: MLConfig) -> dict:
+    """データセットの中身を決めた設定。manifest の "config" に残し、学習時に突き合わせる。"""
+    return {"data": asdict(config.data), "codes": asdict(config.codes),
+            "pedigree_generations": config.pedigree.generations,
+            "inbreeding_generations": config.pedigree.inbreeding_generations}
+
+
+#: 突き合わせから外す data の項目。読んだ版そのものは manifest の race_versions /
+#: pedigree_versions に残っており、build_dataset.py の --race-version で設定ファイルと
+#: 違う版を読むのは正当な使い方なので。
+_UNCOMPARED_DATA_KEYS = ("race_versions", "pedigree_versions")
+
+
+def config_mismatches(manifest: dict, config: MLConfig) -> list[str]:
+    """manifest の設定と config の食い違い（項目名）。空なら同じ設定で作ったデータセット。"""
+    def normalize(raw: dict) -> dict:
+        raw = json.loads(json.dumps(raw, default=str))
+        data = {k: v for k, v in raw.get("data", {}).items() if k not in _UNCOMPARED_DATA_KEYS}
+        return {**raw, "data": data}
+
+    built = normalize(manifest.get("config", {}))
+    current = normalize(manifest_config(config))
+    problems = []
+    for key in current:
+        if isinstance(current[key], dict):
+            for sub in sorted(set(current[key]) | set(built.get(key, {}))):
+                if current[key].get(sub) != built.get(key, {}).get(sub):
+                    problems.append(f"{key}.{sub}")
+        elif current[key] != built.get(key):
+            problems.append(key)
+    return problems
+
+
+def dataset_dir(ml_data_dir: Path, dataset_id: str) -> Path:
+    return Path(ml_data_dir) / "datasets" / dataset_id
+
+
 def save(df: pd.DataFrame, ped: pd.DataFrame, names: dict[str, str], report: dict,
          config: MLConfig, *, ml_data_dir: Path, dataset_id: str | None = None) -> Path:
     dataset_id = dataset_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    out = Path(ml_data_dir) / "datasets" / dataset_id
+    out = dataset_dir(ml_data_dir, dataset_id)
     out.mkdir(parents=True, exist_ok=False)
     df.to_parquet(out / "runners.parquet", index=False)
     ped.to_parquet(out / "pedigree.parquet")
@@ -89,9 +126,7 @@ def save(df: pd.DataFrame, ped: pd.DataFrame, names: dict[str, str], report: dic
         "rows_with_result": int(len(with_result)),
         "first_race_date": str(df["race_date"].min().date()) if len(df) else None,
         "last_race_date": str(df["race_date"].max().date()) if len(df) else None,
-        "config": {"data": asdict(config.data), "codes": asdict(config.codes),
-                   "pedigree_generations": config.pedigree.generations,
-                   "inbreeding_generations": config.pedigree.inbreeding_generations},
+        "config": manifest_config(config),
         "checks_failed": [c["name"] for c in report["checks"] if c["status"] == "fail"],
         "status": "complete",
     }
@@ -114,6 +149,11 @@ def load(ml_data_dir: Path, dataset_id: str | None = None
     manifest = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
     if manifest.get("status") != "complete":
         raise RuntimeError(f"データセット {dataset_id} は完成していません。")
+    if manifest.get("schema_version") != DATASET_SCHEMA_VERSION:
+        raise RuntimeError(
+            f"データセット {dataset_id} の schema_version は {manifest.get('schema_version')!r} で、"
+            f"このコードが読めるのは {DATASET_SCHEMA_VERSION!r} です。"
+            " build_dataset.py で作り直してください。")
     df = pd.read_parquet(path / "runners.parquet")
     names = json.loads((path / "ancestor_names.json").read_text(encoding="utf-8"))
     return df, names, manifest

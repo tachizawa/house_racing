@@ -20,7 +20,7 @@
 | `src/keiba_ml/experiment.py` | 学習期間ごとの実験と比較表 |
 | `scripts/ml/` | CLI（下記） |
 | `configs/ml/pedigree.toml` | 設定。学習期間・テスト期間・世代数・目的関数など |
-| `tests/ml/` | テスト（67件）。catboost が無ければ結合テストだけ飛ぶ |
+| `tests/ml/` | テスト（109件）。catboost が無ければ結合テストだけ飛ぶ |
 | `data/ml/` | 出力（`.gitignore` 済み。JRA-VAN のデータは再配布不可） |
 
 既存モデルとの関係:
@@ -59,6 +59,7 @@
 # Phase 1-2. 血統（BLOD = SK 産駒マスタ / HN 繁殖馬マスタ）。初回はセットアップ取得が要ることがある
 .venv\Scripts\python.exe scripts\ml\update_pedigree.py --fromdate 19860101000000 --option 4
 #            UM の3代血統でも補うなら: --dataspec BLOD --dataspec DIFN
+#            （UM が DIFN と DIFF のどちらで来るかは契約・取得状況で違う。未確認。0件なら DIFF を試す）
 
 # Phase 1-3. データセット作成 + 整合性検査（FAIL があると終了コード 1）
 .venv\Scripts\python.exe scripts\ml\build_dataset.py

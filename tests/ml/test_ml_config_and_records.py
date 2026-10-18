@@ -21,9 +21,10 @@ def test_all_paths_three_generations_match_jv_data_order():
 
 
 def test_repository_config_file_loads():
+    # 値は手元のデータ期間に合わせて書き換える前提なので固定しない。読めて検査を通ればよい。
     config = mlc.load_config(mlc.DEFAULT_CONFIG_PATH)
-    assert config.split.train_years == (10, 20, 30, 40)
-    assert config.pedigree.stat_paths == ("S", "D", "DS", "SS")
+    assert config.split.train_years
+    assert config.pedigree.stat_paths
 
 
 def test_unknown_key_is_rejected(tmp_path):
@@ -116,3 +117,84 @@ def test_writer_counts_records_of_unexpected_length(tmp_path):
 def test_writer_rejects_string_dataspecs(tmp_path):
     with pytest.raises(TypeError):
         ps.PedigreeVersionWriter(tmp_path, "v1", dataspecs="BLOD", fromdate="x", option=1)
+
+
+# --- PR #1 のレビュー指摘 ----------------------------------------------------
+
+def test_default_config_is_valid_without_a_pedigree_section():
+    mlc.validate(mlc.MLConfig())
+    assert mlc.config_from_dict({}) == mlc.MLConfig()
+
+
+def test_explicit_missing_config_file_is_an_error(tmp_path):
+    with pytest.raises(FileNotFoundError, match="設定ファイルがありません"):
+        mlc.load_config(tmp_path / "typo.toml")
+    assert mlc.load_config(None) == mlc.load_config(mlc.DEFAULT_CONFIG_PATH)
+
+
+@pytest.mark.parametrize(("section", "body", "match"), [
+    ("pedigree", "stat_paths = []", "stat_paths"),
+    ("pedigree", "inbreeding_generations = 0", "inbreeding_generations"),
+    ("evaluate", "top_n = 0", "top_n"),
+    ("evaluate", "calibration_bins = 0", "calibration_bins"),
+    ("evaluate", "bootstrap = -1", "bootstrap"),
+    ("data", "jra_only = 'false'", "jra_only"),
+    ("model", "iterations = true", "iterations"),
+    ("split", "train_years = ['10']", "train_years"),
+    ("model", "extra = { loss_function = 'YetiRank' }", "loss_function"),
+    ("model", "extra = { has_time = false }", "has_time"),
+])
+def test_invalid_values_are_rejected_when_loading(tmp_path, section, body, match):
+    path = tmp_path / "x.toml"
+    path.write_text(f"[{section}]\n{body}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=match):
+        mlc.load_config(path)
+
+
+def test_model_extra_still_accepts_other_parameters(tmp_path):
+    path = tmp_path / "x.toml"
+    path.write_text("[model]\nextra = { eval_metric = 'AUC', border_count = 64 }\n",
+                    encoding="utf-8")
+    assert mlc.load_config(path).model.extra == {"eval_metric": "AUC", "border_count": 64}
+
+
+def test_fixture_rejects_wrong_number_of_ancestors():
+    with pytest.raises(ValueError):
+        mr.make_sk(ancestors=ANCESTORS + ["1000000099"])
+    with pytest.raises(ValueError):
+        mr.make_um(ancestors=[("1000000001", "x")] * 15)
+
+
+def test_writer_rejects_empty_and_duplicate_dataspecs(tmp_path):
+    with pytest.raises(ValueError, match="空"):
+        ps.PedigreeVersionWriter(tmp_path, "v1", dataspecs=[], fromdate="x", option=1)
+    with pytest.raises(ValueError, match="重複"):
+        ps.PedigreeVersionWriter(tmp_path, "v1", dataspecs=["BLOD", "BLOD"],
+                                 fromdate="x", option=1)
+    assert not ps.version_dir(tmp_path, "v1.partial").exists()
+
+
+def test_writer_refuses_an_existing_version_before_fetching(tmp_path):
+    first = ps.PedigreeVersionWriter(tmp_path, "v1", dataspecs=["BLOD"], fromdate="x", option=1)
+    first.commit()
+    with pytest.raises(ps.PedigreeVersionError, match="既にあります"):
+        ps.PedigreeVersionWriter(tmp_path, "v1", dataspecs=["BLOD"], fromdate="x", option=1)
+    assert not ps.version_dir(tmp_path, "v1.partial").exists()
+
+
+def test_commit_checks_the_final_version_before_writing_the_manifest(tmp_path):
+    writer = ps.PedigreeVersionWriter(tmp_path, "v1", dataspecs=["BLOD"], fromdate="x", option=1)
+    ps.version_dir(tmp_path, "v1").mkdir(parents=True)    # 取得中に別のプロセスが作った
+    with pytest.raises(ps.PedigreeVersionError):
+        writer.commit()
+    assert not (ps.version_dir(tmp_path, "v1.partial") / "manifest.json").exists()
+    writer.abort()
+
+
+def test_non_object_manifest_is_a_version_error(tmp_path):
+    path = ps.version_dir(tmp_path, "v1")
+    path.mkdir(parents=True)
+    (path / "manifest.json").write_text("[1, 2]", encoding="utf-8")
+    with pytest.raises(ps.PedigreeVersionError, match="形式"):
+        ps.read_manifest(path)
+    assert ps.complete_versions(tmp_path) == []

@@ -26,7 +26,8 @@ from keiba_ml.evaluate.growth import age_curve  # noqa: E402
 def main(argv: list[str] | None = None) -> int:
     console.enable_utf8_output()
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+    parser.add_argument("--config", type=Path, default=None,
+                        help=f"設定ファイル（省略時 {DEFAULT_CONFIG_PATH}）")
     parser.add_argument("--ml-data-dir", type=Path, default=ML_DATA_DIR)
     parser.add_argument("--dataset-id", default=None)
     parser.add_argument("--path", default="S", help="祖先の位置（S=父, DS=母父 ...）")
@@ -35,9 +36,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args(argv)
 
-    config = load_config(args.config)
+    try:
+        config = load_config(args.config)
+    except FileNotFoundError as error:
+        parser.error(str(error))
     df, names, manifest = build.load(args.ml_data_dir, args.dataset_id)
-    until = args.until or (make_window(config.split, 1, date.min).valid_start - timedelta(days=1))
+    cutoff = make_window(config.split, 1, date.min).valid_start - timedelta(days=1)
+    until = args.until or cutoff
+    if until > cutoff:
+        print(f"注意: --until {until} は検証期間の開始日の前日 {cutoff} より後です。"
+              " 検証・テスト期間の結果を見て特徴量や定義を選ぶと、その評価は信用できなくなります。")
     df = df[df["race_date"].dt.date <= until]
     table = age_curve(df, path=args.path, min_starts=args.min_starts,
                       shrinkage=config.pedigree.shrinkage, names=names)

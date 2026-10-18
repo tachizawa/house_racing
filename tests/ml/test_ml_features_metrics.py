@@ -79,6 +79,7 @@ def test_changing_future_results_does_not_change_past_features():
     flipped = df.copy()
     future = flipped["race_date"] >= cutoff
     flipped.loc[future, "target_top3"] = 1 - flipped.loc[future, "target_top3"]
+    flipped.loc[future, "target_win"] = 1 - flipped.loc[future, "target_win"]   # st_*_ae_win も見る
     feats2 = build_features(flipped, pedigree=PED, features=FeatureConfig()).frame
     past = df["race_date"] < cutoff
     # cutoff 当日の行も、cutoff 当日の結果を見ないので変わらない
@@ -167,3 +168,58 @@ def test_summary_reports_lift_against_chance():
     summary = metrics.summarize(metrics.per_race(pred, truth), n_boot=10)
     assert summary["hits"]["mean"] == 3
     assert summary["hits"]["lift_vs_random"] == pytest.approx(3 - 1.5)
+
+
+# --- PR #1 のレビュー指摘 ----------------------------------------------------
+
+def _random_frame(seed=1, n=200):
+    rng = np.random.default_rng(seed)
+    rows = [(pd.Timestamp("2020-01-01") + pd.Timedelta(days=i // 4), f"r{i // 4}",
+             f"H{i % 30}", f"S{i % 3}", f"D{i % 9}", int(rng.random() < 0.3), 8 + i % 5)
+            for i in range(n)]
+    return _frame(rows)
+
+
+def test_asof_check_covers_every_stat_path():
+    df = _random_frame()
+    feats = build_features(df, pedigree=PED, features=FeatureConfig()).frame
+    ok = integrity.check_asof_samples(df, feats, paths=PED.stat_paths, shrinkage=10.0,
+                                      exclude_self=True, sample=30)
+    assert ok["name"] == "asof_sample" and ok["status"] == "ok", ok
+    assert set(ok["detail"]["by_path"]) == {"S", "D"}
+    broken = feats.copy()
+    broken["st_D_ae_top3"] = broken["st_D_ae_top3"] + 0.01     # 先頭（S）以外の位置の漏れ
+    bad = integrity.check_asof_samples(df, broken, paths=PED.stat_paths, shrinkage=10.0,
+                                       exclude_self=True, sample=30)
+    assert bad["status"] == "fail"
+    assert bad["detail"]["by_path"]["S"]["status"] == "ok"
+
+
+def test_stat_features_are_float32():
+    fs = build_features(_random_frame(), pedigree=PED, features=FeatureConfig())
+    stats = [c for c in fs.frame.columns if c.startswith("st_")]
+    assert stats and all(fs.frame[c].dtype == np.float32 for c in stats)
+
+
+def test_rank_within_race_tolerates_duplicate_index():
+    from keiba_ml.models.base import rank_within_race
+    frame = pd.DataFrame({"race_id": ["r1", "r1", "r2"], "umaban": ["01", "02", "01"],
+                          "score": [0.1, 0.9, 0.5]}, index=[0, 0, 1])
+    assert list(rank_within_race(frame)) == [2, 1, 1]
+
+
+def test_random_winner_baseline_counts_dead_heat_winners():
+    pred, truth = _race([0.9, 0.8, 0.7, 0.1, 0.0], [1, 1, 3, 4, 5])
+    row = metrics.per_race(pred, truth).iloc[0]
+    assert row["random_winner_in_pred"] == pytest.approx(1 - comb(3, 3) / comb(5, 3))
+    pred, truth = _race([0.9, 0.8, 0.7, 0.1, 0.0], [1, 2, 3, 4, 5])
+    assert metrics.per_race(pred, truth).iloc[0]["random_winner_in_pred"] == pytest.approx(3 / 5)
+
+
+def test_age_curve_has_name_column_without_names():
+    from keiba_ml.evaluate.growth import age_curve
+    df = _random_frame()
+    df["age"] = [2 + i % 4 for i in range(len(df))]
+    table = age_curve(df, path="S", min_starts=1, names={})
+    assert "name" in table.columns
+    assert (table["name"] == "").all()

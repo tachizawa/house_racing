@@ -30,7 +30,8 @@ from keiba_ml.experiment import run_comparison, to_markdown  # noqa: E402
 def main(argv: list[str] | None = None) -> int:
     console.enable_utf8_output()
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+    parser.add_argument("--config", type=Path, default=None,
+                        help=f"設定ファイル（省略時 {DEFAULT_CONFIG_PATH}）")
     parser.add_argument("--ml-data-dir", type=Path, default=ML_DATA_DIR)
     parser.add_argument("--dataset-id", default=None, help="省略時は datasets/CURRENT")
     group = parser.add_mutually_exclusive_group()
@@ -45,11 +46,16 @@ def main(argv: list[str] | None = None) -> int:
                         help="整合性検査の FAIL を無視して進める（調査用。結果は信用しないこと）")
     args = parser.parse_args(argv)
 
-    config = load_config(args.config)
+    try:
+        config = load_config(args.config)
+    except FileNotFoundError as error:
+        parser.error(str(error))
     model = config.model
     if args.loss:
         model = replace(model, loss_function=args.loss)
-    if args.iterations:
+    if args.iterations is not None:
+        if args.iterations < 1:
+            parser.error("--iterations は 1 以上にしてください。")
         model = replace(model, iterations=args.iterations)
     config = config.with_overrides(model=model)
 
@@ -58,6 +64,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"データセット {manifest['dataset_id']} は整合性検査で FAIL があります:"
               f" {manifest['checks_failed']}")
         print("data/ml/datasets/<id>/integrity.json を確認し、直してから学習してください。")
+        return 2
+    mismatches = build.config_mismatches(manifest, config)
+    if mismatches:
+        # 世代数などが違うと、作ったときと別の設定で学習したことが config.json に残る。
+        print(f"データセット {manifest['dataset_id']} は今の設定と違う設定で作られています:"
+              f" {mismatches}")
+        print("設定を作ったときに合わせるか、build_dataset.py でデータセットを作り直してください。")
         return 2
 
     years = tuple(config.split.train_years) if args.compare else \

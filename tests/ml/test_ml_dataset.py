@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date
 
 import pandas as pd
 import pytest
 
-from keiba_ml.config import CodeConfig, DataConfig, SplitConfig
-from keiba_ml.dataset import codes, integrity
-from keiba_ml.dataset.pedigree import build_pedigree, inbreeding_table
+from keiba_ml.config import CodeConfig, DataConfig, MLConfig, PedigreeConfig, SplitConfig
+from keiba_ml.dataset import build, codes, integrity
+from keiba_ml.dataset.pedigree import build_pedigree, inbreeding_table, load_sources
 from keiba_ml.dataset.races import build_runners
-from keiba_ml.dataset.split import make_window, split_frame
+from keiba_ml.dataset.split import history_frame, make_window, split_frame
+from keiba_ml.ingest import pedigree_store as ps
 from tests.fixtures import csv_data
 
 
@@ -197,3 +199,86 @@ def test_window_and_split_are_disjoint():
     assert list(valid["race_id"]) == ["r3"]
     assert list(test["race_id"]) == ["r4", "r5"]
     assert integrity.check_split(train, valid, test)["status"] == "ok"
+
+
+# --- PR #1 のレビュー指摘 ----------------------------------------------------
+
+@pytest.mark.parametrize("code", ["0", "00", "0000000000"])
+def test_zero_filled_jyoken_is_missing(code):
+    assert codes.jyoken_tier(code) is None
+
+
+def test_stopped_or_disqualified_horse_is_not_a_positive_label():
+    races = _races({"race_id": RID, "data_kubun": "7"})
+    runners = _runners(
+        {"race_id": RID, "umaban": "01", "ketto_num": "2020100001", "result_kakutei_jyuni": "1",
+         "result_ijyo_cd": "5"},     # 失格（着順の欄に値が残っていても勝ちにしない）
+        {"race_id": RID, "umaban": "02", "ketto_num": "2020100002", "result_kakutei_jyuni": "2",
+         "result_ijyo_cd": "4"},     # 競走中止
+        {"race_id": RID, "umaban": "03", "ketto_num": "2020100003", "result_kakutei_jyuni": "3",
+         "result_ijyo_cd": "7"},     # 降着は着順どおり
+    )
+    df = build_runners(races, runners, data=DataConfig(), codes_config=CodeConfig())
+    assert list(df["target_top3"]) == [0.0, 0.0, 1.0]
+    assert list(df["target_win"]) == [0.0, 0.0, 0.0]
+
+
+def test_history_frame_rejects_unknown_stats_history():
+    split = SplitConfig(test_start=date(2025, 1, 1), test_end=date(2025, 12, 31),
+                        valid_years=1, train_years=(10,))
+    window = make_window(split, 10, date(2010, 1, 5))
+    df = pd.DataFrame({"race_date": pd.to_datetime(["2020-01-01"])})
+    assert len(history_frame(df, window, "all")) == 1
+    with pytest.raises(ValueError, match="stats_history"):
+        history_frame(df, window, "windows")
+
+
+def test_missing_january_counts_as_truncated():
+    split = SplitConfig(test_start=date(2025, 1, 1), test_end=date(2025, 12, 31),
+                        valid_years=1, train_years=(10,))
+    assert not make_window(split, 10, date(2014, 1, 5)).truncated
+    assert make_window(split, 10, date(2014, 2, 1)).truncated
+
+
+def _committed_pedigree_version(ml_data_dir):
+    writer = ps.PedigreeVersionWriter(ml_data_dir, "v1", dataspecs=["BLOD"], fromdate="x", option=1)
+    return writer.commit()
+
+
+def test_missing_pedigree_csv_stops_loading(tmp_path):
+    path = _committed_pedigree_version(tmp_path)
+    assert set(load_sources(tmp_path)) == {"SK", "HN", "UM", "versions"}
+    (path / "hn.csv").unlink()
+    with pytest.raises(ps.PedigreeVersionError, match="hn.csv"):
+        load_sources(tmp_path)
+
+
+def _saved_dataset(ml_data_dir, config):
+    df = pd.DataFrame({"race_id": ["r1"], "race_date": pd.to_datetime(["2020-01-01"]),
+                       "has_result": [True]})
+    report = {"race_versions": ["a"], "pedigree_versions": ["b"], "checks": []}
+    return build.save(df, pd.DataFrame({"x": [1]}), {}, report, config,
+                      ml_data_dir=ml_data_dir, dataset_id="d1")
+
+
+def test_load_rejects_another_schema_version(tmp_path):
+    pytest.importorskip("pyarrow")
+    out = _saved_dataset(tmp_path, MLConfig())
+    build.load(tmp_path, "d1")
+    manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    manifest["schema_version"] = "0"
+    (out / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="schema_version"):
+        build.load(tmp_path, "d1")
+
+
+def test_config_mismatches_ignore_versions_but_catch_structure(tmp_path):
+    pytest.importorskip("pyarrow")
+    _saved_dataset(tmp_path, MLConfig())
+    _, _, manifest = build.load(tmp_path, "d1")
+    other_versions = MLConfig(data=DataConfig(race_versions=("x", "y")))
+    assert build.config_mismatches(manifest, other_versions) == []
+    deeper = MLConfig(pedigree=PedigreeConfig(generations=6))
+    assert build.config_mismatches(manifest, deeper) == ["pedigree_generations"]
+    with_jump = MLConfig(data=DataConfig(include_jump=True))
+    assert build.config_mismatches(manifest, with_jump) == ["data.include_jump"]

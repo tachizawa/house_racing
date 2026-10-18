@@ -90,3 +90,47 @@ def test_ranking_loss_runs(world, dataset):
     row = table[table["model"] == "pedigree_catboost"].iloc[0]
     assert row["hits_mean"] > row["hits_random"]
     assert "brier" not in table.columns or np.isnan(row.get("brier", np.nan))
+
+
+def _script(name):
+    import importlib.util
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location(name, root / "scripts" / "ml" / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_train_stops_when_dataset_was_built_with_other_settings(world, dataset, capsys):
+    # データセットは generations=4 で作ってある。既定の設定ファイルは 5 世代。
+    train = _script("train_pedigree")
+    assert train.main(["--ml-data-dir", str(world.ml_data_dir)]) == 2
+    assert "pedigree_generations" in capsys.readouterr().out
+
+
+def test_train_rejects_missing_config_and_bad_iterations(world, dataset, tmp_path):
+    train = _script("train_pedigree")
+    with pytest.raises(SystemExit):
+        train.main(["--config", str(tmp_path / "typo.toml"),
+                    "--ml-data-dir", str(world.ml_data_dir)])
+    with pytest.raises(SystemExit):
+        train.main(["--iterations", "0", "--ml-data-dir", str(world.ml_data_dir)])
+
+
+def test_predict_requires_the_training_records(tmp_path, capsys):
+    predict = _script("predict_pedigree")
+    model_dir = tmp_path / "runs" / "r" / "10y"
+    model_dir.mkdir(parents=True)
+    assert predict.main(["--model", str(model_dir), "--ml-data-dir", str(tmp_path)]) == 2
+    out = capsys.readouterr().out
+    assert "config.json" in out and "metrics.json" in out
+
+
+def test_build_refuses_an_existing_dataset_id_before_building(world, dataset):
+    build_script = _script("build_dataset")
+    _, _, manifest = dataset
+    with pytest.raises(SystemExit):
+        build_script.main(["--race-data-dir", str(world.race_data_dir),
+                           "--ml-data-dir", str(world.ml_data_dir),
+                           "--dataset-id", manifest["dataset_id"]])

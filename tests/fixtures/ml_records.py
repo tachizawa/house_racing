@@ -13,6 +13,9 @@ def make_sk(*, ketto_num="2015100001", birth_date="20150401", sex_cd="1",
             ancestors: list[str] | None = None, data_kubun="1",
             make_date="20240101") -> bytes:
     ancestors = ancestors or [""] * 14
+    if len(ancestors) != 14:
+        # 15個目以降は CRLF を上書きしてレコードを壊す。黙って長くしない。
+        raise ValueError(f"ancestors は14個です（{len(ancestors)}個渡されました）")
     buf = _blank(208)
     _put(buf, 1, "SK", 2); _put(buf, 3, data_kubun, 1); _put(buf, 4, make_date, 8)
     _put(buf, 12, ketto_num, 10); _put(buf, 22, birth_date, 8); _put(buf, 30, sex_cd, 1)
@@ -43,6 +46,8 @@ def make_um(*, ketto_num="2015100001", bamei="テストウマ", birth_date="2015
             sex_cd="1", ancestors: list[tuple[str, str]] | None = None,
             data_kubun="1", make_date="20240101") -> bytes:
     ancestors = ancestors or [("", "")] * 14
+    if len(ancestors) != 14:
+        raise ValueError(f"ancestors は14組です（{len(ancestors)}組渡されました）")
     buf = _blank(1609)
     _put(buf, 1, "UM", 2); _put(buf, 3, data_kubun, 1); _put(buf, 4, make_date, 8)
     _put(buf, 12, ketto_num, 10); _put(buf, 39, birth_date, 8); _put(buf, 47, bamei, 36)

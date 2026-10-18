@@ -19,7 +19,8 @@ from keiba_ml.config import SplitConfig
 
 #: 実際のデータ開始日が設定の開始日よりこれ以上遅ければ「切り詰め」とみなす。
 #: 年初の数日は開催が無いので、厳密に比べると常に切り詰め扱いになってしまう。
-TRUNCATION_TOLERANCE_DAYS = 31
+#: 1か月ぶん（1月が丸ごと無い、など）を見逃さないよう1週間にとどめる。
+TRUNCATION_TOLERANCE_DAYS = 7
 
 
 @dataclass(frozen=True)
@@ -71,4 +72,6 @@ def history_frame(df: pd.DataFrame, window: Window, stats_history: str) -> pd.Da
     mask = day <= window.test_end
     if stats_history == "window":
         mask &= day >= window.train_start
+    elif stats_history != "all":
+        raise ValueError(f'stats_history は "window" か "all" です: {stats_history!r}')
     return df[mask]

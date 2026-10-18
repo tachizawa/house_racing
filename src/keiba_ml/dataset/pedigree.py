@@ -24,15 +24,19 @@ import numpy as np
 import pandas as pd
 
 from keiba_ml.config import KETTO3_PATHS, all_paths
-from keiba_ml.ingest.pedigree_store import complete_versions, read_manifest, version_dir
+from keiba_ml.ingest.pedigree_store import (
+    PedigreeVersionError, complete_versions, read_manifest, version_dir,
+)
 
 #: SK/HN/UM の「削除」データ区分。最新の行がこれならそのキーは無かったことにする。
 DELETED_KUBUN = "0"
 
 
 def _read(path: Path) -> pd.DataFrame:
+    # PedigreeVersionWriter は0行でも3つの CSV を必ず書く。無いのは版が壊れているので、
+    # 空として続けず止める（欠けた血統のままデータセットを作らない）。
     if not path.exists():
-        return pd.DataFrame()
+        raise PedigreeVersionError(f"血統の版のファイルがありません: {path}")
     return pd.read_csv(path, dtype=str, na_filter=False)
 
 

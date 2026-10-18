@@ -43,15 +43,18 @@ def main(argv: list[str] | None = None) -> int:
     console.enable_utf8_output()
     args = _parse_args(argv)
     dataspecs = args.dataspecs or ["BLOD"]
-    link = jvlink.open_link()
+    # dataspecs の重複・版 id の衝突は writer が拒否する。JV-Link を開く前に確かめる。
     writer = pedigree_store.PedigreeVersionWriter(
         args.ml_data_dir, pedigree_store.new_version_id(),
         dataspecs=dataspecs, fromdate=args.fromdate, option=args.option)
     seen: dict[str, Counter[str]] = {}
     try:
+        link = jvlink.open_link()
         for dataspec in dataspecs:
-            code, download_count = jvlink.open_dataspec(link, dataspec, args.fromdate, args.option)
             try:
+                # JVOpen 自体が例外を投げても JVClose する（finally の内側で開く）。
+                code, download_count = jvlink.open_dataspec(
+                    link, dataspec, args.fromdate, args.option)
                 if code == -1:
                     print(f"{dataspec}: 該当データなし（-1）。初回ならセットアップ取得"
                           f"（--option 4）を試してください。")
@@ -79,6 +82,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.dry_run:
             writer.abort()
             print("\n--dry-run のため保存していません。")
+        elif not any(writer.counts.values()):
+            # 全 dataspec が -1 などで1件も取れなかった。空の版を CURRENT にしない。
+            writer.abort()
+            print("\n保存対象のレコードが1件も取得できなかったので、版を作りませんでした。")
+            return 1
         else:
             path = writer.commit()
             print(f"\n保存しました: {path}")

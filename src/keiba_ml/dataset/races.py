@@ -130,8 +130,11 @@ def build_runners(races: pd.DataFrame, runners: pd.DataFrame, *,
 
     has = df["has_result"]
     rank = df["result_rank"]
-    df["target_top3"] = np.where(has, (rank.fillna(99) <= 3).astype(float), np.nan)
-    df["target_win"] = np.where(has, (rank.fillna(99) == 1).astype(float), np.nan)
+    # 競走中止・失格（4/5）は着順の欄に値があっても3着以内・勝ちにしない
+    # （keiba.models の is_winner と同じ扱い）。
+    can_finish = ~df["result_ijyo_cd"].str.strip().isin(keiba_config.IJYO_NO_TIME)
+    df["target_top3"] = np.where(has, (can_finish & (rank.fillna(99) <= 3)).astype(float), np.nan)
+    df["target_win"] = np.where(has, (can_finish & (rank.fillna(99) == 1)).astype(float), np.nan)
     keep = ["race_id", "race_date", "hasso_at", "year", "month", "jyo_cd", "kyori_m",
             "track_kind", "distance_band", "baba_cd", "grade_tier", "field_size",
             "umaban", "ketto_num", "bamei", "sex_cd", "barei_raw", "age_from_barei",

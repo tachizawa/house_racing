@@ -45,6 +45,6 @@ def age_curve(df: pd.DataFrame, *, path: str = "S", min_starts: int = 200,
     out["maturity"] = np.log(out["ae_age4plus"] / out["ae_age2"])
     out.index.name = "hansyoku_num"
     out = out.reset_index()
-    if names:
-        out.insert(1, "name", out["hansyoku_num"].map(names).fillna(""))
+    # names が空でも列は作る（growth_report.py が "name" 列を選ぶ）。
+    out.insert(1, "name", out["hansyoku_num"].map(names or {}).fillna(""))
     return out.sort_values("maturity", ascending=False).reset_index(drop=True)

@@ -144,24 +144,34 @@ def _bucket_sums(df: pd.DataFrame, path_col: str, bucket: str, *,
 
 
 def stat_features(df: pd.DataFrame, pedigree: PedigreeConfig) -> pd.DataFrame:
+    """産駒成績の特徴量。列は作った時点で float32 にする。
+
+    40年ぶん（約180万行 × 100列）を float64 で溜めてから変換すると、変換前の表と
+    変換後の表が同時に載って数GBになる。計算は float64 で行い、列に入れるときに
+    丸めるので、最後にまとめて変換するのと値は同じ。
+    """
     out = pd.DataFrame(index=df.index)
     m = pedigree.shrinkage
+
+    def put(name: str, values: pd.Series) -> None:
+        out[name] = values.astype(np.float32)
+
     for path in pedigree.stat_paths:
         col = f"ped_{path}"
         base = asof_sums(df, [col], exclude_self=pedigree.exclude_self)
-        out[f"st_{path}_log_n"] = np.log1p(base["n"])
-        out[f"st_{path}_ae_top3"] = _ae(base["k3"], base["e3"], m)
-        out[f"st_{path}_ae_win"] = _ae(base["kw"], base["ew"], m)
+        put(f"st_{path}_log_n", np.log1p(base["n"]))
+        put(f"st_{path}_ae_top3", _ae(base["k3"], base["e3"], m))
+        put(f"st_{path}_ae_win", _ae(base["kw"], base["ew"], m))
         for name, cond in CONDITIONS.items():
             sums = asof_sums(df, [col, *cond], exclude_self=pedigree.exclude_self)
-            out[f"st_{path}_ae_top3_{name}"] = _ae(sums["k3"], sums["e3"], m)
-            out[f"st_{path}_log_n_{name}"] = np.log1p(sums["n"])
+            put(f"st_{path}_ae_top3_{name}", _ae(sums["k3"], sums["e3"], m))
+            put(f"st_{path}_log_n_{name}", np.log1p(sums["n"]))
         by_age = {}
         for bucket, _, _ in AGE_BUCKETS:
             sums = _bucket_sums(df, col, bucket, exclude_self=pedigree.exclude_self)
             by_age[bucket] = _ae(sums["k3"], sums["e3"], m)
-            out[f"st_{path}_ae_age{bucket}"] = by_age[bucket]
-        out[f"st_{path}_maturity"] = np.log(by_age["4p"] / by_age["2"])
+            put(f"st_{path}_ae_age{bucket}", by_age[bucket])
+        put(f"st_{path}_maturity", np.log(by_age["4p"] / by_age["2"]))
     return out
 
 
@@ -201,8 +211,9 @@ def build_features(df: pd.DataFrame, *, pedigree: PedigreeConfig,
     for name in ("inbreeding_f", "n_cross", "closest_cross"):
         frame[name] = pd.to_numeric(prepared[name], errors="coerce").astype(float)
         nums.append(name)
-    # 40年ぶん（約180万行 × 100列）を float64 で持つと 1.4GB を超える。float32 で半分にする。
-    stats = stat_features(prepared, pedigree).astype(np.float32)
+    # 40年ぶん（約180万行 × 100列）を float64 で持つと 1.4GB を超える。float32 で半分にする
+    # （stat_features が列ごとに float32 で作る）。
+    stats = stat_features(prepared, pedigree)
     frame = frame.join(stats)
     nums.extend(stats.columns)
     return FeatureSet(frame=frame, cat_features=tuple(cats), num_features=tuple(nums))

@@ -109,7 +109,9 @@ class CodeConfig:
 class PedigreeConfig:
     #: 何世代さかのぼるか。3 は SK/UM の3代血統だけで埋まる。4 以上は繁殖馬
     #: マスタ HN の父母リンクを再帰的に辿って埋める（HN が無ければ欠損）。
-    generations: int = 3
+    #: 既定は configs/ml/pedigree.toml と同じ5世代（inbreeding_generations 以上に
+    #: しておかないと、設定ファイルで省いたときに validate() が通らない）。
+    generations: int = 5
     #: カテゴリ特徴量として CatBoost に渡す祖先の位置の世代上限。
     #: 深い世代ほど同じ祖先を共有する馬が増えて情報が薄まるので、既定は3世代。
     categorical_generations: int = 3
@@ -167,7 +169,21 @@ class ModelConfig:
     random_seed: int = 42
     thread_count: int = -1
     #: CatBoost に渡すその他の引数（設定ファイルからそのまま渡す）。
+    #: 上の項目や early stopping・has_time と同じ意味の引数は書けない
+    #: （RESERVED_MODEL_PARAMS。validate() が拒否する）。
     extra: dict[str, Any] = field(default_factory=dict)
+
+
+#: model.extra に書いてはいけない CatBoost の引数（別名を含む）。モデルの種類・
+#: 目的変数・group_id・予測の経路は loss_function から決めるので、extra で
+#: 目的関数を上書きされると学習した目的と周りの処理が食い違う。has_time を
+#: 外されると祖先カテゴリの数値化に後のレースの結果が入る。
+RESERVED_MODEL_PARAMS: frozenset[str] = frozenset({
+    "loss_function", "objective", "iterations", "num_boost_round", "n_estimators",
+    "num_trees", "learning_rate", "eta", "depth", "max_depth", "l2_leaf_reg",
+    "reg_lambda", "random_seed", "random_state", "thread_count", "od_type", "od_wait",
+    "early_stopping_rounds", "use_best_model", "has_time",
+})
 
 
 @dataclass(frozen=True)
@@ -192,6 +208,13 @@ class MLConfig:
         return replace(self, **sections)
 
 
+def _same_type(expected: Any, value: Any) -> bool:
+    # bool は int の派生なので、true を整数の設定に・1 を真偽値の設定に通さない。
+    if isinstance(expected, bool) or isinstance(value, bool):
+        return isinstance(expected, bool) and isinstance(value, bool)
+    return isinstance(value, type(expected))
+
+
 def _coerce(cls: type, values: dict[str, Any]) -> Any:
     known = {f.name: f for f in fields(cls)}
     unknown = set(values) - set(known)
@@ -205,8 +228,19 @@ def _coerce(cls: type, values: dict[str, Any]) -> Any:
             value = tuple(value)
         elif isinstance(current, date) and isinstance(value, str):
             value = date.fromisoformat(value)
-        elif isinstance(current, float) and isinstance(value, int):
+        elif isinstance(current, float) and isinstance(value, int) and not isinstance(value, bool):
             value = float(value)
+        # 型の違う値は黙って通さない（"false" という文字列は真として働いてしまう）。
+        if not _same_type(current, value):
+            raise ValueError(
+                f"[{cls.__name__}] {name} の型が違います: {value!r}"
+                f"（{type(current).__name__} で書いてください）")
+        if isinstance(current, tuple) and current:
+            bad = [v for v in value if not _same_type(current[0], v)]
+            if bad:
+                raise ValueError(
+                    f"[{cls.__name__}] {name} の要素の型が違います: {bad}"
+                    f"（{type(current[0]).__name__} で書いてください）")
         kwargs[name] = value
     return cls(**kwargs)
 
@@ -219,10 +253,19 @@ _SECTIONS = {
 
 
 def load_config(path: Path | None = None) -> MLConfig:
-    """TOML を読む。ファイルが無ければ既定値。知らないキーは誤記なので拒否する。"""
-    path = Path(path) if path is not None else DEFAULT_CONFIG_PATH
+    """TOML を読む。知らないキーは誤記なので拒否する。
+
+    path を省いたときだけ、既定のファイル（DEFAULT_CONFIG_PATH）が無ければ既定値で
+    進める。明示したファイルが無いのは打ち間違いなので FileNotFoundError にする
+    （黙って既定値で学習し、config.json にその既定値が残るのを防ぐ）。
+    """
+    if path is None:
+        if not DEFAULT_CONFIG_PATH.exists():
+            return MLConfig()
+        path = DEFAULT_CONFIG_PATH
+    path = Path(path)
     if not path.exists():
-        return MLConfig()
+        raise FileNotFoundError(f"設定ファイルがありません: {path}")
     return config_from_dict(tomllib.loads(path.read_text(encoding="utf-8")), source=str(path))
 
 
@@ -243,8 +286,11 @@ def validate(config: MLConfig) -> None:
         raise ValueError("pedigree.generations は 1 以上にしてください。")
     if not 1 <= p.categorical_generations <= p.generations:
         raise ValueError("pedigree.categorical_generations は 1〜generations にしてください。")
-    if p.inbreeding_generations > p.generations:
-        raise ValueError("pedigree.inbreeding_generations は generations 以下にしてください。")
+    if not 1 <= p.inbreeding_generations <= p.generations:
+        raise ValueError("pedigree.inbreeding_generations は 1〜generations にしてください。")
+    if not p.stat_paths:
+        # experiment.run_window が stat_paths を検算に使う。空だと学習の途中で落ちる。
+        raise ValueError("pedigree.stat_paths は1つ以上指定してください。")
     valid_paths = set(all_paths(p.generations))
     bad = [x for x in p.stat_paths if x not in valid_paths]
     if bad:
@@ -260,3 +306,14 @@ def validate(config: MLConfig) -> None:
         raise ValueError("split.valid_years は 1 以上にしてください。")
     if not s.train_years or any(y < 1 for y in s.train_years):
         raise ValueError("split.train_years は 1 以上の年数を1つ以上並べてください。")
+    reserved = sorted(set(config.model.extra) & RESERVED_MODEL_PARAMS)
+    if reserved:
+        raise ValueError(f"model.extra には書けない引数があります: {reserved}"
+                         "（[model] の項目として書いてください）")
+    e = config.evaluate
+    if e.top_n < 1:
+        raise ValueError("evaluate.top_n は 1 以上にしてください。")
+    if e.calibration_bins < 1:
+        raise ValueError("evaluate.calibration_bins は 1 以上にしてください。")
+    if e.bootstrap < 0:
+        raise ValueError("evaluate.bootstrap は 0 以上にしてください（0 なら区間を出さない）。")

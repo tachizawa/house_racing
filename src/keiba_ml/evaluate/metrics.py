@@ -52,7 +52,9 @@ def per_race(predictions: pd.DataFrame, truth: pd.DataFrame, *, top_n: int = 3
             "ndcg": _dcg(rel_pred) / idcg if idcg > 0 else np.nan,
             "random_hits": k * a / n if n else np.nan,
             "random_all_hit": comb(a, k) / comb(n, k) if n >= k and k > 0 else np.nan,
-            "random_winner_in_pred": k / n if n else np.nan,
+            # 同着で1着が複数頭なら「少なくとも1頭を選ぶ」確率（超幾何分布）。
+            "random_winner_in_pred": (1.0 - comb(n - len(winners), k) / comb(n, k)
+                                      if n >= k and k > 0 else np.nan),
             "random_top1_win": len(winners) / n if n else np.nan,
         })
     return pd.DataFrame(rows)

@@ -25,7 +25,8 @@ from keiba_ml.dataset import build, integrity  # noqa: E402
 def main(argv: list[str] | None = None) -> int:
     console.enable_utf8_output()
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+    parser.add_argument("--config", type=Path, default=None,
+                        help=f"設定ファイル（省略時 {DEFAULT_CONFIG_PATH}）")
     parser.add_argument("--race-data-dir", type=Path, default=RACE_DATA_DIR,
                         help="既存のデータ版の場所（既定 %(default)s）")
     parser.add_argument("--ml-data-dir", type=Path, default=ML_DATA_DIR)
@@ -34,10 +35,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dataset-id", default=None)
     args = parser.parse_args(argv)
 
-    config = load_config(args.config)
+    try:
+        config = load_config(args.config)
+    except FileNotFoundError as error:
+        parser.error(str(error))
     if args.race_version:
         config = config.with_overrides(
             data=replace(config.data, race_versions=tuple(args.race_version)))
+    if args.dataset_id and build.dataset_dir(args.ml_data_dir, args.dataset_id).exists():
+        # 作り終えてから save() が FileExistsError で落ちると、全部の作業が無駄になる。
+        parser.error(f"データセット {args.dataset_id} は既にあります。別の --dataset-id を指定してください。")
     df, ped, names, report = build.build(config, race_data_dir=args.race_data_dir,
                                          ml_data_dir=args.ml_data_dir)
     out = build.save(df, ped, names, report, config, ml_data_dir=args.ml_data_dir,

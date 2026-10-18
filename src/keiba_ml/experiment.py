@@ -77,8 +77,8 @@ def run_window(df: pd.DataFrame, config: MLConfig, window: Window, *, out_dir: P
         integrity.check_feature_columns(features.columns),
         integrity.check_split(train, valid, test),
     ]
-    checks.append(integrity.check_asof_sample(
-        history, features.frame, path=config.pedigree.stat_paths[0],
+    checks.append(integrity.check_asof_samples(
+        history, features.frame, paths=config.pedigree.stat_paths,
         shrinkage=config.pedigree.shrinkage, exclude_self=config.pedigree.exclude_self,
         sample=100))
     write_json(out_dir / "checks.json", checks)

@@ -39,3 +39,45 @@ def test_main_reports_mismatch(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "OK  father_num" in out
     assert "NG  mother_num" in out
+
+
+def _sdk500_style_struct() -> str:
+    """SDK 5.0.0 の Python 版の書き方（代入せずに並べる・3代血統は46バイトの部分構造体）で、
+    こちらの期待する位置をすべて含む構造体定義を作る。"""
+    lines = []
+    for spec, (class_names, expected) in check_offsets.EXPECTED.items():
+        lines += [f"class {class_names[0]}:", "    def SetDataB(self, b):", "        return ("]
+        for name, pos, length in expected:
+            if spec == "UM" and name.startswith("ketto3"):
+                lines.append(f"            [KETTO3_INFO.SetDataB(MidB2B(b, {pos} + 46 * i, 46))"
+                             " for i in range(14)],")
+            elif name.endswith("[0]"):
+                lines.append(f"            [MidB2S(b, {pos} + {length} * i, {length})"
+                             " for i in range(14)],")
+            else:
+                lines.append(f"            MidB2S(b, {pos}, {length}),")
+        lines += ["        )", ""]
+    return "\n".join(lines)
+
+
+def test_main_accepts_sdk500_style_when_everything_matches(tmp_path, capsys):
+    path = tmp_path / "JVData_Struct.py"
+    path.write_text(_sdk500_style_struct(), encoding="utf-8")
+    assert check_offsets.main(["--struct", str(path)]) == 0
+    out = capsys.readouterr().out
+    assert "OK  ketto3[0]" in out          # 長さ 46 で書かれた3代血統も一致とみなす
+    assert "NG " not in out
+
+
+def test_base_offset_does_not_depend_on_how_the_expression_is_written():
+    assert check_offsets.base_offset("205 + (46 * i)") == 205
+    assert check_offsets.base_offset("(i * 46) + 205") == 205
+    assert check_offsets.base_offset("12") == 12
+    assert check_offsets.base_offset("pos()") is None
+
+
+def test_undecodable_struct_file_returns_2(tmp_path, capsys):
+    path = tmp_path / "JVData_Struct.py"
+    path.write_bytes(b"\xff\xfe\x81")      # UTF-8 でも CP932 でも読めない
+    assert check_offsets.main(["--struct", str(path)]) == 2
+    assert "読めません" in capsys.readouterr().out
