@@ -1,6 +1,10 @@
 """血統の階層化（Phase 1「血統データの階層化」）。
 
-入力は ingest/pedigree_store が書いた版（sk.csv / hn.csv / um_ketto.csv）。
+入力は次のどちらか（``DataConfig.pedigree_source``）。
+  - "blood": 既存の血統の版（data/blood/versions/。pedigrees.csv / breeding_horses.csv。
+    dataspec BLDN）。列名をこの層の名前（anc_<位置> / father_num / mother_num）に
+    読み替える。UM の3代血統は持たないので補完は無い
+  - "ml": ingest/pedigree_store が書いた版（sk.csv / hn.csv / um_ketto.csv）
 出力は「血統登録番号（馬）→ 祖先の繁殖登録番号」の横持ちの表で、列は
 ``ped_<位置>``（位置は S=父 / D=母 を左から辿った文字列。``ped_DS`` = 母父）。
 
@@ -23,13 +27,24 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from keiba.ingest import records as keiba_records
+from keiba.ingest import store as keiba_store
 from keiba_ml.config import KETTO3_PATHS, all_paths
+from keiba_ml.ingest.pedigree_records import UM_KETTO_COLUMNS
 from keiba_ml.ingest.pedigree_store import (
     PedigreeVersionError, complete_versions, read_manifest, version_dir,
 )
 
 #: SK/HN/UM の「削除」データ区分。最新の行がこれならそのキーは無かったことにする。
 DELETED_KUBUN = "0"
+
+#: 既存の血統の版の列 → この層の列。SK の祖先の並びはどちらも仕様書の
+#: HansyokuNum[0..13] の順（テストで固定）。
+BLOOD_SK_RENAME: dict[str, str] = {
+    f"{name}_num": f"anc_{path}"
+    for name, path in zip(keiba_records.SK_ANCESTOR_NAMES, KETTO3_PATHS, strict=True)
+}
+BLOOD_HN_RENAME: dict[str, str] = {"sire_num": "father_num", "dam_num": "mother_num"}
 
 
 def _read(path: Path) -> pd.DataFrame:
@@ -72,6 +87,44 @@ def load_sources(ml_data_dir: Path, versions: Sequence[str] = ()) -> dict[str, p
         "SK": _latest(sk, "ketto_num"),
         "HN": _latest(hn, "hansyoku_num"),
         "UM": _latest(um, "ketto_num"),
+    }
+    sources["versions"] = versions  # type: ignore[assignment]
+    return sources
+
+
+def load_blood_sources(blood_data_dir: Path, versions: Sequence[str] = ()
+                       ) -> dict[str, pd.DataFrame]:
+    """既存の血統の版（BLDN）を読み、load_sources と同じ形で返す。
+
+    versions が空なら CURRENT の1版。複数なら古い順に重ねて新しい行を勝たせる。
+    UM は空（既存の版は UM の3代血統を持たない）。
+    """
+    versions = list(versions)
+    if not versions:
+        current = keiba_store.current_version(blood_data_dir)
+        if current is None:
+            raise FileNotFoundError(
+                f"{blood_data_dir} に血統の版がありません。"
+                " scripts/update_data.py --kind blood を先に実行してください。")
+        versions = [current]
+    sk, hn = [], []
+    for order, version_id in enumerate(versions):
+        path = keiba_store.version_dir(blood_data_dir, version_id)
+        keiba_store.read_manifest(path)   # 未完成・壊れた版は DataVersionError で止める
+        for bucket, name, rename in ((sk, "pedigrees.csv", BLOOD_SK_RENAME),
+                                     (hn, "breeding_horses.csv", BLOOD_HN_RENAME)):
+            frame = _read(path / name)
+            missing = sorted(set(rename) - set(frame.columns))
+            if missing:
+                raise PedigreeVersionError(f"{path / name} に必要な列がありません: {missing}")
+            frame = frame.rename(columns=rename)
+            if not frame.empty:
+                frame["_version_order"] = order
+            bucket.append(frame)
+    sources = {
+        "SK": _latest(sk, "ketto_num"),
+        "HN": _latest(hn, "hansyoku_num"),
+        "UM": pd.DataFrame(columns=list(UM_KETTO_COLUMNS), dtype=str),
     }
     sources["versions"] = versions  # type: ignore[assignment]
     return sources

@@ -21,6 +21,8 @@ from keiba import config as keiba_config
 PROJECT_ROOT = keiba_config.PROJECT_ROOT
 #: 既存モデルのデータ版（races.csv / race_horses.csv）の置き場所。読むだけで書かない。
 RACE_DATA_DIR = keiba_config.DATA_DIR
+#: 既存の血統の版（pedigrees.csv / breeding_horses.csv。dataspec BLDN）の置き場所。読むだけ。
+BLOOD_DATA_DIR = keiba_config.BLOOD_DATA_DIR
 #: 機械学習系の出力（血統の版・データセット・モデル・予測・評価）。/data/ 配下なので
 #: .gitignore 済み（JRA-VAN のデータは再配布不可）。
 ML_DATA_DIR = keiba_config.DATA_DIR / "ml"
@@ -86,8 +88,15 @@ class DataConfig:
     #: 期間を分けて取得した版を束ねたいときに並べる（同じ行は data_kubun の
     #: 優先順位と make_date で1行に絞る）。
     race_versions: tuple[str, ...] = ()
-    #: 血統の版。空なら data/ml/pedigree/versions/ の完成済みの版を全部、古い順に
-    #: 重ねる（セットアップ取得 → 差分 の順に積む想定。新しい行が勝つ）。
+    #: 血統をどこから読むか。
+    #:   "blood" … 既存の血統の版（data/blood/versions/。update_data.py --kind blood、
+    #:              dataspec BLDN）。実データで照合済みなので既定
+    #:   "ml"    … この層の版（data/ml/pedigree/versions/。scripts/ml/update_pedigree.py）。
+    #:              UM の3代血統で補えるのはこちらだけ
+    pedigree_source: str = "blood"
+    #: 血統の版。空なら "blood" は data/blood/CURRENT の1版、"ml" は
+    #: data/ml/pedigree/versions/ の完成済みの版を全部、古い順に重ねる
+    #: （セットアップ取得 → 差分 の順に積む想定。新しい行が勝つ）。
     pedigree_versions: tuple[str, ...] = ()
     #: 中央（01〜10）だけを使う。地方・海外は条件が揃わないため既定で除く。
     jra_only: bool = True
@@ -288,6 +297,8 @@ def config_from_dict(raw: dict[str, Any], *, source: str = "設定") -> MLConfig
 
 
 def validate(config: MLConfig) -> None:
+    if config.data.pedigree_source not in ("blood", "ml"):
+        raise ValueError('data.pedigree_source は "blood" か "ml" です。')
     p = config.pedigree
     if p.generations < 1:
         raise ValueError("pedigree.generations は 1 以上にしてください。")

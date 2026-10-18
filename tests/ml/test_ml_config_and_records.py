@@ -49,6 +49,29 @@ def test_config_round_trips_through_saved_json():
     assert mlc.config_from_dict(raw) == original
 
 
+def test_unknown_pedigree_source_is_rejected(tmp_path):
+    path = tmp_path / "x.toml"
+    path.write_text("[data]\npedigree_source = 'BLOD'\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="pedigree_source"):
+        mlc.load_config(path)
+
+
+def test_blood_version_columns_map_to_the_same_ancestors_as_this_layer():
+    """既存の血統の版（keiba.ingest.records.parse_sk）と、この層の分解が同じ枠に同じ番号を置く。"""
+    from keiba.ingest import records as keiba_records
+    from keiba_ml.dataset.pedigree import BLOOD_HN_RENAME, BLOOD_SK_RENAME
+    raw = mr.make_sk(ketto_num="2015100001", ancestors=ANCESTORS)
+    _, ours = pr.parse(raw)
+    theirs = {BLOOD_SK_RENAME.get(k, k): v for k, v in keiba_records.parse_sk(raw).items()}
+    assert [theirs[f"anc_{p}"] for p in mlc.KETTO3_PATHS] == \
+        [ours[f"anc_{p}"] for p in mlc.KETTO3_PATHS] == ANCESTORS
+    raw = mr.make_hn(hansyoku_num="1000000099", father=ANCESTORS[0], mother=ANCESTORS[1])
+    _, ours = pr.parse(raw)
+    theirs = {BLOOD_HN_RENAME.get(k, k): v for k, v in keiba_records.parse_hn(raw).items()}
+    assert (theirs["father_num"], theirs["mother_num"]) == \
+        (ours["father_num"], ours["mother_num"]) == (ANCESTORS[0], ANCESTORS[1])
+
+
 def test_parse_sk_reads_fourteen_ancestors_in_order():
     spec, row = pr.parse(mr.make_sk(ketto_num="2015100001", ancestors=ANCESTORS))
     assert spec == "SK"

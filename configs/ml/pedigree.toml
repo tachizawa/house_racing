@@ -5,7 +5,10 @@
 # 既存のデータ版（data/versions/）のうち読むもの。空なら data/CURRENT の1版だけ。
 # 期間を分けて取得した版を束ねるときは並べる。
 race_versions = []
-# 血統の版（data/ml/pedigree/versions/）。空なら完成済みの全版を古い順に重ねる。
+# 血統の出どころ。"blood" = 既存の血統の版（data/blood/。dataspec BLDN。実データで照合済み）、
+# "ml" = scripts/ml/update_pedigree.py の版（data/ml/pedigree/。UM の3代血統で補える）。
+pedigree_source = "blood"
+# 血統の版。空なら "blood" は data/blood/CURRENT、"ml" は完成済みの全版を古い順に重ねる。
 pedigree_versions = []
 jra_only = true
 include_jump = false

@@ -18,9 +18,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from keiba_ml.config import MLConfig
+from keiba_ml.config import BLOOD_DATA_DIR, MLConfig
 from keiba_ml.dataset import integrity
-from keiba_ml.dataset.pedigree import ancestor_names, build_pedigree, load_sources
+from keiba_ml.dataset.pedigree import (
+    ancestor_names, build_pedigree, load_blood_sources, load_sources,
+)
 from keiba_ml.dataset.races import load_runners
 
 DATASET_SCHEMA_VERSION = "1"
@@ -47,10 +49,14 @@ def attach_pedigree(runners: pd.DataFrame, ped: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def build(config: MLConfig, *, race_data_dir: Path, ml_data_dir: Path
+def build(config: MLConfig, *, race_data_dir: Path, ml_data_dir: Path,
+          blood_data_dir: Path = BLOOD_DATA_DIR
           ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, str], dict]:
     runners = load_runners(race_data_dir, data=config.data, codes_config=config.codes)
-    sources = load_sources(ml_data_dir, config.data.pedigree_versions)
+    if config.data.pedigree_source == "blood":
+        sources = load_blood_sources(blood_data_dir, config.data.pedigree_versions)
+    else:
+        sources = load_sources(ml_data_dir, config.data.pedigree_versions)
     ped, ped_stats = build_pedigree(
         sources["SK"], sources["HN"], sources["UM"],
         generations=config.pedigree.generations,
@@ -60,6 +66,7 @@ def build(config: MLConfig, *, race_data_dir: Path, ml_data_dir: Path
     df = attach_pedigree(runners, ped)
     report = {
         "race_versions": runners.attrs.get("race_versions", []),
+        "pedigree_source": config.data.pedigree_source,
         "pedigree_versions": sources["versions"],
         "pedigree_stats": ped_stats,
         "checks": integrity.check_dataset(df, ped_stats, config),
@@ -75,9 +82,9 @@ def manifest_config(config: MLConfig) -> dict:
 
 
 #: 突き合わせから外す data の項目。読んだ版そのものは manifest の race_versions /
-#: pedigree_versions に残っており、build_dataset.py の --race-version で設定ファイルと
-#: 違う版を読むのは正当な使い方なので。
-_UNCOMPARED_DATA_KEYS = ("race_versions", "pedigree_versions")
+#: pedigree_source / pedigree_versions に残っており、build_dataset.py の --race-version
+#: などで設定ファイルと違う版を読むのは正当な使い方なので。
+_UNCOMPARED_DATA_KEYS = ("race_versions", "pedigree_source", "pedigree_versions")
 
 
 def config_mismatches(manifest: dict, config: MLConfig) -> list[str]:
@@ -121,6 +128,7 @@ def save(df: pd.DataFrame, ped: pd.DataFrame, names: dict[str, str], report: dic
         "schema_version": DATASET_SCHEMA_VERSION,
         "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "race_versions": report["race_versions"],
+        "pedigree_source": report.get("pedigree_source"),
         "pedigree_versions": report["pedigree_versions"],
         "rows": int(len(df)), "races": int(df["race_id"].nunique()),
         "rows_with_result": int(len(with_result)),

@@ -6,9 +6,10 @@ import json
 from datetime import date
 
 import numpy as np
+import pandas as pd
 import pytest
 
-from keiba_ml.config import MLConfig, ModelConfig, PedigreeConfig, SplitConfig
+from keiba_ml.config import DataConfig, MLConfig, ModelConfig, PedigreeConfig, SplitConfig
 from keiba_ml.dataset import build
 from keiba_ml.evaluate.growth import age_curve
 from keiba_ml.experiment import run_comparison
@@ -25,11 +26,38 @@ def world(tmp_path_factory):
 
 @pytest.fixture(scope="module")
 def dataset(world):
-    config = MLConfig(pedigree=PedigreeConfig(generations=4, inbreeding_generations=4))
+    # UM での補完の経路も通すため、この層の血統の版（"ml"）から作る。
+    config = MLConfig(data=DataConfig(pedigree_source="ml"),
+                      pedigree=PedigreeConfig(generations=4, inbreeding_generations=4))
     df, ped, names, report = build.build(config, race_data_dir=world.race_data_dir,
                                          ml_data_dir=world.ml_data_dir)
     build.save(df, ped, names, report, config, ml_data_dir=world.ml_data_dir)
     return build.load(world.ml_data_dir)
+
+
+def test_blood_version_gives_the_same_pedigree_as_the_ml_version(world):
+    """既存の血統の版（BLDN の列名）から作った祖先表は、この層の版から作ったものと一致する。
+
+    違うのは UM だけの馬（BLDN には UM の3代血統が無い）が欠けることだけ。
+    """
+    pedigree = PedigreeConfig(generations=4, inbreeding_generations=4)
+    built = {}
+    for source in ("ml", "blood"):
+        config = MLConfig(data=DataConfig(pedigree_source=source), pedigree=pedigree)
+        df, ped, _names, report = build.build(
+            config, race_data_dir=world.race_data_dir, ml_data_dir=world.ml_data_dir,
+            blood_data_dir=world.blood_data_dir)
+        assert report["pedigree_source"] == source
+        built[source] = (df, ped, report)
+    ml_ped, blood_ped = built["ml"][1], built["blood"][1]
+    from_sk = ml_ped.index[ml_ped["pedigree_source"] == "SK"]
+    cols = [c for c in ml_ped.columns if c.startswith("ped_")] + ["birth_year", "inbreeding_f"]
+    pd.testing.assert_frame_equal(blood_ped.loc[from_sk, cols], ml_ped.loc[from_sk, cols])
+    um_only = ml_ped.index[ml_ped["pedigree_source"] == "UM"]
+    assert len(um_only) > 0
+    assert (blood_ped.loc[um_only, "pedigree_source"] == "").all()
+    stats = built["blood"][2]["pedigree_stats"]
+    assert stats["parent_link"]["rate"] == 1.0
 
 
 def test_dataset_passes_integrity_checks(world, dataset):

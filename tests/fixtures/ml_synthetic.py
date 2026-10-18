@@ -8,6 +8,8 @@
 - 既存形式のデータ版（data/versions/<id>/races.csv ほか）… tests.fixtures.csv_data で書く
 - 血統の版（data/ml/pedigree/versions/<id>/）… 合成バイト列 → pedigree_records → 保存
   （分解の経路も通す）
+- 既存形式の血統の版（data/blood/versions/<id>/）… 同じ合成バイト列 → keiba.ingest.records
+  → keiba.ingest.store。BLDN は UM を持たないので、UM だけの馬はこちらに入らない
 """
 
 from __future__ import annotations
@@ -18,6 +20,8 @@ from pathlib import Path
 
 import numpy as np
 
+from keiba.ingest import records as keiba_records
+from keiba.ingest import store as keiba_store
 from keiba_ml.ingest import pedigree_records, pedigree_store
 from tests.fixtures import csv_data
 from tests.fixtures import ml_records as mr
@@ -38,6 +42,7 @@ class Breeder:
 class World:
     race_data_dir: Path
     ml_data_dir: Path
+    blood_data_dir: Path
     breeders: dict[str, Breeder] = field(default_factory=dict)
     horses: dict[str, dict] = field(default_factory=dict)
     sires: list[str] = field(default_factory=list)
@@ -169,10 +174,15 @@ def build_world(tmp_path: Path, *, first_year: int = 2011, last_year: int = 2022
     writer = pedigree_store.PedigreeVersionWriter(
         ml_data_dir, "20260101T000000Z", dataspecs=["BLOD"], fromdate="19860101000000",
         option=4)
+    blood_data_dir = race_data_dir / "blood"
+    blood = keiba_store.VersionWriter(
+        blood_data_dir, "20260101T000000Z", dataspecs=["BLDN"], fromdate="19860101000000",
+        option=4, files=keiba_store.BLOOD_FILES)
     for num, b in breeders.items():
-        writer.add(*pedigree_records.parse(mr.make_hn(
-            hansyoku_num=num, bamei=f"シュボバ{num[-4:]}", sex_cd=b.sex,
-            father=b.father, mother=b.mother)))
+        raw = mr.make_hn(hansyoku_num=num, bamei=f"シュボバ{num[-4:]}", sex_cd=b.sex,
+                         father=b.father, mother=b.mother)
+        writer.add(*pedigree_records.parse(raw))
+        blood.add("HN", keiba_records.parse_hn(raw))
     for ketto, h in horses.items():
         ancestors = _ancestors(breeders, h["sire"], h["dam"])
         birth = f"{h['birth_year']}0401"
@@ -181,8 +191,12 @@ def build_world(tmp_path: Path, *, first_year: int = 2011, last_year: int = 2022
                 ketto_num=ketto, bamei=h["bamei"], birth_date=birth, sex_cd=h["sex"],
                 ancestors=[(a, f"シュボバ{a[-4:]}") for a in ancestors])))
         else:
-            writer.add(*pedigree_records.parse(mr.make_sk(
-                ketto_num=ketto, birth_date=birth, sex_cd=h["sex"], ancestors=ancestors)))
+            raw = mr.make_sk(ketto_num=ketto, birth_date=birth, sex_cd=h["sex"],
+                             ancestors=ancestors)
+            writer.add(*pedigree_records.parse(raw))
+            blood.add("SK", keiba_records.parse_sk(raw))
     writer.commit()
-    return World(race_data_dir=race_data_dir, ml_data_dir=ml_data_dir, breeders=breeders,
+    blood.commit()
+    return World(race_data_dir=race_data_dir, ml_data_dir=ml_data_dir,
+                 blood_data_dir=blood_data_dir, breeders=breeders,
                  horses=horses, sires=l1_stallions, entry_race_id=entry_race_id)
