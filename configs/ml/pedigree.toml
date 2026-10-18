@@ -1,0 +1,52 @@
+# 血統モデル（Phase 2）の設定。キーの意味は src/keiba_ml/config.py の docstring を参照。
+# 知らないキーを書くとエラーになる（誤記を黙って無視しないため）。
+
+[data]
+# 既存のデータ版（data/versions/）のうち読むもの。空なら data/CURRENT の1版だけ。
+# 期間を分けて取得した版を束ねるときは並べる。
+race_versions = []
+# 血統の版（data/ml/pedigree/versions/）。空なら完成済みの全版を古い順に重ねる。
+pedigree_versions = []
+jra_only = true
+include_jump = false
+
+[codes]
+# この年以前の「馬齢」は数え年。build_dataset.py の age_convention 検査で確かめる。
+kazoe_age_until_year = 2000
+
+[pedigree]
+generations = 5                # 4世代目以降は HN の父母リンクで埋める
+categorical_generations = 3    # CatBoost のカテゴリにする祖先は3世代14枠
+inbreeding_generations = 5
+stat_paths = ["S", "D", "DS", "SS"]
+shrinkage = 10.0               # A/E の縮小推定（階層ベイズの採否は未決定）
+exclude_self = true
+stats_history = "window"       # "window" = 学習開始日以降だけで産駒成績を集計
+
+[features]
+context = ["track_kind", "kyori_m", "distance_band", "baba_cd", "jyo_cd",
+           "age", "sex_cd", "field_size", "month"]
+
+[split]
+# テスト期間は固定。学習期間だけを変えて比べる。
+test_start = "2025-01-01"
+test_end = "2025-12-31"
+valid_years = 1
+train_years = [10, 20, 30, 40]
+
+[model]
+# 目的関数は未決定。"Logloss"（3着以内の2値・確率が出る）か "YetiRank" などの順位学習。
+loss_function = "Logloss"
+iterations = 3000
+learning_rate = 0.05
+depth = 6
+l2_leaf_reg = 3.0
+early_stopping_rounds = 200
+random_seed = 42
+thread_count = -1
+
+[evaluate]
+top_n = 3
+calibration_bins = 10
+bootstrap = 1000
+bootstrap_seed = 0

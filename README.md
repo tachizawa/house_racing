@@ -51,6 +51,11 @@ Jev・JV-Link の実通信はしない。Jev の実通信の確認は `smoke_tes
 
 `jev_client.py` に予想ロジックと重みは置かない。あそこは通信の都合だけを閉じ込める場所。
 
+## 機械学習系（血統モデル）
+
+CatBoost の血統モデルは `src/keiba_ml/` に既存モデルと分けて置いてある。
+手順と設計は [docs/ml/README.md](docs/ml/README.md)。
+
 ## 軸を足すとき
 
 本番の質問は勝率予想が `src/keiba/predict/questions.py`（変えたら `PROMPT_VERSION` を上げる）、3着内予想が `src/keiba/predict/top3_questions.py`（変えたら `TOP3_PROMPT_VERSION` を上げる）。以下は疎通確認の実演の場合。
