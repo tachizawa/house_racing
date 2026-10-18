@@ -48,6 +48,11 @@ API に触れない部分（キーの解決、例外の日本語化、並列実�
 
 `jev_client.py` に予想ロジックと重みは置かない。あそこは通信の都合だけを閉じ込める場所。
 
+## 機械学習系（血統モデル）
+
+CatBoost の血統モデルは `src/keiba_ml/` に既存モデルと分けて置いてある。
+手順と設計は [docs/ml/README.md](docs/ml/README.md)。
+
 ## 軸を足すとき
 
 `scripts/smoke_test.py` の `AXIS_QUESTIONS` に質問を1行、`WEIGHTS` に重みを1つ足す。

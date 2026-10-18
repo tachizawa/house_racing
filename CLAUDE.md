@@ -21,6 +21,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `src/keiba/evaluate/` | 指標・時系列分割・バックテスト |
 | `src/keiba/store/` | 予想記録の保存と利用者向けビュー（**列挙方式**で生データを漏らさない） |
 | `scripts/` | `update_data` / `predict` / `fit_weights` / `backtest` / `smoke_test` |
+| `src/keiba_ml/` | **機械学習系（血統 CatBoost ほか）。既存モデルとは独立**。説明は `docs/ml/README.md` |
+| `scripts/ml/` / `configs/ml/` / `tests/ml/` | 機械学習系の CLI・設定・テスト |
 | `vendor/jravan-sdk-500-64bit/` | JRA-VAN SDK 5.0.0（64bit）の展開物。再配布不可のため `.gitignore` 済み |
 | `data/` | 取得したデータ版・予想記録・重み。再配布不可のため `.gitignore` 済み |
 | `.env` | `TYPESAFE_API_KEY`。コミットしない（`.env.example` が雛形） |
@@ -107,6 +109,22 @@ scripts/update_data.py --dataspec RACE --fromdate 20230801000000
 含めた推定は **約 76,430,000 トークン / $3.21**（記録ぶんの 1.63 倍）。
 **`--no-save-records` でも課金は発生する**（`predict()` が保存判定より前に走る）。
 同じ 238 レースに平均 3.34 回投げている。内訳と根拠は `tmp/keiba-report/`。
+
+## 機械学習系（`src/keiba_ml/`、2026-10-16 追加）
+
+開発方針「CatBoost を中心に個別モデルを段階的に作る」の Phase 1（データ基盤）と
+Phase 2（血統モデル）。**実データでは未検証**（開発環境に JV-Link と SDK が無く、
+合成データでのみ端から端まで確認した）。使い方・設計・未決定事項は `docs/ml/README.md`。
+
+- **既存モデルとの境界を崩さないこと。** `keiba_ml` → `keiba` は JV-Link 層・データ版の
+  場所・コード表だけを借りる。`keiba` → `keiba_ml` の import は作らない。既存のデータ版
+  （`data/versions/`）には書かない。出力は `data/ml/`
+- 依存は `requirements-ml.txt`（catboost / pyarrow）。既存のテストはこれ無しで通る
+- 血統レコード（SK/HN/UM の3代血統）の位置は仕様書から写しただけ。
+  **学習の前に `scripts/ml/check_offsets.py` と `build_dataset.py` の整合性レポート
+  （`pedigree_parent_link`）で確かめる**
+- 産駒成績の特徴量は as-of（レース日より前・本人の過去走を除く）。この規律を外すと
+  未来情報や本人の成績が血統モデルに混ざる。`tests/ml/test_ml_features_metrics.py` が固定している
 
 ## 何を作るのか
 

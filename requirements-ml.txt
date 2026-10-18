@@ -1,0 +1,4 @@
+# 機械学習系（src/keiba_ml/）の追加依存。既存モデルだけを使うなら不要。
+#   .venv/Scripts/python.exe -m pip install -r requirements.txt -r requirements-ml.txt
+catboost>=1.2
+pyarrow>=15.0
