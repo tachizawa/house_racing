@@ -11,7 +11,7 @@ import pytest
 from keiba_ml.config import CodeConfig, DataConfig, MLConfig, PedigreeConfig, SplitConfig
 from keiba_ml.dataset import build, codes, integrity
 from keiba_ml.dataset.pedigree import build_pedigree, inbreeding_table, load_sources
-from keiba_ml.dataset.races import build_runners
+from keiba_ml.dataset.races import build_runners, load_raw
 from keiba_ml.dataset.split import history_frame, make_window, split_frame
 from keiba_ml.ingest import pedigree_store as ps
 from tests.fixtures import csv_data
@@ -82,6 +82,22 @@ def test_build_runners_prefers_result_rows_and_excludes_scratched():
     assert list(df["target_win"]) == [0.0, 1.0, 0.0]
     assert df["field_size"].unique().tolist() == [3]
     assert df["race_date"].iloc[0] == pd.Timestamp("2026-03-21")
+
+
+def test_load_raw_drops_races_before_the_version_fromdate(tmp_path):
+    """セットアップ取得に混じる古い訂正再配信は、版の fromdate より前なので捨てる。"""
+    old = "1977061505030201"
+    csv_data.write_dataset(
+        tmp_path, [csv_data.make_race(race_id=RID), csv_data.make_race(race_id=old)],
+        [csv_data.make_race_horse(race_id=RID), csv_data.make_race_horse(race_id=old)], [])
+    version = (tmp_path / "CURRENT").read_text(encoding="utf-8").strip()
+    path = tmp_path / "versions" / version / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps({**manifest, "fromdate": "19860101000000"}), encoding="utf-8")
+    races, runners = load_raw(tmp_path, [version])
+    assert races["race_id"].tolist() == [RID]
+    assert runners["race_id"].tolist() == [RID]
+    assert races.attrs["dropped_before_fromdate"] == {version: 1}
 
 
 def test_build_runners_entry_only_rows_have_no_target():

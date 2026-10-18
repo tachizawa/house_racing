@@ -66,6 +66,7 @@ def build(config: MLConfig, *, race_data_dir: Path, ml_data_dir: Path,
     df = attach_pedigree(runners, ped)
     report = {
         "race_versions": runners.attrs.get("race_versions", []),
+        "races_dropped_before_fromdate": runners.attrs.get("dropped_before_fromdate", {}),
         "pedigree_source": config.data.pedigree_source,
         "pedigree_versions": sources["versions"],
         "pedigree_stats": ped_stats,

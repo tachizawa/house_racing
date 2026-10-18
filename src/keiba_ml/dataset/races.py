@@ -54,14 +54,31 @@ def _read(path: Path, usecols: Sequence[str]) -> pd.DataFrame:
 
 
 def load_raw(data_dir: Path, versions: Sequence[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """指定した版の races / race_horses を縦に連結する（重複はまだ残る）。"""
+    """指定した版の races / race_horses を縦に連結する（重複はまだ残る）。
+
+    版の fromdate より前の日付のレースは捨てる。セットアップ取得（option 4）には
+    1954〜1985年などの訂正再配信がまばらに混じり（40年版で約180行）、残すと
+    「データは1954年からある」ことになって学習期間の truncated の判定が狂う。
+    捨てた件数は attrs["dropped_before_fromdate"] に版ごとに残す。
+    """
     races, runners = [], []
+    dropped: dict[str, int] = {}
     for version_id in versions:
         path = version_dir(data_dir, version_id)
-        read_manifest(path)       # 未完成・壊れた版は DataVersionError で止める
-        races.append(_read(path / "races.csv", _RACE_USECOLS))
-        runners.append(_read(path / "race_horses.csv", _RUNNER_USECOLS))
-    return pd.concat(races, ignore_index=True), pd.concat(runners, ignore_index=True)
+        manifest = read_manifest(path)   # 未完成・壊れた版は DataVersionError で止める
+        race_rows = _read(path / "races.csv", _RACE_USECOLS)
+        runner_rows = _read(path / "race_horses.csv", _RUNNER_USECOLS)
+        fromdate = str(manifest.get("fromdate") or "")[:8]
+        if len(fromdate) == 8 and fromdate.isdigit():
+            keep = race_rows["race_id"].str[:8] >= fromdate
+            dropped[version_id] = int((~keep).sum())
+            race_rows = race_rows[keep]
+            runner_rows = runner_rows[runner_rows["race_id"].str[:8] >= fromdate]
+        races.append(race_rows)
+        runners.append(runner_rows)
+    races_all = pd.concat(races, ignore_index=True)
+    races_all.attrs["dropped_before_fromdate"] = dropped
+    return races_all, pd.concat(runners, ignore_index=True)
 
 
 def pick_by_data_kubun(rows: pd.DataFrame, keys: Sequence[str]) -> pd.DataFrame:
@@ -147,8 +164,10 @@ def build_runners(races: pd.DataFrame, runners: pd.DataFrame, *,
 def load_runners(data_dir: Path, *, data: DataConfig, codes_config: CodeConfig) -> pd.DataFrame:
     versions = resolve_race_versions(data_dir, data.race_versions)
     races, runners = load_raw(data_dir, versions)
+    dropped = races.attrs.get("dropped_before_fromdate", {})
     df = build_runners(races, runners, data=data, codes_config=codes_config)
     df.attrs["race_versions"] = versions
+    df.attrs["dropped_before_fromdate"] = dropped
     return df
 
 
