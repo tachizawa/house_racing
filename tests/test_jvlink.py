@@ -8,7 +8,11 @@ from keiba.ingest import jvlink
 
 
 class FakeLink:
-    """JV-Link の COM オブジェクトの偽物。JVOpen/JVGets の型だけ real に合わせる。"""
+    """JV-Link の COM オブジェクトの偽物。JVOpen/JVRead の型だけ real に合わせる。
+
+    実機の JVRead は (戻り値, JV-Link が cp932 から復号した文字列, 渡したバッファ長,
+    ファイル名) を返す。戻り値は cp932 のバイト長（2026-09-24 実測）。
+    """
 
     def __init__(self, gets_returns, *, open_code=0, download_count=0, statuses=None,
                  read_count=0, lastfiletime=""):
@@ -32,17 +36,20 @@ class FakeLink:
         self.status_calls += 1
         return self._statuses[min(self.status_calls - 1, len(self._statuses) - 1)]
 
-    def JVGets(self, buf, size, fname):
+    def JVRead(self, buf, size, fname):
         if not self._gets:
-            return (0, memoryview(b""), "")
+            return (0, "", size, "")
         return self._gets.pop(0)
+
+    def JVGets(self, buf, size, fname):
+        raise AssertionError("JVGets は呼ぶたびに約110KB漏れるので使わない")
 
     def JVClose(self):
         self.closed = True
 
 
 def _rec(payload: bytes):
-    return (len(payload), memoryview(payload), "")
+    return (len(payload), payload.decode("cp932"), 110000, "")
 
 
 class TestReadRecords:
@@ -52,12 +59,12 @@ class TestReadRecords:
         assert rows == [b"RA1", b"RA2", b"RA3"]
 
     def test_read_records_skips_file_switch(self):
-        link = FakeLink([_rec(b"RA1"), (-1, memoryview(b""), "20260801.dat"), _rec(b"RA2")])
+        link = FakeLink([_rec(b"RA1"), (-1, "", 110000, "20260801.dat"), _rec(b"RA2")])
         rows = list(jvlink.read_records(link, "RACE", "20260801000000", 1))
         assert rows == [b"RA1", b"RA2"]
 
     def test_read_records_raises_on_negative_code(self):
-        link = FakeLink([_rec(b"RA1"), (-2, memoryview(b""), "")])
+        link = FakeLink([_rec(b"RA1"), (-2, "", 110000, "")])
         with pytest.raises(jvlink.JVLinkError):
             list(jvlink.read_records(link, "RACE", "20260801000000", 1))
 
@@ -73,8 +80,21 @@ class TestReadRecords:
         assert rows == []
         assert link.closed is True
 
+    def test_read_records_returns_cp932_bytes_for_japanese_text(self):
+        payload = "SE馬名アイウ〜".encode("cp932") + b"\r\n"
+        link = FakeLink([_rec(payload)])
+        rows = list(jvlink.read_records(link, "RACE", "20260801000000", 1))
+        assert rows == [payload]
+
+    def test_read_records_raises_when_reencoded_length_differs(self):
+        """cp932 に戻した長さが JVRead の戻り値と違えば、固定長の位置がずれるので止める。"""
+        link = FakeLink([(5, "RA1", 110000, "")])
+        with pytest.raises(jvlink.JVLinkError, match="長さ"):
+            list(jvlink.read_records(link, "RACE", "20260801000000", 1))
+        assert link.closed is True
+
     def test_read_records_always_closes(self):
-        link = FakeLink([_rec(b"RA1"), (-2, memoryview(b""), "")])
+        link = FakeLink([_rec(b"RA1"), (-2, "", 110000, "")])
         with pytest.raises(jvlink.JVLinkError):
             list(jvlink.read_records(link, "RACE", "20260801000000", 1))
         assert link.closed is True
@@ -111,6 +131,55 @@ class TestReadRecords:
         with pytest.raises(jvlink.JVLinkError):
             list(jvlink.read_records(link, "RACE", "20260801000000", 1))
         assert link.closed is True
+
+
+class TestConsoleCodepage:
+    """JVRead は読んだ時点のコンソール出力コードページで文字列にする（2026-09-24 実測）。
+    console.enable_utf8_output() の 65001 のままだと日本語が欧文として化けるので、
+    読んでいる間だけ 932 にし、終われば元に戻す。"""
+
+    @pytest.fixture
+    def console(self, monkeypatch):
+        state = {"cp": 65001, "during_read": []}
+        monkeypatch.setattr(jvlink, "_get_console_cp", lambda: state["cp"])
+        monkeypatch.setattr(jvlink, "_set_console_cp", lambda cp: state.update(cp=cp))
+        return state
+
+    def _link(self, console, records):
+        link = FakeLink(records)
+        original = link.JVRead
+
+        def spying_read(*args):
+            console["during_read"].append(console["cp"])
+            return original(*args)
+        link.JVRead = spying_read
+        return link
+
+    def test_reads_under_cp932_and_restores(self, console):
+        link = self._link(console, [_rec(b"RA1"), _rec(b"RA2")])
+        assert list(jvlink.read_records(link, "RACE", "20260801000000", 1)) == [b"RA1", b"RA2"]
+        assert set(console["during_read"]) == {932}
+        assert console["cp"] == 65001
+
+    def test_restores_even_when_reading_fails(self, console):
+        link = self._link(console, [_rec(b"RA1"), (-2, "", 110000, "")])
+        with pytest.raises(jvlink.JVLinkError):
+            list(jvlink.read_records(link, "RACE", "20260801000000", 1))
+        assert console["cp"] == 65001
+
+    def test_restores_when_the_consumer_stops_early(self, console):
+        link = self._link(console, [_rec(b"RA1"), _rec(b"RA2")])
+        stream = jvlink.read_records(link, "RACE", "20260801000000", 1)
+        next(stream)
+        stream.close()
+        assert console["cp"] == 65001
+
+    def test_leaves_the_codepage_alone_without_a_console(self, console):
+        console["cp"] = 0   # GetConsoleOutputCP はコンソールが無いと 0
+        link = self._link(console, [_rec(b"RA1")])
+        list(jvlink.read_records(link, "RACE", "20260801000000", 1))
+        assert console["during_read"] == [0, 0]
+        assert console["cp"] == 0
 
 
 class TestOpenDataspec:

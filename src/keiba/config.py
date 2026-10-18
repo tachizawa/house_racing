@@ -72,6 +72,47 @@ EXCEPTION_RULES_VERSION = "1"
 TIE_BAND = 0.03
 
 # --- 既定値 -----------------------------------------------------------------
+
+# 資料（features/dossier.py）の形の版。キーや中身の定義が変わったら上げる。
+# "2": 条件別実績の definition と履歴の note を各馬から top-level
+#      （condition_definitions / history_status_notes）へ集約し、直近走の既定を
+#      5走から4走に減らした（state size fix。実測 100レースのドライランで
+#      17/100 が旧上限 48,000 文字を超えていた）。
+# "3": data_quality.coverage_from（と履歴の found_may_be_truncated の判定）を
+#      fromdate と first_hasso_at の遅いほうにした。option 4 の版では訂正再配信の
+#      1989年などが入り、打ち切りの可能性が一度も付かなかった。形は "2" と同じ。
+#      同じ "3" に、先行力の定義文（front_runner_definition）への3角・2角の代用の
+#      追記、競馬場が不明なときの course_exact_distance の比較不能、コースを
+#      特定できない理由文の書き分けも含む（PR #2 のレビュー対応。"3" で作った
+#      記録が1件も無いうちに入れたので、版を分けていない）。
+DOSSIER_VERSION = "3"
+# 「3着以内」の 3。表示頭数（DEFAULT_TOP_N）とは別物なので分けて持つ。
+TOP3_PLACE = 3
+# 3着内の採点規則（evaluate/top3_metrics.py の docstring）の版。同着・取消・
+# 失格の扱いを変えたら上げる。版が違う報告どうしは比べない。
+TOP3_EVAL_RULES_VERSION = "1"
+# 資料に載せる直近の過去走の件数。多いほど state が大きくなる（STATE_MAX_CHARS）。
+# 5 -> 4: 定義文・注記の集約（DOSSIER_VERSION "2"）と合わせて実施。4走・
+# STATE_MAX_CHARS=52,000 での実測（100レース、2026-01..09-22、--dry-run）は
+# max 51,397 文字・0/100 が上限超過（旧: 5走・48,000 文字上限で 17/100 超過）。
+# ただしこの 100レースは約1年ぶんのデータ版での実測。5年ぶんの版
+# （20260924T115403Z）では過去走が揃って資料が大きくなり、2026年1〜6月の
+# 1,661レースのドライランで 29件（1.7%）が上限を超えた（最大 52,664 文字）。
+# 対処は未決（CLAUDE.md）。4走は「上限を超えない値」として確かめた値ではない。
+DEFAULT_DOSSIER_RECENT_RUNS = 4
+# state の上限（json.dumps(state, ensure_ascii=False) の文字数）。
+# 実測: input_tokens / (state_chars + question_chars) = 0.583〜0.590
+# （Task 14、9リクエスト、2026-09-23）。Jev の制約は「state + 最長の質問 ≤ 32k
+# トークン」で、3着内の最長の質問は1,000文字未満。
+# (32,000 - 1,000) / 0.59 ≈ 52,500 なので 52,000 に切り下げる。
+STATE_MAX_CHARS = 52_000
+# field_summary で「先行型」と数える4角の相対位置（corner_pos_mean）の上限。
+FRONT_RUNNER_MAX_CORNER_POS = 1 / 3
+# 見つかった最古の過去走がデータ版の収録開始からこの日数以内なら、それより前の
+# 出走が版の外にある可能性がある。中央の出走間隔はおおむね3〜8週なので、
+# 90日以内なら「さらに前にも走っていた」ことを否定できない。
+HISTORY_TRUNCATION_MARGIN_DAYS = 90
+
 DEFAULT_TOP_N = 3
 DEFAULT_RECENT_RUNS = 5          # 直近何走を集計に使うか。仕様の初期案は 5〜10
 SAME_DISTANCE_TOLERANCE_M = 200  # 「同距離」とみなす幅
@@ -85,6 +126,21 @@ PACE_MIN_RACES = 30              # ペース三分位を層別に計算するの
 # 照合はマスタの完全性に依存しない作りになっているので（data/store.py の
 # name_index が race_horses.csv も見る）、DIFF で取れる分だけで十分。
 DEFAULT_DATASPECS: tuple[str, ...] = ("RACE", "DIFF")
+
+# 血統（SK 産駒マスタ / HN 繁殖馬マスタ / BT 系統情報）。BLOD ではなく BLDN を使う。
+# BLOD は JV-Data 4.9.0（2023-08）より前の形式（繁殖登録番号8桁）のまま 2023-07 作成分で
+# 止まっている（2026-09-25 実測。2023年生まれ以降の馬が入らない）。新形式（10桁）を
+# 1986年以降ぶん運ぶのが BLDN（DIFF と DIFN の関係と同じ）。
+# レースの版とは別の系統に保存する（ingest/store.py の BLOOD_FILES を参照）。
+DEFAULT_BLOOD_DATASPECS: tuple[str, ...] = ("BLDN",)
+BLOOD_DATA_DIR = DATA_DIR / "blood"
+
+# 払戻（HR）とオッズ（O1〜O6）。RACE が運ぶが、レースの版とは別の系統に保存する
+# （ingest/store.py の MARKET_FILES）。3連単のオッズは5年で約4,000万行あり、
+# レースの版に混ぜると予想の読み込みが重くなるうえ、CURRENT を共有すると
+# 片方の取り直しがもう片方を巻き込む。
+DEFAULT_MARKET_DATASPECS: tuple[str, ...] = ("RACE",)
+MARKET_DATA_DIR = DATA_DIR / "market"
 
 # 入力の距離が現実的か判定するための幅。中央の平地はおよそ 1000m〜3600m だが、
 # 障害・特殊条件の余地を残して広めに取る。
@@ -131,6 +187,16 @@ IJYO_NO_TIME = frozenset({"4", "5"})
 DATA_KUBUN_RESULT_PRIORITY: tuple[str, ...] = ("7", "6", "5", "4", "3")
 DATA_KUBUN_ENTRY_PRIORITY: tuple[str, ...] = ("2", "1")
 DATA_KUBUN_DROP = frozenset({"0", "9", "A", "B"})
+
+# 払戻（HR）とオッズ（O1〜O6）のデータ区分は RA/SE とも互いとも意味が違う。
+#   HR   : 1:速報成績(払戻金確定) 2:成績(月曜) 9:レース中止 0:削除
+#   O1〜O6: 1:中間 2:前日売最終 3:最終 4:確定 5:確定(月曜) 9:レース中止 0:削除
+# 払戻金が確定しているのは HR の 1/2、確定オッズは O の 4/5。O の 1〜3 は確定前の値で、
+# 確定オッズとは一致しない。同じレースに複数あれば先頭を優先する。0 と 9 は使わない。
+# 注意: 確定オッズは締切後にしか分からない。「期待値で買い目を選ぶ」検証に確定オッズを
+# 使うと、買う時点では知りえない値で選んでいることになる（締切直前との差の分だけ甘くなる）。
+DATA_KUBUN_PAYOUT_PRIORITY: tuple[str, ...] = ("2", "1")
+DATA_KUBUN_ODDS_PRIORITY: tuple[str, ...] = ("5", "4")
 
 # UM（競走馬マスタ）のデータ区分は RA/SE と意味が違う。
 #   1:新規馬名登録 2:馬名変更 3:再登録(抹消後の再登録) 4:その他更新

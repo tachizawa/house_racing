@@ -249,6 +249,8 @@ def load_race_input(path: Path) -> RaceInput:
         text = path.read_text(encoding="utf-8")
     except OSError as error:
         raise InputError(f"入力ファイルを読めません: {path} ({error})") from error
+    except UnicodeDecodeError as error:
+        raise InputError(f"入力ファイルが UTF-8 ではありません: {path} ({error})") from error
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as error:

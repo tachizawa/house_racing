@@ -24,7 +24,7 @@ from tests.fixtures import records as fx  # noqa: E402
 
 
 class DataspecAwareLink:
-    """dataspec ごとに JVOpen の結果と JVGets で返すレコードを変えられる偽 link。
+    """dataspec ごとに JVOpen の結果と JVRead で返すレコードを変えられる偽 link。
 
     update_data.py は dataspec ごとに open_dataspec() / read_open_dataspec() /
     JVClose() を呼ぶので、単一の open_code しか持てない偽物では「DIFF は -1、
@@ -49,11 +49,11 @@ class DataspecAwareLink:
     def JVStatus(self):
         return self._current_download_count
 
-    def JVGets(self, buf, size, fname):
+    def JVRead(self, buf, size, fname):
         if not self._pending:
-            return (0, memoryview(b""), "")
+            return (0, "", size, "")
         payload = self._pending.pop(0)
-        return (len(payload), memoryview(payload), "")
+        return (len(payload), payload.decode("cp932"), size, "")
 
     def JVClose(self):
         self.close_calls += 1
@@ -68,9 +68,9 @@ def test_aborts_the_writer_when_reading_fails(tmp_path, monkeypatch):
     ディレクトリの両方を後始末する。
     """
     class ExplodingLink(DataspecAwareLink):
-        def JVGets(self, buf, size, fname):
+        def JVRead(self, buf, size, fname):
             if self._pending:
-                return super().JVGets(buf, size, fname)
+                return super().JVRead(buf, size, fname)
             raise RuntimeError("ダウンロード中に切断")
 
     link = ExplodingLink(
@@ -262,7 +262,7 @@ class TestOpenCodeReporting:
 
     def test_closes_the_link_when_reading_raises(self, tmp_path, monkeypatch):
         class ExplodingLink(DataspecAwareLink):
-            def JVGets(self, buf, size, fname):
+            def JVRead(self, buf, size, fname):
                 raise RuntimeError("ダウンロード中に切断")
 
         link = ExplodingLink(open_codes={"RACE": 0})
@@ -276,3 +276,54 @@ class TestOpenCodeReporting:
 
         assert link.close_calls == 1
         assert store.current_version(tmp_path) is None
+
+
+class TestBloodKind:
+    """--kind blood は BLDN を読み、レースの版とは別の系統に保存する。"""
+
+    def test_defaults_to_bldn(self):
+        args = update_data._parse_args(["--kind", "blood", "--fromdate", "19860101000000"])
+        assert update_data._resolve_dataspecs(args) == ("BLDN",)
+
+    def test_default_data_dir_is_separate_from_races(self):
+        race = update_data._parse_args(["--fromdate", "20260801000000"])
+        blood = update_data._parse_args(["--kind", "blood", "--fromdate", "19860101000000"])
+        assert update_data._resolve_data_dir(race) == update_data.config.DATA_DIR
+        assert update_data._resolve_data_dir(blood) == update_data.config.BLOOD_DATA_DIR
+
+    def test_writes_blood_files_without_touching_race_current(self, tmp_path, monkeypatch,
+                                                              capsys):
+        race_dir = tmp_path / "race"
+        race_dir.mkdir()
+        (race_dir / "CURRENT").write_text("20260924T115403Z", encoding="utf-8")
+        blood_dir = tmp_path / "blood"
+        link = DataspecAwareLink(
+            open_codes={"BLDN": 0},
+            records_by_dataspec={"BLDN": [fx.make_sk(), fx.make_hn(), fx.make_bt()]},
+        )
+        monkeypatch.setattr(update_data.jvlink, "open_link", lambda *a, **k: link)
+        # --data-dir を渡さず、系統ごとの既定の保存先をここへ向ける。渡すと保存先が
+        # 引数で決まり、blood がレースの既定の保存先に書く誤りを捕まえられない。
+        monkeypatch.setitem(update_data._KINDS["race"], "data_dir", race_dir)
+        monkeypatch.setitem(update_data._KINDS["blood"], "data_dir", blood_dir)
+
+        exit_code = update_data.main([
+            "--kind", "blood", "--fromdate", "19860101000000", "--option", "4",
+        ])
+
+        assert exit_code == 0
+        version = store.current_version(blood_dir)
+        manifest = store.read_manifest(blood_dir / "versions" / version)
+        assert manifest["record_counts"] == {"SK": 1, "HN": 1, "BT": 1}
+        assert manifest["dataspecs"] == ["BLDN"]
+        assert (race_dir / "CURRENT").read_text(encoding="utf-8") == "20260924T115403Z"
+        out = capsys.readouterr().out
+        assert "SK: 1" in out and "保存対象外" not in out
+
+    def test_race_kind_marks_blood_records_as_not_saved(self, tmp_path, monkeypatch, capsys):
+        link = DataspecAwareLink(open_codes={"DIFF": 0},
+                                 records_by_dataspec={"DIFF": [fx.make_hn()]})
+        monkeypatch.setattr(update_data.jvlink, "open_link", lambda *a, **k: link)
+        update_data.main(["--dataspec", "DIFF", "--fromdate", "20260801000000",
+                          "--data-dir", str(tmp_path)])
+        assert "HN: 1（保存対象外）" in capsys.readouterr().out

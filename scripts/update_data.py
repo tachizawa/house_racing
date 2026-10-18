@@ -20,38 +20,83 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from keiba import config, console  # noqa: E402
-from keiba.ingest import jvlink, records, store  # noqa: E402
+from keiba.ingest import jvlink, rawdump, records, store  # noqa: E402
+
+
+#: 取り込む系統ごとの既定。blood を race と同じ保存先に書くと、commit() が
+#: CURRENT をレースの無い版に切り替えて予想を壊す。
+#: required は --from-raw で1件も無ければ版を作らない種別（今は race の RA だけ）。
+_KINDS: dict[str, dict] = {
+    "race": {"dataspecs": config.DEFAULT_DATASPECS, "data_dir": config.DATA_DIR,
+             "files": store.RACE_FILES, "required": "RA"},
+    "blood": {"dataspecs": config.DEFAULT_BLOOD_DATASPECS,
+              "data_dir": config.BLOOD_DATA_DIR, "files": store.BLOOD_FILES},
+    # 払戻・オッズも RACE が運ぶが、レースの版とは別の系統に置く（config.MARKET_DATA_DIR）。
+    "market": {"dataspecs": config.DEFAULT_MARKET_DATASPECS,
+               "data_dir": config.MARKET_DATA_DIR, "files": store.MARKET_FILES},
+}
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="JV-Link から取得して版付き CSV（RA/SE/UM）を保存する。")
+        description="JV-Link から取得して版付き CSV を保存する"
+                    "（--kind race: RA/SE/UM、--kind blood: SK/HN/BT（BLDN）、"
+                    "--kind market: HR/O1〜O6（払戻・オッズ））。")
+    parser.add_argument("--kind", choices=_KINDS, default="race",
+                         help="取り込む系統（既定 %(default)s）。blood は血統を"
+                              " レースとは別の保存先に置く")
     # action="append" は default と併用すると既定値に追記されてしまうため、
     # default はここでは与えない。未指定 (None) のときの既定は
     # _resolve_dataspecs() で config.DEFAULT_DATASPECS を当てる。
     parser.add_argument("--dataspec", action="append", dest="dataspecs", metavar="SPEC",
                          help="JVOpen の dataspec。繰り返し指定できる"
-                              "（既定: RACE DIFF）")
-    parser.add_argument("--fromdate", required=True,
-                         help="取得開始日時。例: 20260801000000")
-    parser.add_argument("--option", type=int, default=1,
-                         help="JVOpen の option（既定 %(default)s）")
-    parser.add_argument("--data-dir", type=Path, default=config.DATA_DIR,
-                         help="保存先（既定 %(default)s）")
+                              "（既定: race は RACE DIFF、blood は BLDN）")
+    parser.add_argument("--fromdate",
+                         help="取得開始日時。例: 20260801000000（--from-raw 以外では必須）")
+    parser.add_argument("--from-raw", type=Path, default=None, metavar="DIR",
+                         help="JV-Link を呼ばず、保存した生レコード（keiba.ingest.rawdump の形式）"
+                              "から版を作る。dataspec・fromdate・option はその manifest から取る")
+    # 既定は None にして、--from-raw と一緒に明示されたかを見分ける（既定の 1 は下で当てる）。
+    parser.add_argument("--option", type=int, default=None,
+                         help="JVOpen の option（既定 1）")
+    parser.add_argument("--data-dir", type=Path, default=None,
+                         help=f"保存先（既定: race は {config.DATA_DIR}、"
+                              f"blood は {config.BLOOD_DATA_DIR}、market は {config.MARKET_DATA_DIR}）")
     parser.add_argument("--verify-time-fields", action="store_true",
                          help="取得後に走破タイムの整合性 (margin_sec の解釈) を確認する")
     parser.add_argument("--dry-run", action="store_true",
                          help="取得はするが CURRENT を切り替えない（保存内容は破棄する）")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.from_raw is None:
+        if args.fromdate is None:
+            parser.error("--fromdate は必須です（--from-raw を使うときを除く）。")
+        if args.option is None:
+            args.option = 1
+    elif args.fromdate is not None or args.option is not None:
+        # 生レコードは取得したときの fromdate・option のものしか入っていない。
+        # 別の値を manifest に書くと、版がどこからどこまでを持つかを偽ることになる。
+        parser.error("--from-raw では --fromdate / --option を指定できません"
+                     "（生レコードの manifest の値を使います）。")
+    return args
 
 
 def _resolve_dataspecs(args: argparse.Namespace) -> Sequence[str]:
-    """--dataspec が一度も指定されなければ既定の (RACE, DIFF) を使う。
+    """--dataspec が一度も指定されなければ系統ごとの既定を使う。
 
-    RACE だけでは競走馬マスタ UM が取れない（JVOpen("RACE", ...) は運ばない）。
-    UM を運ぶのは蓄積系差分の DIFF なので、既定で両方を読む。
+    race の既定は (RACE, DIFF)。RACE だけでは競走馬マスタ UM が取れない
+    （JVOpen("RACE", ...) は運ばない）。UM を運ぶのは蓄積系差分の DIFF なので、
+    既定で両方を読む。blood の既定は (BLDN,)。BLOD は旧形式で 2023-07 に止まっている。
     """
-    return args.dataspecs if args.dataspecs is not None else config.DEFAULT_DATASPECS
+    if args.dataspecs is not None:
+        return args.dataspecs
+    return _KINDS[getattr(args, "kind", "race")]["dataspecs"]
+
+
+def _resolve_data_dir(args: argparse.Namespace) -> Path:
+    """--data-dir が無ければ系統ごとの既定。血統をレースの版に混ぜないため。"""
+    if args.data_dir is not None:
+        return args.data_dir
+    return _KINDS[args.kind]["data_dir"]
 
 
 #: 蓄積系差分は初回にセットアップ取得（--option 4）を走らせないと空になる。
@@ -59,25 +104,130 @@ def _resolve_dataspecs(args: argparse.Namespace) -> Sequence[str]:
 _SETUP_REQUIRED_DATASPECS = ("DIFF", "DIFN")
 
 
+def _is_saved(spec: str, files: store.FileSet) -> bool:
+    """レコード種別の行が、この版のファイルの組のどれかに書かれるか。"""
+    return any(key in files for key in records.table_keys(spec))
+
+
+def _needs_parse(spec: str, files: store.FileSet, se_rows: list[dict] | None) -> bool:
+    """パースする種別か。保存する種別に加え、照合で溜めるときは SE も（market は SE を保存しない）。"""
+    return _is_saved(spec, files) or (spec == "SE" and se_rows is not None)
+
+
+def _consume(raw: bytes, counts: Counter, writer: store.VersionWriter,
+             se_rows: list[dict] | None, files: store.FileSet) -> None:
+    """1レコードを数えて、表の行に分けて書く。
+
+    files の組に書かれない種別は数えるだけでパースしない（race の版に来る O1〜O6 など）。
+    使わない種別のパースに時間を使わず、その種別の形式が変わっていても取り込みを止めない。
+    ただし照合のために溜める SE はパースする（組に無ければ writer が捨てる）。
+
+    se_rows は --verify-time-fields のときだけ渡す（None なら溜めない）。5年ぶんの
+    セットアップ取得では SE が数十万行あり、使わないのに全部をメモリに持つことになる。
+    """
+    spec = records.record_spec(raw)
+    counts[spec] += 1
+    if not _needs_parse(spec, files, se_rows):
+        return
+    for key, row in records.parse_rows(raw):
+        writer.add(key, row)
+        if key == "SE" and se_rows is not None:
+            se_rows.append(row)
+
+
+def _verify_time_fields(se_rows: list[dict]) -> int:
+    """走破タイムの照合を出力し、不一致があれば 1、なければ 0 を返す。"""
+    report = jvlink.verify_time_fields(se_rows)
+    mismatches = [entry for entry in report if not entry["matches"]]
+    print(f"\n走破タイムの照合: {len(report)} 件中、不一致 {len(mismatches)} 件")
+    for entry in mismatches:
+        print(f"  race_id={entry['race_id']}"
+              f" computed={entry['computed']} recorded={entry['recorded']}")
+    return 1 if mismatches else 0
+
+
+def _from_raw(args: argparse.Namespace) -> int:
+    """保存した生レコードから版を作る。JV-Link は呼ばない。"""
+    try:
+        raw_manifest = rawdump.read_manifest(args.from_raw)
+    except rawdump.RawDumpError as error:
+        raise SystemExit(f"生レコードを使えません: {error}") from error
+    dataspec = raw_manifest["dataspec"]
+    wanted = _resolve_dataspecs(args)
+    if dataspec not in wanted:
+        raise SystemExit(f"生レコードの dataspec は {dataspec} ですが、--kind {args.kind} は"
+                         f" {'/'.join(wanted)} を読みます。取り違えていないか確かめてください。")
+    files = _KINDS[args.kind]["files"]
+    version_id = store.new_version_id()
+    writer = store.VersionWriter(
+        _resolve_data_dir(args), version_id, dataspecs=[dataspec],
+        fromdate=raw_manifest["fromdate"], option=raw_manifest["option"], files=files,
+        source={"raw_dir": str(args.from_raw), "raw_started_at": raw_manifest.get("started_at"),
+                "raw_counts": raw_manifest.get("counts")},
+    )
+    counts: Counter[str] = Counter()
+    se_rows: list[dict] | None = [] if args.verify_time_fields else None
+    try:
+        # 表に書かれない種別（JG など）はパースもしないので、組に関係する種別だけ読む。
+        specs = [spec for spec in raw_manifest.get("counts", {})
+                 if _needs_parse(spec, files, se_rows)]
+        try:
+            for raw in rawdump.iter_records(args.from_raw, specs):
+                _consume(raw, counts, writer, se_rows, files)
+        except rawdump.RawDumpError as error:
+            raise SystemExit(f"生レコードを使えません: {error}") from error
+        print(f"生レコード {args.from_raw} から読んだレコード数:")
+        for spec in sorted(raw_manifest.get("counts", {})):
+            note = "" if _is_saved(spec, files) else "（保存対象外）"
+            print(f"  {spec}: {counts.get(spec, raw_manifest['counts'][spec])}{note}")
+        # ファイルが途中で終わっていても長さの欄の切れ目なら iter_records は気づけない。
+        # manifest の件数と合わなければ、欠けたまま版を作らない。
+        short = {spec: (counts.get(spec, 0), raw_manifest["counts"][spec]) for spec in specs
+                 if counts.get(spec, 0) != raw_manifest["counts"][spec]}
+        if short:
+            raise SystemExit("生レコードの件数が manifest と合いません（読んだ件数, manifest）: "
+                             f"{short}。取り直してください。")
+        required = _KINDS[args.kind].get("required")
+        if required is not None and not counts.get(required):
+            # DIFF だけの生レコードなどは RA を運ばない。レースの無い版に CURRENT を
+            # 切り替えると予想が壊れる。
+            raise SystemExit(f"生レコードに {required} が1件もありません（dataspec {dataspec}）。"
+                             f" --kind {args.kind} の版にはできません。")
+        if args.dry_run:
+            writer.abort()
+            print("\n--dry-run のため CURRENT は変更していません（保存内容は破棄しました）。")
+        else:
+            version_path = writer.commit()
+            print(f"\nversion_id: {version_id}")
+            print(f"manifest  : {version_path / 'manifest.json'}")
+    except BaseException:
+        writer.abort()
+        raise
+    return _verify_time_fields(se_rows) if se_rows is not None else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     console.enable_utf8_output()
     args = _parse_args(argv)
+    if args.from_raw is not None:
+        return _from_raw(args)
     dataspecs = _resolve_dataspecs(args)
+    files = _KINDS[args.kind]["files"]
 
     link = jvlink.open_link()
     version_id = store.new_version_id()
     writer = store.VersionWriter(
-        args.data_dir, version_id,
-        dataspecs=dataspecs, fromdate=args.fromdate, option=args.option,
+        _resolve_data_dir(args), version_id,
+        dataspecs=dataspecs, fromdate=args.fromdate, option=args.option, files=files,
     )
 
-    # dataspec ごと・spec ごとの件数。RA/SE/UM 以外は store.VersionWriter.add() が
+    # dataspec ごと・spec ごとの件数。files に無い種別は store.VersionWriter.add() が
     # 黙って捨てるので、何が捨てられたかをここで operator に見せる。
     # JVOpen("RACE", ...) は競走馬マスタ UM を運ばない（運ぶのは DIFF）ため、
     # dataspec ごとの内訳を見せないと「UM が0件」に気づけない。
     counts_by_dataspec: dict[str, Counter[str]] = {}
     open_codes: dict[str, int] = {}
-    se_rows: list[dict] = []
+    se_rows: list[dict] | None = [] if args.verify_time_fields else None
 
     # VersionWriter は「構築したら必ず commit() か abort() のどちらかで終わる」
     # という不変条件を保つ。読み取りループの中だけでなく commit() 自身が失敗
@@ -101,15 +251,7 @@ def main(argv: list[str] | None = None) -> int:
                 if open_code == 0:
                     counts = counts_by_dataspec.setdefault(dataspec, Counter())
                     for raw in jvlink.read_open_dataspec(link, download_count):
-                        spec = records.record_spec(raw)
-                        counts[spec] += 1
-                        parsed = records.parse(raw)
-                        if parsed is None:
-                            continue
-                        parsed_spec, row = parsed
-                        writer.add(parsed_spec, row)
-                        if parsed_spec == "SE":
-                            se_rows.append(row)
+                        _consume(raw, counts, writer, se_rows, files)
                 elif open_code != -1:
                     # -1 (該当データなし) はエラーではないので読まずに次へ進む。
                     # それ以外は本当のエラーなので版全体を捨てる。
@@ -125,7 +267,7 @@ def main(argv: list[str] | None = None) -> int:
                 counts = counts_by_dataspec.get(dataspec, Counter())
                 if counts:
                     for spec in sorted(counts):
-                        note = "" if spec in ("RA", "SE", "UM") else "（保存対象外）"
+                        note = "" if _is_saved(spec, files) else "（保存対象外）"
                         print(f"    {spec}: {counts[spec]}{note}")
                 else:
                     print("    (0件)")
@@ -158,18 +300,7 @@ def main(argv: list[str] | None = None) -> int:
         writer.abort()      # 握りつぶさない。後始末だけしてそのまま投げ直す
         raise
 
-    exit_code = 0
-    if args.verify_time_fields:
-        report = jvlink.verify_time_fields(se_rows)
-        mismatches = [entry for entry in report if not entry["matches"]]
-        print(f"\n走破タイムの照合: {len(report)} 件中、不一致 {len(mismatches)} 件")
-        for entry in mismatches:
-            print(f"  race_id={entry['race_id']}"
-                  f" computed={entry['computed']} recorded={entry['recorded']}")
-        if mismatches:
-            exit_code = 1
-
-    return exit_code
+    return _verify_time_fields(se_rows) if se_rows is not None else 0
 
 
 if __name__ == "__main__":

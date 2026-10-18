@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from functools import cached_property
 from pathlib import Path
 
@@ -23,7 +23,9 @@ import pandas as pd
 from keiba.ingest.store import DataVersionError, current_version, read_manifest, version_dir
 from keiba.names import normalize_name
 
-__all__ = ["DataStore", "DataVersionError"]
+__all__ = ["DataStore", "DataVersionError", "coverage_start"]
+
+_JST = timezone(timedelta(hours=9))   # JRA-VAN の日時はすべて日本時間
 
 
 def _read_csv(path: Path) -> pd.DataFrame:
@@ -46,6 +48,11 @@ class DataStore:
     races: pd.DataFrame
     race_horses: pd.DataFrame
     horses: pd.DataFrame
+    #: データ版の収録開始（coverage_start()）。「この日より前の出走は版に無い」という
+    #: 境界で、過去走が見つからない理由を「取得期間外」と「本当に無い」に分けるのに使う。
+    #: 古い manifest には無いので None になりうる（None は「境界が分からない」であって
+    #: 「境界が無い」ではない）。
+    coverage_from: datetime | None = None
 
     @classmethod
     def open_current(cls, data_dir: Path) -> "DataStore":
@@ -77,6 +84,7 @@ class DataStore:
             races=_read_csv(path / "races.csv"),
             race_horses=_read_csv(path / "race_horses.csv"),
             horses=_read_csv(path / "horses.csv"),
+            coverage_from=coverage_start(manifest),
         )
 
     @cached_property
@@ -127,3 +135,21 @@ class DataStore:
             if key:
                 index[key].append(ketto_num)
         return dict(index)
+
+
+def coverage_start(manifest: dict) -> datetime | None:
+    """データ版の収録開始。manifest の fromdate と coverage.first_hasso_at の遅いほう。
+
+    どちらか一方では足りない。option 4（セットアップ）では訂正再配信の古いレース
+    （1989年など）が混じるので first_hasso_at が fromdate よりずっと前になる。
+    option 1 では fromdate を古くしても約1年ぶんしか返らないので、fromdate が
+    実際の収録開始より前になる。どちらの値も無ければ None。
+    """
+    candidates = []
+    first = (manifest.get("coverage") or {}).get("first_hasso_at")
+    if first:
+        candidates.append(datetime.fromisoformat(first))
+    fromdate = manifest.get("fromdate")
+    if fromdate:
+        candidates.append(datetime.strptime(fromdate[:8], "%Y%m%d").replace(tzinfo=_JST))
+    return max(candidates) if candidates else None

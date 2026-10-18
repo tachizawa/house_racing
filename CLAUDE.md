@@ -12,7 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | パス | 役割 |
 |---|---|
 | `src/jev_client.py` | Jev への薄いアクセス層。キー解決・例外の日本語化・並列実行のみ。**予想ロジックと重みは置かない** |
-| `src/keiba/ingest/` | JV-Link からの取得、レコード分解、版付き CSV 保存 |
+| `src/keiba/ingest/` | JV-Link からの取得、レコード分解、版付き CSV 保存（レース・血統・払戻オッズの3系統）、生レコードの保存（`rawdump`） |
 | `src/keiba/data/` | 版の読み出しと `Repository`。**全公開メソッドが `as_of` を必須キーワード引数に取る** |
 | `src/keiba/input/` | 利用者入力の解析・検証・馬名照合 |
 | `src/keiba/features/` | 数値化。`EntryRow` しか受け取らない（結果は型で入らない） |
@@ -20,7 +20,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `src/keiba/learn/` | 条件付きロジットの最尤推定と isotonic 較正 |
 | `src/keiba/evaluate/` | 指標・時系列分割・バックテスト |
 | `src/keiba/store/` | 予想記録の保存と利用者向けビュー（**列挙方式**で生データを漏らさない） |
-| `scripts/` | `update_data` / `predict` / `fit_weights` / `backtest` / `smoke_test` |
+| `src/keiba/features/{course,history,dossier,dossier_markdown}.py` | 3着内系統の予想用資料。API を呼ばない |
+| `src/keiba/predict/{top3,top3_questions,top3_baselines}.py` | 案A・案B と Python 基準 |
+| `src/keiba/evaluate/{top3_metrics,top3_backtest,coverage}.py` | 3着内の採点・比較・データ充足度 |
+| `src/keiba/store/top3_records.py` | 3着内予想の記録（`data/top3/`） |
+| `scripts/` | `update_data` / `predict` / `fit_weights` / `backtest` / `smoke_test` / `dossier` / `backtest_top3` / `data_coverage` |
 | `src/keiba_ml/` | **機械学習系（血統 CatBoost ほか）。既存モデルとは独立**。説明は `docs/ml/README.md` |
 | `scripts/ml/` / `configs/ml/` / `tests/ml/` | 機械学習系の CLI・設定・テスト |
 | `vendor/jravan-sdk-500-64bit/` | JRA-VAN SDK 5.0.0（64bit）の展開物。再配布不可のため `.gitignore` 済み |
@@ -109,6 +113,139 @@ scripts/update_data.py --dataspec RACE --fromdate 20230801000000
 含めた推定は **約 76,430,000 トークン / $3.21**（記録ぶんの 1.63 倍）。
 **`--no-save-records` でも課金は発生する**（`predict()` が保存判定より前に走る）。
 同じ 238 レースに平均 3.34 回投げている。内訳と根拠は `tmp/keiba-report/`。
+
+### 3着以内予想（2026-09-23）
+
+上位n頭（勝率）とは別に、**実際の上位3着に入る馬**を選ぶ系統（案A・案B、`src/keiba/predict/top3*.py`
+ほか）を実装し、調整期間・最終評価期間で比較した。設計と結果は
+`docs/superpowers/specs/2026-09-23-top3-prediction-design.md` §11〜14（**拘束力のある仕様の続き**）。
+
+- 上の比較結果を出したデータ版は `20260923T115107Z`（約1年ぶん）。`--fromdate` を古くしても
+  **option 1 では約1年ぶんしか返らない**。
+- **2026-09-24 に5年ぶんのデータ版 `20260924T115403Z` を作った（現在の CURRENT）。**
+  `update_data.py --dataspec RACE --fromdate 20210901000000 --option 4`。JRA は
+  2021-09〜2026-09-27（2022〜2025年は各3,456レース）。セットアップ取得は
+  **スタートキットのダイアログに所有者が「持っていない」→ OK を押す必要がある**。利用キーが
+  「試験運用中」の間は -301 が断続的に出ていた。
+  - 地方（data_kubun A）・海外（B）のレースも届く（SE の38%）が、`config.DATA_KUBUN_DROP` で
+    読み込み時に捨てるので予想には入らない。1989〜2020年の JRA の訂正再配信も約450レース混じる
+  - 5年ぶんにすると過去走が揃い、資料の大きさが増える。2026年1〜6月の1,661レースの
+    ドライランで **29件（1.7%）が `STATE_MAX_CHARS` を超えた**（最大 52,664 文字）。対処は未決
+- 版: `DOSSIER_VERSION` 3 / `TOP3_PROMPT_VERSION` 2 / `TOP3_EVAL_RULES_VERSION` 1。
+  `n = 3`（`config.DEFAULT_TOP_N`）。上の比較結果は `DOSSIER_VERSION` 2 のもの。
+  3 は 2026-10-17 に収録開始（`coverage_from`）を `fromdate` と `first_hasso_at` の遅いほうに
+  直した版で、形は同じ。option 4 の版では訂正再配信（1989年など）のせいで収録開始が古く出て、
+  「過去走が打ち切られているかもしれない」の注記が一度も付いていなかった。比較に使った1年版
+  （option 1）は `first_hasso_at` の方が遅いので値は変わらない。3 には、先行力の定義文
+  （`front_runner_definition`）に4角が無いとき3角・2角を使うことの書き足し（全レースで文が変わる）、
+  競馬場が不明なときの同コース同距離の比較不能、コースを特定できない理由文の書き分けも含む。
+  どれも 3 で作った記録が1件も無いうち（同じ PR の未マージの変更）に入れたので、版を分けていない
+- **最終評価期間 2026-07-01〜09-22 は使用済み**（境界は `data/top3/final_runs.jsonl` に
+  固定。最初の `--final` 実行 2026-09-23T13:10:16Z）。同じ境界より後の日付を指定する
+  再評価には `--final-rerun-reason` が要り、理由が同ファイルに残る。
+- 最終評価100レースの結果（`mean_hits`、的中数の差の95%区間はレース単位・開催日クラスタの
+  ブートストラップ）: plan_a − python +0.08 [−0.02, 0.18]（**差は確認できなかった**）、
+  **plan_a − winner_same_state_a +0.14 [+0.04, +0.24]**（区間が0を含まない。馬ごとに
+  「3着以内か」を聞く方式が、同じリクエストのwinner確率から選ぶより的中数が多かった）、
+  plan_b − plan_a −0.07 [−0.15, 0.00]（**差は確認できなかった**、案Bはplan_aの約1.7倍の
+  費用）。案B（展開予測を先に聞く）の1段目の的中率は0.30で偶然（≈0.33）と区別できず、
+  **展開予測に検出可能な信号は無い**。plan_aのBrierは一様分布の基準を下回る（較正前の値、
+  確率の合計は入着頭数より過大）。多重比較の補正はしていない5比較の1つなので示唆にとどまる。
+  詳細・調整期間の数値は spec §13〜14。
+- **「判断材料不足が減った」と「予測が正しくなった」は別**。今回測ったのは的中数・Brierなど
+  後者だけで、`insufficient` 回答の割合そのものはこの評価の対象にしていない。
+- コース事実テーブル（`src/keiba/features/course_facts.json`）は 2026-09-24 に
+  **JRA10場・26エントリ**になり、データ版の平地 3,384 レースすべてに該当する。
+  JV-Data のコース情報（CS レコード、dataspec `COMM`）は option 1 で `-1`、
+  option 4 で `-301` となり取れないため、JRA 公式のコース紹介ページから写している。
+  残り: 距離ごとのスタート地点（`starts`）は全エントリ空、数値は A コースのものだけ、
+  幅員が範囲表記（「25〜27m」など）の場合は省いている。
+- 所有者に残っている項目: 案Bの展開予測ステージは上記のとおり信号なし——使うかどうかの判断が残る。
+
+### 血統データ（2026-09-25）
+
+- `data/blood/versions/<id>/` に**レースとは別の系統**で置く（`CURRENT` も別）。
+  `update_data.py --kind blood --option 4 --fromdate 19860101000000`（ダイアログ操作が要る）。
+  `pedigrees.csv`（SK。3代血統14頭を `sire_num` `dam_sire_num` … の列で）、
+  `breeding_horses.csv`（HN）、`lineages.csv`（BT。系統説明の自由文は捨てる）
+- **dataspec は `BLDN`。`BLOD` を使わないこと。** BLOD は JV-Data 4.9.0（2023-08）より前の
+  形式（繁殖登録番号8桁）のまま 2023-07 作成分で止まっており、仕様書どおりに読むと位置が全部ずれる。
+  パーサはレコード長で旧形式を弾く。race 側既定の `DIFF` も同じ問題を抱えている可能性がある（未確認）
+- 現在の版 `20260925T043102Z`: SK 427,630 / HN 162,061 / BT 92。2021〜2025年の JRA 出走馬
+  27,574頭の **99.92%** で父・母父の名前が引ける。BT は系統の起点の馬にしか付かない（父に直接
+  付くのは3.35%）ので、系統は父系をさかのぼって最初に BT がある馬で決める
+- 中山・芝中距離の記述統計は `tmp/keiba-report/stats1/report.md`（血統なし。市場の期待との差で
+  ほぼ全変数の差が消え、遠征だけが全場で −0.9pp ±0.6 残った）
+
+### 払戻・オッズ（2026-09-26）
+
+- `data/market/versions/<id>/` に**レース・血統とは別の系統**で置く（`CURRENT` も別）。
+  `update_data.py --kind market`（dataspec は RACE。HR と O1〜O6 だけを保存）
+- ファイル: `payout_races.csv` / `payouts.csv`（HR。組番ごと、100円あたり）、`odds_pools.csv`（賭式ごとの
+  発売状況・票数合計）、`odds_tansyo.csv` / `odds_fukusyo.csv` / `odds_wakuren.csv`、
+  `odds_umaren.csv.gz` / `odds_wide.csv.gz` / `odds_umatan.csv.gz` / `odds_sanrenpuku.csv.gz` /
+  `odds_sanrentan.csv.gz`（大きい表は gzip）。組番は馬番2桁を `-` でつなぐ。馬単・3連単は着順どおり、他は昇順
+- **データ区分の意味が RA/SE と違う。** HR は 2（月曜）> 1、O は 5（確定・月曜）> 4（確定）。O の 1〜3 は
+  確定前（`config.DATA_KUBUN_PAYOUT_PRIORITY` / `DATA_KUBUN_ODDS_PRIORITY`）。セットアップ取得では HR は全件 2、
+  O は 5（中止の 9 が33件）だった
+- **確定オッズは締切後にしか分からない。** 期待値で買い目を選ぶ検証に使うと、買う時点で知りえない値で選ぶことになる
+- 2026-09-26 に生レコード `data/raw/20260925T172902Z/`（RACE, fromdate 20210901, option 4。`keiba.ingest.rawdump`
+  の形式）から `--from-raw` で作った。生レコードで照合済み: 全レコード長が仕様どおり・パースエラー0、O1 の単勝オッズと
+  SE の確定単勝オッズが 239,960 頭で全一致、3連単の払戻の組番と SE の1-2-3着が同着なしの 17,416 レースで全一致、
+  単勝の払戻とオッズ×100 のずれは1着同着の46件だけ
+- `--from-raw DIR` は JV-Link を呼ばずに生レコードから版を作る。ダイアログ操作が要るセットアップ取得を、
+  パーサの実装より先に済ませたいときに使う
+
+### 世代レベル（2026-10-04、第1段階）
+
+- 走破タイムから全年齢共通のタイム指数を作り、世代（生まれ年）の強さを測る単体の指標。**予想には組み込んでいない**
+  （第2段階で別の仕様）。仕様 `docs/superpowers/specs/2026-10-04-generation-level-design.md`
+- `scripts/generation_level.py --as-of YYYYMMDD [--data-dir DIR] [--example-race RACE_ID]`。Jev は呼ばない。
+  出力は `data/generation/<as_of>/`
+- 基準タイム・馬場差は**古馬戦の1着だけ**から推定する（2歳戦を混ぜると世代の弱さが馬場差に吸収される）
+- 2026-10-04 時点の結果（比べた年 2022〜2026、過去の世代は4つだけなので示唆にとどまる）: 今年の3歳の例年比は上位10頭
+  +0.40 [+0.08, +0.69]、上位50頭 +0.19 [+0.02, +0.37]、中央値 +0.09 [+0.03, +0.16] で、過去より強い側に出た（区間は0を含まない）。
+  見立て（4歳>5歳>3歳）は「例年の差と比べた差」で判定し、3組×3指標の9通りすべて差があるとは言えない（そのままの差
+  4歳−3歳 中央値 +1.25 は例年の +1.26 とほぼ同じ＝毎年出る生き残り・斤量の偏り）。年齢曲線（全体）は 4歳前半〜5歳前半でほぼ横ばい、
+  最大は 4歳前半 +0.09。区間は物差しを日で推定し直し馬を世代ごとに抽出する手順（点推定は60区間すべての内側）
+
+### 要素別の予想 — 過去での評価（2026-10-11）
+
+- 15要素それぞれを市場（単勝オッズ）の着順モデルに足したときの改善を 2017〜2025年で測った。仕様
+  `docs/superpowers/specs/2026-10-11-factor-predictions-design.md` §3〜§5、実装 `src/keiba/factors/`・`src/keiba/evaluate/factor_eval.py`
+- `scripts/factor_eval.py --data-dir data/_long`（Jev は呼ばない）。要素の点数は
+  `data/factor_eval/factors_<データ版>_<血統版>_<要素の版の印>.pkl` に保存して再利用（`--cache-dir`、`--rebuild`）。
+  `--recompute-table-from <古い pkl>` で表の要素7つだけ作り直せる（年ごとの要素の30分以上を省く）。
+  2026-10-17 から、元の pkl は `factors_<データ版>_<血統版>_<印>.pkl` の名前で今の版と一致しなければ拒否する
+  （旧名 `factors_<データ版>.pkl` は血統版を確かめられないので不可。v2 の実行はこの旧名から作った）。
+  指定するとキャッシュがあっても作り直して置き換える。評価年に年ごとの要素が欠けた表は使わない（exit 2）
+- **現在の結果は v2 の実行 `data/factor_eval/20261011T143147/`**（データ版 `20261010T155433Z`、評価に使ったレース 29,789、
+  除いた 175 は全部「1〜3着が一意でない」）。v1 の実行 `20261011T140120/` は記録として残す。最初の実行
+  `20261011T134627/` は年齢・父の芝ダ適性の Δ が壊れていたので使わない
+- **v2 にした理由**: 表の要素（騎手・調教師・父の芝ダ・枠順・間隔・馬体重・遠征）の縮小の強さ λ を、v1 は組の中の散らばりを
+  1つにまとめたモーメント法で推定していた。A−E の散らばりは組ごとに大きく違うので τ² が小さく出て λ が大きすぎた
+  （騎手 2017年 4,760 → v2 1,358、調教師 13,430 → 2,744。2016年の騎手・調教師・父の芝ダは推定できず点数が全部 0）。
+  v2 は組ごとの散らばりを引く推定（`cumulative.eb_variance_components`）。ほかの8要素は v1 のままで点数も同じ。
+  **v2 は v1 の結果を見た後の変更なので、判定は事後のもの**。これからのレースの記録（仕様 §6）で確かめる
+- v2 の結果（Δ ×1000 [95%]、判定は区間の下限 > 0 かつ 9年中7年以上で改善）: 上乗せあり 9要素 —— タイム指数 +6.57 [+5.00, +8.24]、
+  相手関係 +5.04 [+3.93, +6.19]、間隔 +2.66 [+1.81, +3.55]、遠征 +0.98 [+0.33, +1.63]、馬体重 +0.95 [+0.40, +1.52]（測れた8年すべて改善）、
+  距離適性 +0.87 [+0.31, +1.39]、斤量 +0.74 [+0.31, +1.16]、枠順 +0.63 [+0.02, +1.27]、コース適性 +0.52 [+0.14, +0.92]。
+  確認できない 6要素: 父の芝ダ適性 +1.29 [+0.28, +2.33]（区間は0を含まないが改善は 6/9年）・世代レベル +0.15・調教師 −0.07・
+  騎手 −0.17・晩成度×年齢 −0.18・年齢 −0.34。**判定は v1 と15要素すべて同じ**（父の芝ダは +0.06 → +1.29、改善 4 → 6年）
+- 大きさ: 市場だけのモデルの −対数尤度は1レースあたり 6.0525。最大のタイム指数でも Δ はその 0.108%。15比較の Bonferroni
+  （99.67%）の参考区間では枠順・コース適性・父の芝ダの下限が 0 を下回る（判定には使っていない）。
+  「上乗せあり」は市場モデルに情報を足せる（検出できる）という意味で、的中が増える・市場に勝てるという意味ではない
+- 的中は市場の上位3頭が 1.579 頭/レースで、市場＋要素でも最大 1.581（タイム指数・相手関係）と差はごく小さい（的中には区間なし）
+- 測れなかった年（学習か評価の年の z が全部 0。Δ = 0 として平均に入るが改善には数えない。レポートでは「—」）:
+  晩成度×年齢 2017・2018年、年齢 2017年、馬体重 2017年（v2 でも 2016年は λ が推定できず点数が全部 0）
+- 要素の z は中心化した値の |c| < 1e−9 を 0 とみなし、±4 で切っている（仕様 §4.2 からの逸脱。`factor_eval.zscore`）。
+  v2 でも切られる評価の行が多い年が残る: **父の芝ダ 2017年 49.7%、調教師 2017年 23.0%**。原因は、1頭だけの組（n_k < 2）の
+  ばらつきを全体の値で埋めている（`cumulative.eb_variance_components` の `fillna(pooled)`）ため 2016年の λ が大きくなること
+  （父の芝ダ 8,379。0 で埋めると 461）。**父の芝ダの判定はこの埋め方で入れ替わる**（全体で埋める: +1.29、6/9、確認できない ／
+  0 で埋める: +1.89、7/9、上乗せあり）。結果を見た後に選ぶと後付けになるので、今の判定のまま、これからのレースで確かめる。
+  v1 で多かった父の芝ダ 2019年（66%）は 2.7%、調教師 2018年（36%）は 5.1% に下がった。
+  年 × 要素の割合は `by_year.csv` の `clipped_share`
+- 15要素を同時に調べているので偶然の「上乗せあり」が混じりうる（多重比較の補正はしていない）
 
 ## 機械学習系（`src/keiba_ml/`、2026-10-16 追加）
 
@@ -307,17 +444,26 @@ open_code, read_count, download_count, lastfiletime = jvlink.JVOpen(
 while jvlink.JVStatus() < download_count:   # ダウンロード進捗
     ...
 
-ret, memview, fname = jvlink.JVGets(bytearray(110000), 110000, bytearray())
-#  >0  : memview.tobytes() にレコード1件
-#  -1  : ファイル切替（fname が対象ファイル名）
+ret, text, _size, fname = jvlink.JVRead("", 110000, "")
+#  >0  : text にレコード1件（ret は cp932 のバイト長。_size は渡した値のまま）
+#  -1  : ファイル切替
 #   0  : EOF
 #  <-1 : エラー
+raw = text.encode("cp932")   # len(raw) == ret を確かめる
 
 jvlink.JVClose()
 ```
 
-- **レコードは cp932。** `memview.tobytes().decode("cp932")` でデコードする
-- `JVRead` ではなく **`JVGets` を使う**（公式サンプルの既定。memoryview で受けられる）
+- **`JVGets` は使わない（2026-09-24 実測）。** 公式サンプルは `JVGets` だが、pywin32 経由では
+  呼ぶたびに約110KB（バッファ長ぶん）漏れ、`JVClose` しても戻らない。5年分のセットアップ取得
+  （数十万件）では黙ってメモリを使い切って落ちる。`JVRead` なら漏れない
+- **`JVRead` は読んだ時点のコンソール出力コードページで文字列にする。** 65001（UTF-8）だと
+  日本語が欧文として化ける。`jvlink.read_open_dataspec()` が読む間だけ 932 に切り替えている。
+  cp932 に戻したバイト列は `JVGets` の結果（末尾の NUL を除く）と全件一致することを確認済み
+- **レコードは cp932。** 固定長の位置はバイト単位なので、デコードは `records.py` 側で行う
+- **option 3/4（セットアップ）では「スタートキット（CD/DVD-ROM）」のダイアログが出る。**
+  option 4 でも出る。**「持っていない」を選んで OK** を所有者に押してもらう必要がある
+  （「持っている」のままだと -501、放置・異常終了の直後は -301 がしばらく続く）
 - レコード種別は先頭2バイト（`RA` / `SE` / `HR` / `O1` …）
 - `JVOpen` の `option` は型ライブラリ上 **`VT_UINT`**。このため **VBScript からは呼べない**
   （「型が一致しません」で落ちる）。Python なら問題ない
@@ -417,7 +563,7 @@ venv は `.venv`（Python 3.13.3 / 64bit）。コマンドは `.venv` の python
 # 依存（初回のみ）
 .venv/Scripts/python.exe -m pip install -r requirements.txt
 
-# テスト全体（2026-09-21 実行: 16 passed）
+# テスト全体（2026-10-19 実行: 1666 passed, 3 skipped）
 .venv/Scripts/python.exe -m pytest
 
 # テスト1件だけ
@@ -425,7 +571,21 @@ venv は `.venv`（Python 3.13.3 / 64bit）。コマンドは `.venv` の python
 
 # Jev への疎通確認（.env に TYPESAFE_API_KEY が必要）
 .venv/Scripts/python.exe scripts/smoke_test.py
+
+# 3着内予想: 1レース分の資料を書き出す（課金なし。API を呼ばない）
+.venv/Scripts/python.exe scripts/dossier.py --race-id <race_id>
+
+# 3着内予想: state の大きさを測るだけ（課金なし）
+.venv/Scripts/python.exe scripts/backtest_top3.py --from <YYYYMMDD> --to <YYYYMMDD> \
+    --tuning-until <YYYYMMDD> --dry-run
+
+# 3着内予想: 課金あり（所有者の承認を得てから）。--methods は明示する
+.venv/Scripts/python.exe scripts/backtest_top3.py --from <YYYYMMDD> --to <YYYYMMDD> \
+    --tuning-until <YYYYMMDD> --methods python,plan_a,plan_b --limit 100
 ```
+
+`--methods` を省略すると既定は `python`（Jev を使わない基準）のみで、**課金は発生しない**。
+案A・案Bを走らせるときは `--methods` に `plan_a` / `plan_b` を明示すること。
 
 PowerShell ではパス区切りが `.venv\Scripts\python.exe`。
 

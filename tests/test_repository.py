@@ -303,7 +303,7 @@ class TestRaceConditions:
         assert conditions.class_level == 2
 
     def test_race_conditions_returns_exactly_one_column(self):
-        """返り値の型のフィールドは ``class_level`` の**1つだけ**（allow-list）。
+        """返り値の型のフィールドは、発走前に確定する列だけ（allow-list）。
 
         禁止名の一覧（deny-list）では足りない——レビュアーが実測で
         ``lap_times_sec``（走ってからしか決まらない）と ``race_name`` を足したら、
@@ -313,10 +313,24 @@ class TestRaceConditions:
         フィールドを足すときは、その列が発走前に確定することを確かめ、この
         等式も更新すること（更新するときが「本当に発走前に確定するのか」を
         考える場所になる）。
+
+        ``track_cd``（使用するコース）と ``course_kubun_cd``（仮柵の位置
+        A/B/C…）は番組と開催前の発表で決まり、発走前に確定する（report3
+        §4.2 の『使用コース』）。馬場状態（``baba_cd``）は当日確定なので
+        入れない。
         """
         from keiba.models import RaceConditions
 
-        assert {f.name for f in dataclasses.fields(RaceConditions)} == {"class_level"}
+        assert {f.name for f in dataclasses.fields(RaceConditions)} == {
+            "class_level", "track_cd", "course_kubun_cd"}
+
+    def test_race_conditions_returns_track_and_course_kubun(self, tmp_path):
+        races = [dict(fx.make_race(race_id="R1", track_cd="18", data_kubun="7"),
+                      course_kubun_cd="B")]
+        repo = open_repository(tmp_path, races, [])
+        conditions = repo.race_conditions("R1", as_of=jst(2026, 3, 20))
+        assert conditions.track_cd == "18"
+        assert conditions.course_kubun_cd == "B"
 
 
 class TestRace:

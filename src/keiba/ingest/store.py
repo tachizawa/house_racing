@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import csv
+import gzip
 import hashlib
 import json
 import shutil
@@ -19,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from keiba import config
+from keiba.ingest import records
 
 
 class DataVersionError(RuntimeError):
@@ -56,10 +58,87 @@ HORSE_COLUMNS: tuple[str, ...] = (
     "data_kubun", "make_date", "fetched_at",
 )
 
-_FILES = {
+#: レコード種別 → (ファイル名, 列)。VersionWriter が書くファイルの組。
+FileSet = dict[str, tuple[str, tuple[str, ...]]]
+
+RACE_FILES: FileSet = {
     "RA": ("races.csv", RACE_COLUMNS),
     "SE": ("race_horses.csv", RACE_HORSE_COLUMNS),
     "UM": ("horses.csv", HORSE_COLUMNS),
+}
+
+# --- 血統（dataspec BLOD）。レースの版とは別の系統（config.BLOOD_DATA_DIR）に置く。
+# 同じ場所に置くと、commit() が CURRENT をレースの無い版に切り替えてしまう。
+# 血統は時点で変わらない（馬の父は後から変わらない）ので、分けても as_of の
+# 漏洩は起きない。
+PEDIGREE_COLUMNS: tuple[str, ...] = (
+    "ketto_num", "birth_date", "sex_cd", "hinsyu_cd", "keiro_cd",
+    "sanku_mochi_kubun", "import_year", "breeder_code", "sanchi_name",
+    *(f"{name}_num" for name in records.SK_ANCESTOR_NAMES),
+    "data_kubun", "make_date", "fetched_at",
+)
+
+BREEDING_HORSE_COLUMNS: tuple[str, ...] = (
+    "hansyoku_num", "ketto_num", "bamei", "bamei_kana", "bamei_eng",
+    "birth_year", "sex_cd", "hinsyu_cd", "keiro_cd", "mochi_kubun",
+    "import_year", "sanchi_name", "sire_num", "dam_num",
+    "data_kubun", "make_date", "fetched_at",
+)
+
+LINEAGE_COLUMNS: tuple[str, ...] = (
+    "hansyoku_num", "keito_id", "keito_name", "data_kubun", "make_date", "fetched_at",
+)
+
+BLOOD_FILES: FileSet = {
+    "SK": ("pedigrees.csv", PEDIGREE_COLUMNS),
+    "HN": ("breeding_horses.csv", BREEDING_HORSE_COLUMNS),
+    "BT": ("lineages.csv", LINEAGE_COLUMNS),
+}
+
+# --- 払戻（HR）・オッズ（O1〜O6）。別の系統（config.MARKET_DATA_DIR）に置く。
+# キーはレコード種別ではなく records.table_keys() の表のキー（1レコードが複数の表の
+# 行になるため）。名前が .gz で終わる表は gzip で書く。5年ぶんで馬連・ワイド各約160万行、
+# 馬単約320万行、3連複約680万行、3連単約4,070万行ある（2026-09-26 実測）。
+# どの表も同じレースに複数のデータ区分がありうるので、読む側が
+# config.DATA_KUBUN_PAYOUT_PRIORITY / DATA_KUBUN_ODDS_PRIORITY で選ぶこと。
+PAYOUT_RACE_COLUMNS: tuple[str, ...] = (
+    "race_id", "toroku_tosu", "syusso_tosu", "fuseiritu", "tokubarai", "henkan",
+    "henkan_umaban", "henkan_wakuban", "henkan_dowaku", "data_kubun", "make_date", "fetched_at",
+)
+
+PAYOUT_COLUMNS: tuple[str, ...] = (
+    "race_id", "bet_type", "combination", "payout_yen", "popularity",
+    "data_kubun", "make_date", "fetched_at",
+)
+
+ODDS_POOL_COLUMNS: tuple[str, ...] = (
+    "race_id", "happyo_time", "bet_type", "toroku_tosu", "syusso_tosu", "sale_flag",
+    "total_votes_100yen", "fukusyo_chakubarai_key", "data_kubun", "make_date", "fetched_at",
+)
+
+ODDS_COLUMNS: tuple[str, ...] = (
+    "race_id", "happyo_time", "combination", "odds", "popularity",
+    "data_kubun", "make_date", "fetched_at",
+)
+
+# 複勝・ワイドは最低・最高オッズの幅で発表される（odds が最低、odds_high が最高）。
+ODDS_RANGE_COLUMNS: tuple[str, ...] = (
+    "race_id", "happyo_time", "combination", "odds", "odds_high", "popularity",
+    "data_kubun", "make_date", "fetched_at",
+)
+
+MARKET_FILES: FileSet = {
+    "payout_races": ("payout_races.csv", PAYOUT_RACE_COLUMNS),
+    "payouts": ("payouts.csv", PAYOUT_COLUMNS),
+    "odds_pools": ("odds_pools.csv", ODDS_POOL_COLUMNS),
+    "odds_tansyo": ("odds_tansyo.csv", ODDS_COLUMNS),
+    "odds_fukusyo": ("odds_fukusyo.csv", ODDS_RANGE_COLUMNS),
+    "odds_wakuren": ("odds_wakuren.csv", ODDS_COLUMNS),
+    "odds_umaren": ("odds_umaren.csv.gz", ODDS_COLUMNS),
+    "odds_wide": ("odds_wide.csv.gz", ODDS_RANGE_COLUMNS),
+    "odds_umatan": ("odds_umatan.csv.gz", ODDS_COLUMNS),
+    "odds_sanrenpuku": ("odds_sanrenpuku.csv.gz", ODDS_COLUMNS),
+    "odds_sanrentan": ("odds_sanrentan.csv.gz", ODDS_COLUMNS),
 }
 
 
@@ -127,7 +206,10 @@ class VersionWriter:
     """1つのデータ版を書く。commit() まで CURRENT は切り替わらない。"""
 
     def __init__(self, data_dir: Path, version_id: str, *,
-                 dataspecs: Sequence[str], fromdate: str, option: int) -> None:
+                 dataspecs: Sequence[str], fromdate: str, option: int,
+                 files: FileSet = RACE_FILES, source: dict | None = None) -> None:
+        """source は manifest にそのまま残す取得元の情報（例: 生レコードから作った版の
+        {"raw_dir": ...}）。JV-Link から直接取った版では None で、キーごと書かない。"""
         if isinstance(dataspecs, str):
             # "RACE" をそのまま渡すと 'R','A','C','E' の4個の dataspec として
             # 扱われてしまう。manifest のキーを dataspec から dataspecs に
@@ -147,6 +229,8 @@ class VersionWriter:
         self.dataspecs = dataspecs
         self.fromdate = fromdate
         self.option = option
+        self._files = dict(files)
+        self.source = dict(source) if source is not None else None
         self.fetched_at = datetime.now().astimezone().isoformat(timespec="seconds")
         self._partial = version_dir(self.data_dir, version_id + ".partial")
         try:
@@ -162,14 +246,19 @@ class VersionWriter:
                 " 別のプロセスが同じ版を書いているか、前回が異常終了した残骸です。"
                 " 残骸なら削除し、実行中なら終わるまで待ってください。"
             ) from error
-        self._counts: dict[str, int] = {"RA": 0, "SE": 0, "UM": 0}
+        self._counts: dict[str, int] = {spec: 0 for spec in self._files}
         self._hasso_at: list[str] = []
         self._race_ids: set[str] = set()
         self._handles: dict[str, Any] = {}
         self._writers: dict[str, Any] = {}
         try:
-            for spec, (name, columns) in _FILES.items():
-                handle = (self._partial / name).open("w", encoding="utf-8", newline="")
+            for spec, (name, columns) in self._files.items():
+                path = self._partial / name
+                if name.endswith(".gz"):
+                    handle = gzip.open(path, "wt", encoding="utf-8", newline="",
+                                       compresslevel=6)
+                else:
+                    handle = path.open("w", encoding="utf-8", newline="")
                 writer = csv.writer(handle, lineterminator="\n")
                 writer.writerow(columns)
                 self._handles[spec] = handle
@@ -184,9 +273,9 @@ class VersionWriter:
             raise
 
     def add(self, spec: str, row: dict) -> None:
-        if spec not in _FILES:
+        if spec not in self._files:
             return
-        _, columns = _FILES[spec]
+        _, columns = self._files[spec]
         enriched = dict(row)
         enriched["fetched_at"] = self.fetched_at
         self._writers[spec].writerow([_cell(enriched.get(c)) for c in columns])
@@ -205,7 +294,7 @@ class VersionWriter:
         """manifest を書き、本番ディレクトリにリネームし、CURRENT を更新する。"""
         self._close()
         files = []
-        for spec, (name, _) in _FILES.items():
+        for spec, (name, _) in self._files.items():
             path = self._partial / name
             files.append({
                 "name": name,
@@ -229,6 +318,8 @@ class VersionWriter:
             "record_counts": dict(self._counts),
             "status": "complete",
         }
+        if self.source is not None:
+            manifest["source"] = self.source
         (self._partial / "manifest.json").write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 

@@ -1,0 +1,151 @@
+"""世代レベル（タイム指数による世代の強さ）のレポートを書く。Jev は呼ばない（課金なし）。
+
+    .venv/Scripts/python.exe scripts/generation_level.py --as-of 20261004 \
+        --data-dir tmp/keiba-report/oct04_2026/data --example-race 2026100405040211
+
+仕様: docs/superpowers/specs/2026-10-04-generation-level-design.md
+出力: data/generation/<as_of>/（report.md / cohorts.csv / age_curve.csv / figures.csv / manifest.json）
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+
+import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
+from keiba import config  # noqa: E402
+from keiba.data.repository import _pick_by_data_kubun  # noqa: E402
+from keiba.data.store import DataStore  # noqa: E402
+from keiba.data.store import coverage_start as data_coverage_start  # noqa: E402
+from keiba.evaluate.age_curve import age_curve, curve_levels  # noqa: E402
+from keiba.evaluate.generation import (METRICS, bootstrap_intervals, cohort_table,  # noqa: E402
+                                       comparable_years, replicate_stats)
+from keiba.evaluate.generation_report import ExampleHorse, ReportInputs, render  # noqa: E402
+from keiba.features.speed_figure import apply_figures, fit_model, prepare_runs, repeatability  # noqa: E402
+from keiba.ingest.store import read_manifest, version_dir  # noqa: E402
+
+JST = timezone(timedelta(hours=9))
+SURFACES = (("全体", None), ("芝", "turf"), ("ダート", "dirt"))
+
+
+def coverage_start(manifest: dict, runs: pd.DataFrame) -> date:
+    """比べてよい年を決める取得開始日。データ版の収録開始、無ければ対象の走の最初の日。
+
+    収録開始は fromdate と coverage.first_hasso_at の遅いほう（keiba.data.store.coverage_start）。
+    fromdate だけだと、option 1 の版で実データの無い年・一部しか無い年を比べてしまう。
+    """
+    start = data_coverage_start(manifest)
+    if start is not None:
+        return start.date()
+    return runs["date"].min().date()
+
+
+#: 例の馬を選ぶデータ区分の優先順位。結果があれば結果、まだ走っていなければ出馬表
+#: （keiba.data.repository の _BEST_AVAILABLE と同じ）。削除（0）・中止（9）は使わない。
+_EXAMPLE_PRIORITY = config.DATA_KUBUN_RESULT_PRIORITY + config.DATA_KUBUN_ENTRY_PRIORITY
+
+
+def _examples(store: DataStore, race_ids: list[str]) -> dict[str, list[ExampleHorse]]:
+    """例のレースの出走馬。馬齢が正の整数として読めない馬は載せない
+    （repository._birth_year_from_race_row と同じく、"00" や空を年齢にしない）。"""
+    out = {}
+    for race_id in race_ids:
+        rows = _pick_by_data_kubun(store.race_horses[store.race_horses["race_id"] == race_id],
+                                   _EXAMPLE_PRIORITY).sort_values("umaban")
+        year = int(race_id[:4])
+        out[race_id] = [ExampleHorse(umaban=r.umaban, bamei=r.bamei, age=int(r.barei),
+                                     cohort=year - int(r.barei)) for r in rows.itertuples()
+                        if r.barei.strip().isdigit() and int(r.barei) > 0]
+    return out
+
+
+def _race_names(store: DataStore, race_ids: list[str]) -> dict[str, str]:
+    """例の見出しに付けるレース名。データ区分は問わず、作成日が最も新しい行の名前（空なら付けない）。"""
+    out = {}
+    for race_id in race_ids:
+        rows = store.races[store.races["race_id"] == race_id].sort_values("make_date")
+        if len(rows):
+            name = rows["race_name"].iloc[-1]
+            if isinstance(name, str) and name.strip():
+                out[race_id] = name.strip()
+    return out
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--as-of", required=True, help="時点 YYYYMMDD（その日の 0:00 より前のレースだけ使う）")
+    parser.add_argument("--data-dir", type=Path, default=config.DATA_DIR)
+    parser.add_argument("--out-dir", type=Path, default=None, help="既定 data/generation/<as_of>")
+    parser.add_argument("--ages", default="2,3,4,5")
+    parser.add_argument("--bootstrap", type=int, default=200)
+    parser.add_argument("--seed", type=int, default=20261004)
+    parser.add_argument("--example-race", action="append", default=[], help="例として載せるレース（繰り返し可）")
+    args = parser.parse_args(argv)
+    if args.bootstrap < 1:
+        parser.error("--bootstrap は 1 以上にしてください（区間を作る複製の回数）")
+
+    as_of = datetime.strptime(args.as_of, "%Y%m%d").date()
+    as_of_dt = datetime(as_of.year, as_of.month, as_of.day, tzinfo=JST)
+    try:
+        requested = sorted({int(a) for a in args.ages.split(",") if a.strip()})
+    except ValueError:
+        parser.error(f"--ages は 2 以上の整数をカンマ区切りで指定してください: {args.ages}")
+    if not requested or min(requested) < 2:
+        parser.error(f"--ages は 2 以上の整数をカンマ区切りで指定してください: {args.ages}")
+    ages = list(range(2, max(requested) + 1))          # 世代の歩み（§5.4）は2歳時から並べる
+    out_dir = args.out_dir or (config.DATA_DIR / "generation" / args.as_of)
+
+    store = DataStore.open_current(args.data_dir)
+    manifest = read_manifest(version_dir(args.data_dir, store.version_id))
+    runs = prepare_runs(store.races, store.race_horses, as_of=as_of_dt)
+    model = fit_model(runs)
+    fig = apply_figures(runs, model)
+    start = coverage_start(manifest, runs)
+    years = comparable_years(start, as_of.year)
+    print(f"対象の走 {len(runs):,} 件、古馬戦 {model.n_races:,} レース、比べる年 {years}", flush=True)
+
+    curves = {name: age_curve(fig, years=years, before=as_of, surface=sf, n_boot=args.bootstrap, seed=args.seed)
+              for name, sf in SURFACES}
+    levels = curve_levels(curves["全体"])
+    point = replicate_stats(fig, as_of=as_of, years=years, ages=ages, curve_levels=levels)
+    print(f"ブートストラップ {args.bootstrap} 回……", flush=True)
+    ci = bootstrap_intervals(runs, as_of=as_of, years=years, ages=ages, curve_levels=levels,
+                             n_boot=args.bootstrap, seed=args.seed, model=model)
+    table = cohort_table(fig, as_of=as_of, ages=ages, years=years)
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    report = render(ReportInputs(as_of=as_of, version_id=store.version_id, years=years, ages=ages, model=model,
+                                 fig=fig, table=table, point=point, ci=ci, curves=curves,
+                                 repeat=repeatability(fig), n_boot=args.bootstrap, seed=args.seed,
+                                 examples=_examples(store, args.example_race),
+                                 example_names=_race_names(store, args.example_race)))
+    (out_dir / "report.md").write_text(report, encoding="utf-8")
+
+    cohorts = table.copy()
+    for m in METRICS:
+        keys = [f"value|{r.year}|{r.age}|{m}" for r in table.itertuples()]
+        cohorts[f"{m}_lo"] = [ci.at[k, "lo"] if k in ci.index else float("nan") for k in keys]
+        cohorts[f"{m}_hi"] = [ci.at[k, "hi"] if k in ci.index else float("nan") for k in keys]
+    cohorts.to_csv(out_dir / "cohorts.csv", index=False)
+    pd.concat([c.assign(surface=name) for name, c in curves.items()]).to_csv(out_dir / "age_curve.csv", index=False)
+    fig[["race_id", "umaban", "ketto_num", "cohort", "barei", "figure", "jyo_cd", "track_cd", "kyori_m",
+         "day", "track_kind", "has_standard", "has_variant"]].to_csv(out_dir / "figures.csv", index=False)
+    (out_dir / "manifest.json").write_text(json.dumps({
+        "data_version": store.version_id, "data_dir": str(args.data_dir), "coverage_start": start.isoformat(),
+        "as_of": as_of.isoformat(), "years": years, "ages": ages,
+        "bootstrap": args.bootstrap, "seed": args.seed, "sigma2": model.sigma2, "tau2": model.tau2,
+        "n_races": model.n_races, "examples": args.example_race,
+        "created_at": datetime.now(JST).isoformat(timespec="seconds"),
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"書き出し: {out_dir}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

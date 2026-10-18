@@ -1,6 +1,6 @@
 """JV-Link (JRA-VAN Data Lab の COM コンポーネント) への薄いアクセス層。
 
-ここで引き受けるのは JVOpen/JVGets/JVClose の呼び出しと、走破タイムの整合性
+ここで引き受けるのは JVOpen/JVRead/JVClose の呼び出しと、走破タイムの整合性
 チェックだけ。レコードのデコードと dict 化は records.py、CSV への保存は
 store.py に任せる。COM 境界をここだけに薄く保つのがこのモジュールの役目。
 
@@ -85,8 +85,27 @@ def open_dataspec(link, dataspec, fromdate, option) -> tuple[int, int]:
     return open_code, download_count
 
 
+#: JV-Data のレコードの文字コード（cp932）のコードページ番号。
+_CP932 = 932
+
+
+def _get_console_cp() -> int:
+    """コンソール出力コードページ。コンソールが無い・Windows でなければ 0。"""
+    if sys.platform != "win32":
+        return 0
+    import ctypes
+    return ctypes.windll.kernel32.GetConsoleOutputCP()
+
+
+def _set_console_cp(cp: int) -> None:
+    if sys.platform != "win32":
+        return
+    import ctypes
+    ctypes.windll.kernel32.SetConsoleOutputCP(cp)
+
+
 def read_open_dataspec(link, download_count, *, buffer_size=110000) -> Iterator[bytes]:
-    """open_dataspec() で既に開いた link から、ダウンロード待ち → JVGets の
+    """open_dataspec() で既に開いた link から、ダウンロード待ち → JVRead の
     繰り返しでレコードを1件ずつ yield する。
 
     JVOpen も JVClose もしない。呼び出し側（update_data.py など）が
@@ -94,29 +113,65 @@ def read_open_dataspec(link, download_count, *, buffer_size=110000) -> Iterator[
     JVClose() すること。JVOpen をもう一度呼び直すと、進行中のダウンロードを
     無駄に取り直すことになる。
 
-    JVGets の戻り値:
-       >0  : memview.tobytes() にレコード1件
-       -1  : ファイル切替（fname が対象ファイル名）
+    JVGets ではなく JVRead を使う。pywin32 経由の JVGets は呼ぶたびに約110KB
+    （バッファ長ぶん）漏れ、JVClose しても戻らない（2026-09-24 実測。バッファの
+    使い回しや memoryview の release でも止まらない）。5年分のセットアップ取得は
+    数十万件あるので、JVGets では途中で黙ってメモリを使い切って落ちる。
+
+    JVRead は JV-Link が cp932 から復号した文字列を返すので、cp932 に戻して
+    yield する。戻したバイト列は JVGets の結果から末尾の NUL を除いたものと
+    2万件で全件一致した（同日実測）。戻り値はそのバイト長なので、長さが
+    食い違えば固定長の位置がずれる恐れがあるとして止める。
+
+    JVRead の戻り値:
+       >0  : レコード1件（値は cp932 のバイト長）
+       -1  : ファイル切替
         0  : EOF
        <-1 : エラー
-    レコードは cp932。デコードは records.py 側で行う。
+    3番目の返り値は渡したバッファ長のままで、レコード長ではない。
+    デコードは records.py 側で行う。
+
+    JVRead は**読んだ時点のコンソール出力コードページ**で文字列にする（同日実測）。
+    console.enable_utf8_output() が 65001 にしたままだと日本語が欧文の文字として
+    化け、JG/RA/SE のほぼ全件が cp932 に戻せなくなる。そこで読んでいる間だけ
+    932 にし、抜けるとき（例外・途中 close を含む）に元へ戻す。読んでいる間に
+    呼び出し側が print するとコンソール上では化けるので、表示は読み終えてから行う。
+    コンソールが無ければ（コードページ 0）触らない。
     """
     while link.JVStatus() < download_count:
         time.sleep(0.2)
-    while True:
-        code, memview, _fname = link.JVGets(bytearray(buffer_size), buffer_size,
-                                              bytearray())
-        if code == 0:
-            return
-        if code == -1:          # ファイル切替。レコードではない
-            continue
-        if code < -1:
-            raise JVLinkError(f"JVGets がエラーを返しました (code={code})。")
-        yield memview.tobytes()
+    saved_cp = _get_console_cp()
+    switch = saved_cp not in (0, _CP932)
+    if switch:
+        _set_console_cp(_CP932)
+    try:
+        while True:
+            code, text, _size, _fname = link.JVRead("", buffer_size, "")
+            if code == 0:
+                return
+            if code == -1:          # ファイル切替。レコードではない
+                continue
+            if code < -1:
+                raise JVLinkError(f"JVRead がエラーを返しました (code={code})。")
+            try:
+                raw = text.encode("cp932")
+            except UnicodeEncodeError as error:
+                raise JVLinkError(
+                    f"JVRead の文字列を cp932 に戻せません（先頭 {text[:2]!r}、"
+                    f"位置 {error.start}）。コンソールのコードページが途中で"
+                    "変わった可能性があります。") from error
+            if len(raw) != code:
+                raise JVLinkError(
+                    f"JVRead のレコード長 {code} と cp932 に戻した長さ {len(raw)} が"
+                    f"食い違います（先頭 {raw[:2]!r}）。固定長の位置がずれるため中断します。")
+            yield raw
+    finally:
+        if switch:
+            _set_console_cp(saved_cp)
 
 
 def read_records(link, dataspec, fromdate, option, *, buffer_size=110000) -> Iterator[bytes]:
-    """JVOpen → ダウンロード待ち → JVGets の繰り返し → JVClose。
+    """JVOpen → ダウンロード待ち → JVRead の繰り返し → JVClose。
 
     内部では open_dataspec() と read_open_dataspec() を組み合わせているだけで、
     シグネチャと振る舞い（-1 なら何も yield せず終わる、0 以外のエラーなら

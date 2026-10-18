@@ -148,14 +148,13 @@ class RaceRow:
 
 @dataclass(frozen=True)
 class RaceConditions:
-    """レースの条件のうち、**発走前に確定する列だけ**。現状は1列だけ。
+    """レースの条件のうち、**発走前に確定する列だけ**。発走前に確定する3列。
 
     ``class_level`` は ``grade_cd`` / ``jyoken_cd`` 由来でレース成立時に決まって
     いるので、結果行（data_kubun 3-7）から読んでも未来情報にはならない。
     ``EntryRow`` が出走馬について同じことをしているのと同じ構図で、こちらは
-    レース側を担う。穴は必要な幅（1列）ちょうどにしてある——``grade_cd`` /
-    ``jyoken_cd_youngest`` も発走前に確定するが、どこからも読まれていなかった
-    ので置かない（fix6 ②）。
+    レース側を担う。``grade_cd`` / ``jyoken_cd_youngest`` 自体も発走前に確定するが、
+    どこからも読まれていないので置かない（fix6 ②）。
 
     **この型にフィールドを足すときは、その列が発走前に確定することを確かめ、
     ``tests/test_repository.py`` の allow-list
@@ -169,6 +168,10 @@ class RaceConditions:
     """
 
     class_level: int | None
+    #: 2009 トラックコード。コース（芝・右外など）は番組で決まり発走前に確定する。
+    track_cd: str | None = None
+    #: コース区分（仮柵の位置 A/B/C…）。開催前に発表される。空白は None。
+    course_kubun_cd: str | None = None
 
 
 @dataclass(frozen=True)

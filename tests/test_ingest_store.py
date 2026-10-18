@@ -358,3 +358,48 @@ class TestConcurrentPartial:
                                      dataspecs=["RACE"], fromdate="x", option=1)
         first.abort()
         second.abort()
+
+
+class TestBloodFiles:
+    """血統は別の系統（data/blood/）に、別のファイルの組で保存する。"""
+
+    @pytest.fixture
+    def blood(self, tmp_path):
+        writer = store.VersionWriter(tmp_path, "20260925T010000Z", dataspecs=["BLDN"],
+                                     fromdate="19860101000000", option=4,
+                                     files=store.BLOOD_FILES)
+        writer.add("SK", records.parse_sk(fx.make_sk()))
+        writer.add("HN", records.parse_hn(fx.make_hn()))
+        writer.add("HN", records.parse_hn(fx.make_hn(hansyoku_num="0000000002")))
+        writer.add("BT", records.parse_bt(fx.make_bt()))
+        writer.add("RA", records.parse_ra(fx.make_ra()))   # 組に無い種別は捨てる
+        return tmp_path, writer.commit()
+
+    def test_writes_only_the_blood_files(self, blood):
+        _, path = blood
+        names = sorted(p.name for p in path.iterdir())
+        assert names == ["breeding_horses.csv", "lineages.csv", "manifest.json",
+                         "pedigrees.csv"]
+
+    def test_manifest_counts_blood_records(self, blood):
+        _, path = blood
+        manifest = store.read_manifest(path)
+        assert manifest["record_counts"] == {"SK": 1, "HN": 2, "BT": 1}
+        assert manifest["coverage"]["race_count"] == 0
+
+    def test_pedigree_columns_keep_ancestor_numbers(self, blood):
+        _, path = blood
+        header, row = (path / "pedigrees.csv").read_text(encoding="utf-8").splitlines()
+        columns = header.split(",")
+        assert columns[:2] == ["ketto_num", "birth_date"]
+        values = dict(zip(columns, row.split(",")))
+        assert values["dam_sire_num"] == "0000000005"
+        assert values["fetched_at"]
+
+    def test_default_file_set_is_unchanged(self, tmp_path):
+        writer = store.VersionWriter(tmp_path, "20260925T020000Z", dataspecs=["RACE"],
+                                     fromdate="20260301000000", option=1)
+        writer.add("SK", records.parse_sk(fx.make_sk()))    # 既定の組には無い
+        path = writer.commit()
+        assert store.read_manifest(path)["record_counts"] == {"RA": 0, "SE": 0, "UM": 0}
+        assert not (path / "pedigrees.csv").exists()
