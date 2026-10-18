@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 
 from keiba_ml.config import ModelConfig
+from keiba_ml.dataset.races import relevance
 from keiba_ml.features.pedigree import FeatureSet
 from keiba_ml.models.base import make_predictions
 
@@ -46,15 +47,14 @@ def is_ranking(loss_function: str) -> bool:
 
 
 def _target(rows: pd.DataFrame, loss_function: str) -> np.ndarray:
-    """2値なら 3着以内。順位学習なら関連度（1着 3 / 2着 2 / 3着 1 / それ以外 0）。
+    """2値なら 3着以内。順位学習なら関連度（dataset.races.relevance。中止・失格は 0）。
 
     QueryCrossEntropy は 0〜1 の目的変数を取るので 2値のまま渡す。
     """
     name = loss_function.split(":")[0]
     if not is_ranking(name) or name == "QueryCrossEntropy":
         return rows["target_top3"].to_numpy(dtype=float)
-    rank = rows["result_rank"].astype("Float64").fillna(99).to_numpy(dtype=float)
-    return np.where(rank <= 3, 4.0 - rank, 0.0)
+    return relevance(rows)
 
 
 class PedigreeCatBoost:

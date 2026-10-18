@@ -48,6 +48,22 @@ def _config_from_run(model_dir: Path) -> tuple[MLConfig, date]:
     return config, date.fromisoformat(window["train_start"])
 
 
+def live_rows(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(特徴量を作る行, 予想する行)。
+
+    出馬表の段階で出走取消・除外（1/2/3）が付いた馬は走らないので、予想せず特徴量からも
+    外し、結果の出ていないレースの頭数（field_size）を走る馬だけで数え直す。
+    結果のある行は dataset/races.py が同じ規則で既に抜いている。
+    """
+    scratched = (~df["has_result"]
+                 & df["result_ijyo_cd"].fillna("").str.strip().isin(keiba_config.IJYO_EXCLUDED))
+    df = df[~scratched].copy()
+    live = ~df["has_result"]
+    df.loc[live, "field_size"] = (df[live].groupby("race_id")["umaban"]
+                                  .transform("size").astype(df["field_size"].dtype))
+    return df, df[live]
+
+
 def main(argv: list[str] | None = None) -> int:
     console.enable_utf8_output()
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -67,11 +83,7 @@ def main(argv: list[str] | None = None) -> int:
     df, names, _ = build.load(args.ml_data_dir, args.dataset_id)
     if config.pedigree.stats_history == "window":
         df = df[df["race_date"].dt.date >= train_start]
-    targets = df[~df["has_result"]]
-    # 出馬表の段階で出走取消・除外（1/2/3）が付いた馬は走らないので予想しない。
-    # 結果のある行は dataset/races.py が同じ規則で既に抜いている。
-    targets = targets[~targets["result_ijyo_cd"].fillna("").str.strip()
-                      .isin(keiba_config.IJYO_EXCLUDED)]
+    df, targets = live_rows(df)
     if args.race_id:
         targets = targets[targets["race_id"].isin(args.race_id)]
     if targets.empty:

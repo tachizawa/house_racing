@@ -50,6 +50,9 @@ def main(argv: list[str] | None = None) -> int:
         config = load_config(args.config)
     except FileNotFoundError as error:
         parser.error(str(error))
+    except ValueError as error:
+        # 値の誤りと TOML の構文誤り（tomllib.TOMLDecodeError は ValueError の派生）。
+        parser.error(f"設定ファイル {args.config or DEFAULT_CONFIG_PATH} を読めません: {error}")
     model = config.model
     if args.loss:
         model = replace(model, loss_function=args.loss)

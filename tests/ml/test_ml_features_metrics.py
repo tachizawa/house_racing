@@ -223,3 +223,21 @@ def test_age_curve_has_name_column_without_names():
     table = age_curve(df, path="S", min_starts=1, names={})
     assert "name" in table.columns
     assert (table["name"] == "").all()
+
+
+def test_stopped_horse_with_rank_is_not_a_winner_or_relevant():
+    """中止・失格（target_top3 が 0）の馬は、着順の欄が 1 でも勝ち・関連度に数えない。"""
+    pred, truth = _race([0.9, 0.8, 0.7, 0.1], [1, 1, 2, 3])
+    truth.loc[0, "target_top3"] = 0.0          # 01 は失格
+    row = metrics.per_race(pred, truth).iloc[0]
+    assert row["top1_win"] == 0.0              # 1位に選んだ 01 は勝ちではない
+    assert row["random_top1_win"] == pytest.approx(1 / 4)
+    assert row["ndcg"] < 1.0                   # 01 を上に置いた予想は理想の並びではない
+
+
+def test_ranking_target_ignores_stopped_horses():
+    from keiba_ml.models.pedigree_catboost import _target
+    rows = pd.DataFrame({"result_rank": pd.array([1, 1, 2, 3, None], dtype="Int64"),
+                         "target_top3": [0.0, 1.0, 1.0, 1.0, 0.0]})
+    assert list(_target(rows, "YetiRank")) == [0.0, 3.0, 2.0, 1.0, 0.0]
+    assert list(_target(rows, "Logloss")) == [0.0, 1.0, 1.0, 1.0, 0.0]

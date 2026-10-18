@@ -141,6 +141,8 @@ def test_explicit_missing_config_file_is_an_error(tmp_path):
     ("data", "jra_only = 'false'", "jra_only"),
     ("model", "iterations = true", "iterations"),
     ("split", "train_years = ['10']", "train_years"),
+    ("data", "race_versions = [20261010]", "race_versions"),
+    ("data", "pedigree_versions = ['v1', 2]", "pedigree_versions"),
     ("model", "extra = { loss_function = 'YetiRank' }", "loss_function"),
     ("model", "extra = { has_time = false }", "has_time"),
 ])

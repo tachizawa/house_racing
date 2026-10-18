@@ -18,6 +18,8 @@ from math import comb
 import numpy as np
 import pandas as pd
 
+from keiba_ml.dataset.races import relevance
+
 
 def _dcg(relevances: np.ndarray) -> float:
     return float(np.sum((2.0 ** relevances - 1.0) / np.log2(np.arange(2, len(relevances) + 2))))
@@ -36,12 +38,13 @@ def per_race(predictions: pd.DataFrame, truth: pd.DataFrame, *, top_n: int = 3
         actual = set(race.loc[race["target_top3"] == 1, "umaban"])
         picked = race.nsmallest(k, "pred_rank")
         hits = int(picked["umaban"].isin(actual).sum())
-        rank = race["result_rank"].astype("Float64").fillna(99).to_numpy(dtype=float)
-        rel_by_umaban = dict(zip(race["umaban"], np.where(rank <= 3, 4.0 - rank, 0.0)))
+        rel = relevance(race)
+        rel_by_umaban = dict(zip(race["umaban"], rel))
         rel_pred = np.array([rel_by_umaban[u] for u in picked["umaban"]])
         rel_ideal = np.sort(np.array(list(rel_by_umaban.values())))[::-1][:k]
         idcg = _dcg(rel_ideal)
-        winners = set(race.loc[race["result_rank"] == 1, "umaban"])
+        # 関連度 3 は「完走した1着」。着順の欄だけで見ると中止・失格の馬が混ざる。
+        winners = set(race.loc[rel == 3.0, "umaban"])
         top1 = picked.iloc[0]["umaban"] if len(picked) else None
         a = len(actual)
         rows.append({

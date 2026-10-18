@@ -63,8 +63,9 @@ EXPECTED = {
 # self.Ketto3Info[i].SetDataB(MidB2B(bBuff, 205 + (46 * i), 46)) のような書き方を拾う。
 # SDK 5.0.0 の Python 版は代入せずに並べる（MidB2S(b, 12, 10), や
 # [MidB2S(b, 67 + 10 * i, 10) for i in range(14)]）ので、変数名の部分は省略可にする。
+# 変数名が無くても拾うので、呼び出しは SDK の変換関数（MidB2S / MidB2B）だけに限る。
 _CALL = re.compile(r"(?:([\w.\[\]]+)\s*(?:=\s*|\.SetDataB\(\s*))?"
-                   r"\b\w+\(\s*\w+\s*,\s*([^,()]+(?:\([^()]*\)[^,()]*)*?)\s*,\s*(\d+)\s*\)")
+                   r"\bMidB2[SB]\(\s*\w+\s*,\s*([^,()]+(?:\([^()]*\)[^,()]*)*?)\s*,\s*(\d+)\s*\)")
 
 
 def class_block(text: str, names: tuple[str, ...]) -> str | None:

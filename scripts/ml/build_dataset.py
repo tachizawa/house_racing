@@ -39,6 +39,9 @@ def main(argv: list[str] | None = None) -> int:
         config = load_config(args.config)
     except FileNotFoundError as error:
         parser.error(str(error))
+    except ValueError as error:
+        # 値の誤りと TOML の構文誤り（tomllib.TOMLDecodeError は ValueError の派生）。
+        parser.error(f"設定ファイル {args.config or DEFAULT_CONFIG_PATH} を読めません: {error}")
     if args.race_version:
         config = config.with_overrides(
             data=replace(config.data, race_versions=tuple(args.race_version)))

@@ -150,3 +150,13 @@ def load_runners(data_dir: Path, *, data: DataConfig, codes_config: CodeConfig) 
     df = build_runners(races, runners, data=data, codes_config=codes_config)
     df.attrs["race_versions"] = versions
     return df
+
+
+def relevance(rows: pd.DataFrame) -> np.ndarray:
+    """順位学習と nDCG の関連度（1着 3 / 2着 2 / 3着 1 / それ以外 0）。
+
+    target_top3 と同じ規則にするため、競走中止・失格（target_top3 が 0）は着順の欄に
+    値があっても 0。結果の無い行（target_top3 が NaN）も 0。
+    """
+    rank = rows["result_rank"].astype("Float64").fillna(99).to_numpy(dtype=float)
+    return np.where(rows["target_top3"].to_numpy(dtype=float) == 1, 4.0 - rank, 0.0)

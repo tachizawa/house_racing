@@ -81,3 +81,12 @@ def test_undecodable_struct_file_returns_2(tmp_path, capsys):
     path.write_bytes(b"\xff\xfe\x81")      # UTF-8 でも CP932 でも読めない
     assert check_offsets.main(["--struct", str(path)]) == 2
     assert "読めません" in capsys.readouterr().out
+
+
+def test_only_sdk_conversion_calls_count_as_field_reads():
+    """MidB2S / MidB2B 以外の3引数の呼び出しを、項目の読み出しとして拾わない。"""
+    block = ("        helper(bBuff, 12, 10),\n"
+             "        self.KettoNum = MidB2S(bBuff, 12, 10)\n"
+             "        MidB2B(bBuff, 205 + (46 * i), 46),\n")
+    assert check_offsets.extract(block) == [("self.KettoNum", "12", 10),
+                                            ("", "205 + (46 * i)", 46)]

@@ -14,7 +14,7 @@ import tomllib
 from dataclasses import dataclass, field, fields, replace
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args, get_type_hints
 
 from keiba import config as keiba_config
 
@@ -208,11 +208,15 @@ class MLConfig:
         return replace(self, **sections)
 
 
-def _same_type(expected: Any, value: Any) -> bool:
+def _is_type(expected: type, value: Any) -> bool:
     # bool は int の派生なので、true を整数の設定に・1 を真偽値の設定に通さない。
-    if isinstance(expected, bool) or isinstance(value, bool):
-        return isinstance(expected, bool) and isinstance(value, bool)
-    return isinstance(value, type(expected))
+    if expected is bool or isinstance(value, bool):
+        return expected is bool and isinstance(value, bool)
+    return isinstance(value, expected)
+
+
+def _same_type(expected: Any, value: Any) -> bool:
+    return _is_type(type(expected), value)
 
 
 def _coerce(cls: type, values: dict[str, Any]) -> Any:
@@ -222,6 +226,7 @@ def _coerce(cls: type, values: dict[str, Any]) -> Any:
         raise ValueError(f"[{cls.__name__}] に知らない設定があります: {sorted(unknown)}")
     kwargs: dict[str, Any] = {}
     defaults = cls()
+    hints = get_type_hints(cls)
     for name, value in values.items():
         current = getattr(defaults, name)
         if isinstance(current, tuple) and isinstance(value, list):
@@ -235,12 +240,14 @@ def _coerce(cls: type, values: dict[str, Any]) -> Any:
             raise ValueError(
                 f"[{cls.__name__}] {name} の型が違います: {value!r}"
                 f"（{type(current).__name__} で書いてください）")
-        if isinstance(current, tuple) and current:
-            bad = [v for v in value if not _same_type(current[0], v)]
+        if isinstance(current, tuple):
+            # 要素の型は注釈（tuple[str, ...] など）から取る。既定が空の版のリストも見る。
+            element = get_args(hints[name])[0]
+            bad = [v for v in value if not _is_type(element, v)]
             if bad:
                 raise ValueError(
                     f"[{cls.__name__}] {name} の要素の型が違います: {bad}"
-                    f"（{type(current[0]).__name__} で書いてください）")
+                    f"（{element.__name__} で書いてください）")
         kwargs[name] = value
     return cls(**kwargs)
 

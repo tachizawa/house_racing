@@ -118,6 +118,18 @@ def test_train_rejects_missing_config_and_bad_iterations(world, dataset, tmp_pat
         train.main(["--iterations", "0", "--ml-data-dir", str(world.ml_data_dir)])
 
 
+@pytest.mark.parametrize("script", ["train_pedigree", "build_dataset"])
+@pytest.mark.parametrize("body", ["[model]\niterations = true\n", "[model\n"])
+def test_invalid_config_is_a_usage_error_not_a_traceback(tmp_path, capsys, script, body):
+    """値の誤り・TOML の構文誤り（どちらも ValueError）も parser.error で止める。"""
+    path = tmp_path / "bad.toml"
+    path.write_text(body, encoding="utf-8")
+    with pytest.raises(SystemExit) as exc:
+        _script(script).main(["--config", str(path), "--ml-data-dir", str(tmp_path)])
+    assert exc.value.code == 2
+    assert "bad.toml" in capsys.readouterr().err
+
+
 def test_predict_requires_the_training_records(tmp_path, capsys):
     predict = _script("predict_pedigree")
     model_dir = tmp_path / "runs" / "r" / "10y"
@@ -125,6 +137,22 @@ def test_predict_requires_the_training_records(tmp_path, capsys):
     assert predict.main(["--model", str(model_dir), "--ml-data-dir", str(tmp_path)]) == 2
     out = capsys.readouterr().out
     assert "config.json" in out and "metrics.json" in out
+
+
+def test_predict_drops_scratched_entries_and_recounts_field_size():
+    """出馬表で取消・除外の馬は予想せず、特徴量の頭数（field_size）にも数えない。"""
+    import pandas as pd
+    predict = _script("predict_pedigree")
+    df = pd.DataFrame({
+        "race_id": ["old", "old", "live", "live", "live"],
+        "umaban": ["01", "02", "01", "02", "03"],
+        "has_result": [True, True, False, False, False],
+        "result_ijyo_cd": ["0", "0", "0", "1", " "],
+        "field_size": [2, 2, 3, 3, 3],
+    })
+    rows, targets = predict.live_rows(df)
+    assert list(targets["umaban"]) == ["01", "03"]
+    assert list(rows["field_size"]) == [2, 2, 2, 2]
 
 
 def test_build_refuses_an_existing_dataset_id_before_building(world, dataset):
