@@ -545,7 +545,7 @@ venv は `.venv`（Python 3.13.3 / 64bit）。コマンドは `.venv` の python
 # 依存（初回のみ）
 .venv/Scripts/python.exe -m pip install -r requirements.txt
 
-# テスト全体（2026-10-18 実行: 1560 passed）
+# テスト全体（2026-10-18 実行: 1562 passed）
 .venv/Scripts/python.exe -m pytest
 
 # テスト1件だけ

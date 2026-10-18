@@ -60,6 +60,28 @@ class TestMarketKind:
         assert _manifest(tmp_path)["record_counts"] == {"RA": 1, "SE": 0, "UM": 0}
         assert "O1: 1（保存対象外）" in capsys.readouterr().out
 
+    def test_verify_time_fields_checks_se_even_though_market_does_not_save_it(
+            self, tmp_path, monkeypatch, capsys):
+        """market の版は SE を保存しないが、--verify-time-fields の照合には SE を通す。"""
+        link = DataspecAwareLink(open_codes={"RACE": 0},
+                                 records_by_dataspec={"RACE": [fx.make_ra(), *_mismatched_se()]})
+        monkeypatch.setattr(update_data.jvlink, "open_link", lambda *a, **k: link)
+
+        exit_code = update_data.main([
+            "--kind", "market", "--fromdate", "20210901000000", "--option", "4",
+            "--data-dir", str(tmp_path), "--verify-time-fields"])
+
+        assert exit_code == 1
+        out = capsys.readouterr().out
+        assert "SE: 2（保存対象外）" in out
+        assert "SE" not in _manifest(tmp_path)["record_counts"]
+
+
+def _mismatched_se():
+    """1着と2着の SE。実際のタイム差は 0.3 秒だが、記録上の margin は 0.9 秒にしてずらす。"""
+    return [fx.make_se(kakutei_jyuni="01", time="1234", time_diff="-003", umaban="01"),
+            fx.make_se(kakutei_jyuni="02", time="1237", time_diff="+009", umaban="02")]
+
 
 class TestFromRaw:
     """--from-raw は保存した生レコードから版を作る。JV-Link は呼ばない。"""
@@ -104,6 +126,21 @@ class TestFromRaw:
 
         assert exit_code == 1
         assert "走破タイムの照合" in capsys.readouterr().out
+
+    def test_verify_time_fields_on_raw_reads_se_for_market(self, tmp_path, capsys):
+        """market の版でも、照合するときは生レコードの SE を読む（保存はしない）。"""
+        path = tmp_path / "raw_se"
+        with rawdump.RawDumpWriter(path, dataspec="RACE", fromdate="20210901000000",
+                                   option=4) as writer:
+            for raw in (fx.make_ra(), fx.make_hr(), *_mismatched_se()):
+                writer.write(raw)
+
+        exit_code = update_data.main(["--kind", "market", "--from-raw", str(path),
+                                      "--data-dir", str(tmp_path / "market"),
+                                      "--verify-time-fields"])
+
+        assert exit_code == 1
+        assert "SE: 2（保存対象外）" in capsys.readouterr().out
 
     def test_missing_spec_file_is_refused(self, tmp_path, raw_dir):
         """manifest に載っている種別のファイルが無ければ、欠けた版を作らない。"""

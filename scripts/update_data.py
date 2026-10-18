@@ -109,19 +109,25 @@ def _is_saved(spec: str, files: store.FileSet) -> bool:
     return any(key in files for key in records.table_keys(spec))
 
 
+def _needs_parse(spec: str, files: store.FileSet, se_rows: list[dict] | None) -> bool:
+    """パースする種別か。保存する種別に加え、照合で溜めるときは SE も（market は SE を保存しない）。"""
+    return _is_saved(spec, files) or (spec == "SE" and se_rows is not None)
+
+
 def _consume(raw: bytes, counts: Counter, writer: store.VersionWriter,
              se_rows: list[dict] | None, files: store.FileSet) -> None:
     """1レコードを数えて、表の行に分けて書く。
 
     files の組に書かれない種別は数えるだけでパースしない（race の版に来る O1〜O6 など）。
     使わない種別のパースに時間を使わず、その種別の形式が変わっていても取り込みを止めない。
+    ただし照合のために溜める SE はパースする（組に無ければ writer が捨てる）。
 
     se_rows は --verify-time-fields のときだけ渡す（None なら溜めない）。5年ぶんの
     セットアップ取得では SE が数十万行あり、使わないのに全部をメモリに持つことになる。
     """
     spec = records.record_spec(raw)
     counts[spec] += 1
-    if not _is_saved(spec, files):
+    if not _needs_parse(spec, files, se_rows):
         return
     for key, row in records.parse_rows(raw):
         writer.add(key, row)
@@ -163,7 +169,8 @@ def _from_raw(args: argparse.Namespace) -> int:
     se_rows: list[dict] | None = [] if args.verify_time_fields else None
     try:
         # 表に書かれない種別（JG など）はパースもしないので、組に関係する種別だけ読む。
-        specs = [spec for spec in raw_manifest.get("counts", {}) if _is_saved(spec, files)]
+        specs = [spec for spec in raw_manifest.get("counts", {})
+                 if _needs_parse(spec, files, se_rows)]
         try:
             for raw in rawdump.iter_records(args.from_raw, specs):
                 _consume(raw, counts, writer, se_rows, files)
@@ -171,7 +178,7 @@ def _from_raw(args: argparse.Namespace) -> int:
             raise SystemExit(f"生レコードを使えません: {error}") from error
         print(f"生レコード {args.from_raw} から読んだレコード数:")
         for spec in sorted(raw_manifest.get("counts", {})):
-            note = "" if spec in counts else "（保存対象外）"
+            note = "" if _is_saved(spec, files) else "（保存対象外）"
             print(f"  {spec}: {counts.get(spec, raw_manifest['counts'][spec])}{note}")
         # ファイルが途中で終わっていても長さの欄の切れ目なら iter_records は気づけない。
         # manifest の件数と合わなければ、欠けたまま版を作らない。
