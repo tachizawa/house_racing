@@ -133,11 +133,12 @@ def test_train_script_writes_under_the_model_name_and_checks_the_config(world, d
     assert "pedigree" in capsys.readouterr().err
 
 
-def test_old_dataset_without_the_new_columns_is_refused(dataset):
+def test_old_dataset_without_the_new_columns_is_refused(dataset, tmp_path):
     df, _, _ = dataset
     old = df.drop(columns=["result_margin_sec", "result_weight_kg"])
     with pytest.raises(IntegrityError, match="build_dataset.py"):
-        run_comparison(old, _distance_config(), out_root=Path("unused"), run_id="x")
+        run_comparison(old, _distance_config(), out_root=tmp_path, run_id="x")
+    assert not (tmp_path / "x").exists()        # 実行の記録を書く前に止める
 
 
 def test_pedigree_model_still_runs_through_the_generic_path(world, dataset):

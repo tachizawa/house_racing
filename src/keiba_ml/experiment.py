@@ -195,6 +195,8 @@ def run_comparison(df: pd.DataFrame, config: MLConfig, *, out_root: Path, run_id
     （compare_runs.py）とき、同じデータセットを使うため。
     """
     train_years = train_years or config.split.train_years
+    # 列の足りない古いデータセットなら、実行の記録（config.json）を書く前に止める。
+    require_columns(df, registry.for_config(config))
     res = df[df["has_result"]]
     first = res["race_date"].min().date()
     run_dir = out_root / run_id
