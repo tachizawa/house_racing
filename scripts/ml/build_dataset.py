@@ -2,6 +2,8 @@
 
     .venv/Scripts/python.exe scripts/ml/build_dataset.py
     .venv/Scripts/python.exe scripts/ml/build_dataset.py --race-version 20261001T000000Z --race-version 20261002T000000Z
+    # 40年ぶんの版（data/_40y）と既存の血統の版（data/blood。BLDN）から作る
+    .venv/Scripts/python.exe scripts/ml/build_dataset.py --race-data-dir data/_40y
 
 整合性検査で FAIL が出ても保存はする（原因を調べるのに表が要るため）。学習スクリプトは
 FAIL のあるデータセットを既定で拒否する。
@@ -18,7 +20,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
 from keiba import console  # noqa: E402
-from keiba_ml.config import DEFAULT_CONFIG_PATH, ML_DATA_DIR, RACE_DATA_DIR, load_config  # noqa: E402
+from keiba_ml.config import (  # noqa: E402
+    BLOOD_DATA_DIR, DEFAULT_CONFIG_PATH, ML_DATA_DIR, RACE_DATA_DIR, load_config,
+)
 from keiba_ml.dataset import build, integrity  # noqa: E402
 
 
@@ -29,6 +33,8 @@ def main(argv: list[str] | None = None) -> int:
                         help=f"設定ファイル（省略時 {DEFAULT_CONFIG_PATH}）")
     parser.add_argument("--race-data-dir", type=Path, default=RACE_DATA_DIR,
                         help="既存のデータ版の場所（既定 %(default)s）")
+    parser.add_argument("--blood-data-dir", type=Path, default=BLOOD_DATA_DIR,
+                        help="既存の血統の版の場所（data.pedigree_source = \"blood\" のとき。既定 %(default)s）")
     parser.add_argument("--ml-data-dir", type=Path, default=ML_DATA_DIR)
     parser.add_argument("--race-version", action="append", default=None,
                         help="読むデータ版（繰り返し可）。省略時は設定ファイル、それも空なら CURRENT")
@@ -49,7 +55,8 @@ def main(argv: list[str] | None = None) -> int:
         # 作り終えてから save() が FileExistsError で落ちると、全部の作業が無駄になる。
         parser.error(f"データセット {args.dataset_id} は既にあります。別の --dataset-id を指定してください。")
     df, ped, names, report = build.build(config, race_data_dir=args.race_data_dir,
-                                         ml_data_dir=args.ml_data_dir)
+                                         ml_data_dir=args.ml_data_dir,
+                                         blood_data_dir=args.blood_data_dir)
     out = build.save(df, ped, names, report, config, ml_data_dir=args.ml_data_dir,
                      dataset_id=args.dataset_id)
     res = df[df["has_result"]]
@@ -59,6 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     if len(df):
         print(f"  期間 {df['race_date'].min().date()} 〜 {df['race_date'].max().date()}")
     stats = report["pedigree_stats"]
+    print(f"  血統の版: {report['pedigree_source']} {report['pedigree_versions']}")
     print(f"  血統: 対象 {stats['horses']:,} 頭 / いずれかの祖先あり {stats['with_any_pedigree']:,}"
           f" / 出どころ {stats['source_counts']}")
     print(f"  世代別の埋まり率: {stats['fill_rate_by_generation']}")

@@ -11,7 +11,7 @@ import pytest
 from keiba_ml.config import CodeConfig, DataConfig, MLConfig, PedigreeConfig, SplitConfig
 from keiba_ml.dataset import build, codes, integrity
 from keiba_ml.dataset.pedigree import build_pedigree, inbreeding_table, load_sources
-from keiba_ml.dataset.races import build_runners
+from keiba_ml.dataset.races import build_runners, load_raw
 from keiba_ml.dataset.split import history_frame, make_window, split_frame
 from keiba_ml.ingest import pedigree_store as ps
 from tests.fixtures import csv_data
@@ -82,6 +82,38 @@ def test_build_runners_prefers_result_rows_and_excludes_scratched():
     assert list(df["target_win"]) == [0.0, 1.0, 0.0]
     assert df["field_size"].unique().tolist() == [3]
     assert df["race_date"].iloc[0] == pd.Timestamp("2026-03-21")
+
+
+def _version_with_fromdate(data_dir, version_id, race_ids, fromdate):
+    races = [csv_data.make_race(race_id=r) for r in race_ids]
+    # 同じレースの再配信（行が2つ）でもレース数は1つと数える。
+    races += [csv_data.make_race(race_id=race_ids[-1], make_date="20260102")]
+    csv_data.write_dataset(data_dir, races,
+                           [csv_data.make_race_horse(race_id=r) for r in race_ids], [],
+                           version_id=version_id)
+    path = data_dir / "versions" / version_id / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps({**manifest, "fromdate": fromdate}), encoding="utf-8")
+
+
+def test_load_raw_drops_races_no_version_covers(tmp_path):
+    """セットアップ取得に混じる古い訂正再配信は、どの版の fromdate よりも前なので捨てる。"""
+    old = "1977061505030201"
+    _version_with_fromdate(tmp_path, "v1", [RID, old], "19860101000000")
+    races, runners = load_raw(tmp_path, ["v1"])
+    assert set(races["race_id"]) == {RID}
+    assert runners["race_id"].tolist() == [RID]
+    assert races.attrs["dropped_before_fromdate"] == {"cutoff": "19860101", "races": 1}
+
+
+def test_load_raw_keeps_corrections_older_than_a_later_versions_fromdate(tmp_path):
+    """fromdate は提供日。差分の版に入った古い日付のレースの訂正は、古い版が覆う範囲なら残す。"""
+    corrected = "2020061505030201"
+    _version_with_fromdate(tmp_path, "v1", [corrected], "19860101000000")
+    _version_with_fromdate(tmp_path, "v2", [RID, corrected], "20260301000000")
+    races, _ = load_raw(tmp_path, ["v1", "v2"])
+    assert set(races["race_id"]) == {RID, corrected}
+    assert races.attrs["dropped_before_fromdate"] == {"cutoff": "19860101", "races": 0}
 
 
 def test_build_runners_entry_only_rows_have_no_target():
@@ -253,6 +285,42 @@ def test_missing_pedigree_csv_stops_loading(tmp_path):
         load_sources(tmp_path)
 
 
+def test_blood_versions_are_stacked_so_a_delta_current_keeps_setup_rows(tmp_path):
+    """セットアップの版の後に差分だけの版を取ると CURRENT は差分を指す。全版を重ねて読む。"""
+    from keiba.ingest import records as keiba_records
+    from keiba.ingest import store as keiba_store
+    from keiba_ml.dataset.pedigree import load_blood_sources
+    from tests.fixtures import ml_records as mr
+
+    def commit(version_id, sk_rows):
+        writer = keiba_store.VersionWriter(tmp_path, version_id, dataspecs=["BLDN"],
+                                           fromdate="19860101000000", option=4,
+                                           files=keiba_store.BLOOD_FILES)
+        for ketto, sire, make_date in sk_rows:
+            writer.add("SK", keiba_records.parse_sk(mr.make_sk(
+                ketto_num=ketto, ancestors=[sire] + [""] * 13, make_date=make_date)))
+        writer.commit()
+
+    commit("20260101T000000Z", [("2015100001", "1000000001", "20251201"),
+                                ("2015100002", "1000000002", "20251201")])
+    commit("20260201T000000Z", [("2015100002", "1000000009", "20260131")])   # 訂正だけ
+    assert (tmp_path / "CURRENT").read_text(encoding="utf-8").strip() == "20260201T000000Z"
+    sources = load_blood_sources(tmp_path)
+    assert sources["versions"] == ["20260101T000000Z", "20260201T000000Z"]
+    sires = dict(zip(sources["SK"]["ketto_num"], sources["SK"]["anc_S"]))
+    assert sires == {"2015100001": "1000000001", "2015100002": "1000000009"}
+
+    # 書きかけ（.partial）は飛ばす
+    (tmp_path / "versions" / "20260301T000000Z.partial").mkdir()
+    assert load_blood_sources(tmp_path)["versions"] == ["20260101T000000Z", "20260201T000000Z"]
+    # 完成した名前なのに manifest が壊れた版は、黙って飛ばさず止める
+    broken = tmp_path / "versions" / "20260401T000000Z"
+    broken.mkdir()
+    (broken / "manifest.json").write_text("{", encoding="utf-8")
+    with pytest.raises(keiba_store.DataVersionError):
+        load_blood_sources(tmp_path)
+
+
 def _saved_dataset(ml_data_dir, config):
     df = pd.DataFrame({"race_id": ["r1"], "race_date": pd.to_datetime(["2020-01-01"]),
                        "has_result": [True]})
@@ -282,3 +350,5 @@ def test_config_mismatches_ignore_versions_but_catch_structure(tmp_path):
     assert build.config_mismatches(manifest, deeper) == ["pedigree_generations"]
     with_jump = MLConfig(data=DataConfig(include_jump=True))
     assert build.config_mismatches(manifest, with_jump) == ["data.include_jump"]
+    other_source = MLConfig(data=DataConfig(pedigree_source="ml"))
+    assert build.config_mismatches(manifest, other_source) == ["data.pedigree_source"]

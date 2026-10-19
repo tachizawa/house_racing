@@ -163,12 +163,13 @@ def check_split(train: pd.DataFrame, valid: pd.DataFrame, test: pd.DataFrame) ->
 
 def check_asof_sample(history: pd.DataFrame, feature_frame: pd.DataFrame, *, path: str,
                       shrinkage: float, exclude_self: bool,
-                      sample: int = 200, seed: int = 0) -> dict:
+                      sample: int = 200, seed: int = 0, only: pd.Index | None = None) -> dict:
     """as-of 産駒成績を、無作為に選んだ行で総当たりに計算し直して一致を確かめる。
 
     features.pedigree の累積計算（groupby + cumsum + merge_asof）が「その日より前」
     だけを使っていることを、遅いが自明に正しい方法で検算する。history は特徴量を
-    作ったのと同じ表（同じ index）を渡す。
+    作ったのと同じ表（同じ index）を渡す。only を渡すと、検算する行をその index の中から
+    選ぶ（評価する期間の行だけを確かめたいとき。履歴は history 全体を使う）。
     """
     from keiba_ml.features.pedigree import expected_top3
 
@@ -177,6 +178,8 @@ def check_asof_sample(history: pd.DataFrame, feature_frame: pd.DataFrame, *, pat
         return _result("asof_sample", "warn", f"{col} がありません。")
     hist = history[history["has_result"]]
     candidates = history.index[history[f"ped_{path}"] != ""]
+    if only is not None:
+        candidates = candidates.intersection(only)
     if len(candidates) == 0:
         return _result("asof_sample", "warn", "検算できる行がありません。")
     rng = np.random.default_rng(seed)
@@ -202,13 +205,14 @@ def check_asof_sample(history: pd.DataFrame, feature_frame: pd.DataFrame, *, pat
 
 def check_asof_samples(history: pd.DataFrame, feature_frame: pd.DataFrame, *,
                        paths: Sequence[str], shrinkage: float, exclude_self: bool,
-                       sample: int = 200, seed: int = 0) -> dict:
+                       sample: int = 200, seed: int = 0, only: pd.Index | None = None) -> dict:
     """check_asof_sample を産駒成績を出す全ての位置で行い、1つの結果にまとめる。
 
     先頭の位置だけでは、他の位置（母・母父 …）の未来情報の混入を見逃す。
     """
     by_path = {path: check_asof_sample(history, feature_frame, path=path, shrinkage=shrinkage,
-                                       exclude_self=exclude_self, sample=sample, seed=seed)
+                                       exclude_self=exclude_self, sample=sample, seed=seed,
+                                       only=only)
                for path in paths}
     order = {"ok": 0, "warn": 1, "fail": 2}
     status = max((r["status"] for r in by_path.values()), key=order.__getitem__, default="warn")

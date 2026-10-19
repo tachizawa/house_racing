@@ -193,7 +193,9 @@ def build_features(df: pd.DataFrame, *, pedigree: PedigreeConfig,
                    features: FeatureConfig) -> FeatureSet:
     """特徴量表を作る。df は prepare() 前のデータセットでよい。"""
     prepared = prepare(df)
-    cat_paths = [p for p in all_paths(pedigree.categorical_generations)]
+    generations = pedigree.categorical_generations
+    cat_paths = [p for p in (all_paths(generations) if generations else ())
+                 if p not in pedigree.categorical_exclude]
     frame = pd.DataFrame(index=prepared.index)
     cats: list[str] = []
     nums: list[str] = []

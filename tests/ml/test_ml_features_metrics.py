@@ -112,6 +112,30 @@ def test_feature_set_has_no_result_columns():
     assert fs.frame.loc[0, "ped_SS"] == "NA"
 
 
+def test_ancestors_are_not_categorical_features_by_default():
+    """祖先カテゴリは ordered TS で本人の過去走を数えるので既定で渡さない。祖先は st_* で入る。"""
+    from dataclasses import replace
+    df = _frame([("2020-01-01", "r1", "A", "S1", "d1", 1, 10)])
+    fs = build_features(df, pedigree=PedigreeConfig(generations=3, inbreeding_generations=3,
+                                                    stat_paths=("S", "D")),
+                        features=FeatureConfig())
+    assert not [c for c in fs.columns if c.startswith("ped_")]
+    assert {"st_S_ae_top3", "st_D_ae_top3"} <= set(fs.num_features)
+    fs = build_features(df, pedigree=replace(PED, categorical_exclude=("D", "DD")),
+                        features=FeatureConfig())
+    assert "ped_S" in fs.cat_features and "ped_DS" in fs.cat_features
+    assert "ped_D" not in fs.columns and "ped_DD" not in fs.columns
+
+
+def test_categorical_exclude_must_be_within_categorical_generations():
+    from keiba_ml.config import MLConfig, validate
+    with pytest.raises(ValueError, match="categorical_exclude"):
+        validate(MLConfig(pedigree=PedigreeConfig(categorical_generations=1,
+                                                  categorical_exclude=("DS",))))
+    with pytest.raises(ValueError, match="categorical_exclude"):
+        validate(MLConfig(pedigree=PedigreeConfig(categorical_exclude=("D",))))
+
+
 # --- metrics ---------------------------------------------------------------
 
 def _race(scores, ranks, race_id="r1"):
@@ -123,6 +147,41 @@ def _race(scores, ranks, race_id="r1"):
     pred = make_predictions(rows, np.array(scores, dtype=float), model_name="m",
                             model_version="v", fold="test")
     return pred, truth
+
+
+def test_paired_difference_is_per_race_and_only_on_common_races():
+    """A − B をレースごとに取る。片方にしか無いレースは数えない。"""
+    ranks = [1, 2, 3, 4, 5, 6]
+    good1, truth1 = _race([6, 5, 4, 3, 2, 1], ranks, "r1")    # 3頭とも当たる
+    bad1, _ = _race([1, 2, 3, 4, 5, 6], ranks, "r1")          # 1頭も当たらない
+    good2, truth2 = _race([6, 5, 1, 4, 2, 3], ranks, "r2")    # 2頭
+    only_a, truth3 = _race([6, 5, 4, 3, 2, 1], ranks, "r3")   # A にしか無い
+    truth = pd.concat([truth1, truth2, truth3], ignore_index=True)
+    a = pd.concat([good1, good2, only_a], ignore_index=True)
+    b = pd.concat([bad1, good2], ignore_index=True)
+    diff = metrics.paired_difference(a, b, truth, n_boot=200)
+    assert diff["races"] == 2
+    assert diff["hits"]["a"] == pytest.approx(2.5)
+    assert diff["hits"]["b"] == pytest.approx(1.0)
+    assert diff["hits"]["diff"] == pytest.approx(1.5)
+    assert diff["hits"]["races_differing"] == pytest.approx(0.5)
+    assert diff["hits"]["ci95"][0] <= 1.5 <= diff["hits"]["ci95"][1]
+    same = metrics.paired_difference(a, a, truth, n_boot=200)
+    assert same["hits"]["diff"] == 0 and same["hits"]["ci95"] == [0.0, 0.0]
+
+
+def test_paired_difference_without_matching_races_and_with_undefined_ndcg():
+    ranks = [1, 2, 3, 4, 5, 6]
+    pred, truth = _race([6, 5, 4, 3, 2, 1], ranks, "r1")
+    elsewhere, _ = _race([6, 5, 4, 3, 2, 1], ranks, "other")
+    assert metrics.paired_difference(elsewhere, pred, truth) == {"races": 0}
+    # 全頭が中止・失格のレースは理想の関連度が 0 で nDCG が NaN。「違う」とは数えない。
+    nan_a, nan_truth = _race([6, 5, 4], [None, None, None], "r2")
+    nan_b, _ = _race([1, 2, 3], [None, None, None], "r2")
+    diff = metrics.paired_difference(nan_a, nan_b, nan_truth, n_boot=50)
+    assert diff["races"] == 1
+    assert np.isnan(diff["ndcg"]["races_differing"])
+    assert diff["hits"]["races_differing"] == 0.0
 
 
 def test_per_race_hits_and_chance():

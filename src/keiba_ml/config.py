@@ -21,6 +21,8 @@ from keiba import config as keiba_config
 PROJECT_ROOT = keiba_config.PROJECT_ROOT
 #: 既存モデルのデータ版（races.csv / race_horses.csv）の置き場所。読むだけで書かない。
 RACE_DATA_DIR = keiba_config.DATA_DIR
+#: 既存の血統の版（pedigrees.csv / breeding_horses.csv。dataspec BLDN）の置き場所。読むだけ。
+BLOOD_DATA_DIR = keiba_config.BLOOD_DATA_DIR
 #: 機械学習系の出力（血統の版・データセット・モデル・予測・評価）。/data/ 配下なので
 #: .gitignore 済み（JRA-VAN のデータは再配布不可）。
 ML_DATA_DIR = keiba_config.DATA_DIR / "ml"
@@ -86,8 +88,15 @@ class DataConfig:
     #: 期間を分けて取得した版を束ねたいときに並べる（同じ行は data_kubun の
     #: 優先順位と make_date で1行に絞る）。
     race_versions: tuple[str, ...] = ()
-    #: 血統の版。空なら data/ml/pedigree/versions/ の完成済みの版を全部、古い順に
-    #: 重ねる（セットアップ取得 → 差分 の順に積む想定。新しい行が勝つ）。
+    #: 血統をどこから読むか。
+    #:   "blood" … 既存の血統の版（data/blood/versions/。update_data.py --kind blood、
+    #:              dataspec BLDN）。実データで照合済みなので既定
+    #:   "ml"    … この層の版（data/ml/pedigree/versions/。scripts/ml/update_pedigree.py）。
+    #:              UM の3代血統で補えるのはこちらだけ
+    pedigree_source: str = "blood"
+    #: 血統の版。空ならその出どころ（data/blood/versions/ か data/ml/pedigree/versions/）の
+    #: 完成済みの版を全部、古い順に重ねる（セットアップ取得 → 差分 の順に積む想定。
+    #: 新しい行が勝つ。CURRENT が差分だけの版を指していても SK/HN が欠けない）。
     pedigree_versions: tuple[str, ...] = ()
     #: 中央（01〜10）だけを使う。地方・海外は条件が揃わないため既定で除く。
     jra_only: bool = True
@@ -112,9 +121,18 @@ class PedigreeConfig:
     #: 既定は configs/ml/pedigree.toml と同じ5世代（inbreeding_generations 以上に
     #: しておかないと、設定ファイルで省いたときに validate() が通らない）。
     generations: int = 5
-    #: カテゴリ特徴量として CatBoost に渡す祖先の位置の世代上限。
-    #: 深い世代ほど同じ祖先を共有する馬が増えて情報が薄まるので、既定は3世代。
-    categorical_generations: int = 3
+    #: カテゴリ特徴量として CatBoost に渡す祖先の位置の世代上限。0 なら渡さない（既定）。
+    #:
+    #: CatBoost の ordered target statistics は「同じカテゴリの、その行より前の行」の
+    #: 結果を数えるので本人や近親の過去走が混ざり（exclude_self が効かない）、しかも
+    #: 数値は学習期間の結果で固定される。実データ（2014〜2023年で学習、2024年で検証、
+    #: 2025年でテスト。2026-10-19）では、カテゴリを入れると母・母母が重要度の 30〜40% を
+    #: 占めて 35〜37 反復で過学習し、検証からテストへの落ち方が 0.15〜0.17 頭と大きかった
+    #: （入れない場合は 0.04 頭。テストの的中数は 0.889 → 1.001）。祖先の情報は本人を除いた
+    #: as-of の産駒成績（st_<位置>_*）で入れる。docs/ml/README.md §4.2。
+    categorical_generations: int = 0
+    #: categorical_generations > 0 のとき、カテゴリから外す祖先の位置（例: ("D", "DD")）。
+    categorical_exclude: tuple[str, ...] = ()
     #: 近交係数（Wright の近似）とクロス数を数える世代数。
     inbreeding_generations: int = 5
     #: 産駒成績（as-of の A/E）を集計する祖先の位置。
@@ -288,11 +306,18 @@ def config_from_dict(raw: dict[str, Any], *, source: str = "設定") -> MLConfig
 
 
 def validate(config: MLConfig) -> None:
+    if config.data.pedigree_source not in ("blood", "ml"):
+        raise ValueError('data.pedigree_source は "blood" か "ml" です。')
     p = config.pedigree
     if p.generations < 1:
         raise ValueError("pedigree.generations は 1 以上にしてください。")
-    if not 1 <= p.categorical_generations <= p.generations:
-        raise ValueError("pedigree.categorical_generations は 1〜generations にしてください。")
+    if not 0 <= p.categorical_generations <= p.generations:
+        raise ValueError("pedigree.categorical_generations は 0〜generations にしてください。")
+    categorical = all_paths(p.categorical_generations) if p.categorical_generations else ()
+    bad = [x for x in p.categorical_exclude if x not in categorical]
+    if bad:
+        raise ValueError(
+            f"pedigree.categorical_exclude に categorical_generations を超える位置があります: {bad}")
     if not 1 <= p.inbreeding_generations <= p.generations:
         raise ValueError("pedigree.inbreeding_generations は 1〜generations にしてください。")
     if not p.stat_paths:

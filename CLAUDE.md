@@ -250,18 +250,36 @@ scripts/update_data.py --dataspec RACE --fromdate 20230801000000
 ## 機械学習系（`src/keiba_ml/`、2026-10-16 追加）
 
 開発方針「CatBoost を中心に個別モデルを段階的に作る」の Phase 1（データ基盤）と
-Phase 2（血統モデル）。**実データでは未検証**（開発環境に JV-Link と SDK が無く、
-合成データでのみ端から端まで確認した）。使い方・設計・未決定事項は `docs/ml/README.md`。
+Phase 2（血統モデル）。**2026-10-19 に実データで端から端まで確認した**（データセット作成 →
+学習 → テスト評価 → 出馬表の予想）。使い方・設計・確認の内容・結果は `docs/ml/README.md` §7〜8。
 
 - **既存モデルとの境界を崩さないこと。** `keiba_ml` → `keiba` は JV-Link 層・データ版の
-  場所・コード表だけを借りる。`keiba` → `keiba_ml` の import は作らない。既存のデータ版
-  （`data/versions/`）には書かない。出力は `data/ml/`
-- 依存は `requirements-ml.txt`（catboost / pyarrow）。既存のテストはこれ無しで通る
-- 血統レコード（SK/HN/UM の3代血統）の位置は仕様書から写しただけ。
-  **学習の前に `scripts/ml/check_offsets.py` と `build_dataset.py` の整合性レポート
-  （`pedigree_parent_link`）で確かめる**
+  場所と読み方・コード表だけを借りる。`keiba` → `keiba_ml` の import は作らない。既存のデータ版
+  （`data/versions/` `data/blood/`）には書かない。出力は `data/ml/`
+- 依存は `requirements-ml.txt`（catboost / pyarrow。2026-10-19 に `.venv` へ導入済み）。既存のテストはこれ無しで通る
+- **血統は既存の BLDN の版（`data/blood/`）を読む**（`data.pedigree_source = "blood"`、既定）。
+  `scripts/ml/update_pedigree.py` は UM で補いたいときだけ。BLOD は使わない
+- 手順（現在の最終モデルは `data/ml/runs/20261019_final/10y`）:
+
+  ```bash
+  .venv/Scripts/python.exe scripts/ml/build_dataset.py --race-data-dir data/_40y
+  .venv/Scripts/python.exe scripts/ml/train_pedigree.py --years 10
+  .venv/Scripts/python.exe scripts/ml/predict_pedigree.py --model data/ml/runs/<run_id>/10y
+  ```
+
+- **独立な評価は 2026年（2026-01-04〜10-12、2,636レース）**。`evaluate_pedigree.py` で1回だけ実行した。
+  上位3頭の的中数は**血統モデル 0.974 [0.944, 1.000]**、偶然 0.689。父×芝ダ×距離の A/E との差は
+  +0.124 [+0.092, +0.156]（対応ありブートストラップ）。ECE 0.0050。市場（オッズ）との比較はしていない。
+  **2025年（テスト期間）の 1.0015 は、祖先カテゴリの組と学習期間を選ぶのに使った後の値**なので独立ではない。
+  2026年の同じ期間は `holdout_20260101_20261018.json` があるので再評価できない（上書きを拒む）
+- **祖先の繁殖登録番号を CatBoost のカテゴリにしない**（`categorical_generations = 0`）。ordered TS は
+  本人・近親の過去走を数え（`exclude_self` が効かない）、学習期間の値で固定される。入れると母・母母が
+  重要度 30〜40% を占めて35反復前後で過学習し、テストの的中数は 0.889。この判断はテストを見た後のもの
 - 産駒成績の特徴量は as-of（レース日より前・本人の過去走を除く）。この規律を外すと
   未来情報や本人の成績が血統モデルに混ざる。`tests/ml/test_ml_features_metrics.py` が固定している
+- 学習期間の比較（10/20/30/40年）では差が確認できなかった（40年−10年 +0.005 [−0.016, +0.024]、
+  対応ありブートストラップ。`scripts/ml/compare_runs.py --run data/ml/runs/20261019_compare --dataset-id 20261019T060220Z` で出し直せる）。最終モデルは10年。
+  40年の比較は Python だけで最大 13.3GB 使う
 
 ## 何を作るのか
 
@@ -563,7 +581,7 @@ venv は `.venv`（Python 3.13.3 / 64bit）。コマンドは `.venv` の python
 # 依存（初回のみ）
 .venv/Scripts/python.exe -m pip install -r requirements.txt
 
-# テスト全体（2026-10-19 実行: 1666 passed, 3 skipped）
+# テスト全体（2026-10-19 実行: 1693 passed。catboost を入れると skip は 0）
 .venv/Scripts/python.exe -m pytest
 
 # テスト1件だけ

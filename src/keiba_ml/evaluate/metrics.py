@@ -96,6 +96,42 @@ def summarize(races: pd.DataFrame, *, n_boot: int = 1000, seed: int = 0) -> dict
     return out
 
 
+def paired_difference(pred_a: pd.DataFrame, pred_b: pd.DataFrame, truth: pd.DataFrame, *,
+                      top_n: int = 3, n_boot: int = 1000, seed: int = 0) -> dict:
+    """同じレースでの A − B の差（hits / all_hit / winner_in_pred / ndcg）と 95% 区間。
+
+    2つのモデルを同じテスト期間で比べるときは、片方ずつの区間が重なるかではなく、
+    レースごとの差を対応ありでブートストラップする（同じレースの難しさが両方に効くので、
+    差の区間は片方ずつの区間よりずっと狭い）。両方に予測があるレースだけを使う。
+    """
+    a, b = per_race(pred_a, truth, top_n=top_n), per_race(pred_b, truth, top_n=top_n)
+    if a.empty or b.empty:
+        # per_race は対象が無いと列の無い表を返す（set_index できない）。
+        return {"races": 0}
+    a, b = a.set_index("race_id"), b.set_index("race_id")
+    common = a.index.intersection(b.index)
+    a, b = a.loc[common], b.loc[common]
+    out: dict = {"races": int(len(common))}
+    if not len(common):
+        return out
+    for name in ("hits", "all_hit", "winner_in_pred", "ndcg"):
+        diff = (a[name] - b[name]).to_numpy(dtype=float)
+        low, high = _bootstrap_ci(diff, n_boot=n_boot, seed=seed)
+        # nDCG は理想の関連度が 0 のレースで NaN。差の定まらないレースは数えない。
+        finite = diff[np.isfinite(diff)]
+        out[name] = {"a": _mean(a[name]), "b": _mean(b[name]), "diff": _mean(diff),
+                     "ci95": [low, high],
+                     "races_differing": float(np.mean(finite != 0)) if len(finite) else np.nan}
+    return out
+
+
+def _mean(values) -> float:
+    """NaN を除いた平均。全部 NaN なら NaN（np.nanmean の警告を出さない）。"""
+    values = np.asarray(values, dtype=float)
+    values = values[~np.isnan(values)]
+    return float(values.mean()) if len(values) else np.nan
+
+
 def calibration(prob: np.ndarray, y: np.ndarray, *, bins: int = 10) -> dict:
     """2値（3着以内）の確率の較正。ビンは予測確率の等幅。"""
     prob = np.clip(np.asarray(prob, dtype=float), 1e-6, 1 - 1e-6)
