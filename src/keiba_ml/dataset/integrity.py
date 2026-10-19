@@ -238,8 +238,8 @@ def check_distance_asof_sample(history: pd.DataFrame, feature_frame: pd.DataFram
 
     features.distance の累積計算（groupby + 累積 + merge_asof）が同じ日・後の日の結果を
     使っていないことを、遅いが自明に正しい方法で検算する。config は DistanceConfig。
-    確かめる列: 本人の出走数・平均出走距離との差・前走距離との差・芝ダ×距離帯の相対的な走り、
-    祖先ごとの産駒の走った数・3着以内の平均距離との差。
+    確かめる列: 本人の今回の距離帯での出走数・平均出走距離との差・前走距離との差・
+    芝ダ×距離帯の相対的な走り、祖先ごとの産駒の平均距離・3着以内の平均距離との差。
     """
     hist = history[history["has_result"]]
     candidates = history.index if only is None else history.index.intersection(only)
@@ -255,8 +255,10 @@ def check_distance_asof_sample(history: pd.DataFrame, feature_frame: pd.DataFram
         prior = hist[(hist["ketto_num"] == row["ketto_num"])
                      & (hist["race_date"] < row["race_date"])]
         dist = pd.to_numeric(prior["kyori_m"], errors="coerce").dropna()
+        same_band = pd.to_numeric(prior.loc[prior["distance_band"] == row["distance_band"],
+                                            "kyori_m"], errors="coerce").dropna()
         expected = {
-            "own_log_runs": np.log1p(len(dist)),
+            "own_log_runs_dband": np.log1p(len(same_band)),
             "dist_minus_mean": km - dist.mean() if len(dist) else np.nan,
             "dist_minus_last": (km - float(prior.sort_values("race_date")["kyori_m"].iloc[-1])
                                 if len(dist) else np.nan),
@@ -278,16 +280,17 @@ def check_distance_asof_sample(history: pd.DataFrame, feature_frame: pd.DataFram
             if config.exclude_self:
                 kin = kin[kin["ketto_num"] != row["ketto_num"]]
             top3 = pd.to_numeric(kin.loc[kin["target_top3"] == 1, "kyori_m"], errors="coerce")
-            expected[f"ped_{path}_log_runs"] = np.log1p(len(_beat_fraction(kin)))
-            expected[f"ped_{path}_dist_minus_top3_mean"] = (
-                km - top3.mean() if len(top3) else np.nan)
+            ran = pd.to_numeric(kin.loc[_beat_fraction(kin).index, "kyori_m"], errors="coerce")
+            mean = ran.mean() if len(ran) else np.nan
+            expected[f"ped_{path}_dist_minus_mean"] = km - mean
+            expected[f"ped_{path}_dist_minus_top3_mean"] = km - (top3.mean() if len(top3) else mean)
         for name, value in expected.items():
             feature = float(feature_frame.at[idx, name])
             if not np.isclose(value, feature, rtol=1e-5, atol=1e-5, equal_nan=True):
                 mismatches.append({"index": int(idx), "feature": name,
                                    "recomputed": float(value), "value": feature})
     return _result("distance_asof_sample", "ok" if not mismatches else "fail",
-                   "距離適性の特徴量（本人の距離の経験・相対的な走り・産駒の傾向）を"
+                   "距離適性の特徴量（本人の距離の経験・相対的な走り・産駒の距離の傾向）を"
                    "総当たりで検算して一致するか",
                    checked=int(len(picked)), mismatches=mismatches[:10])
 

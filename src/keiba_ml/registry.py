@@ -133,10 +133,12 @@ def _distance_describe(rows: pd.DataFrame, features: FeatureSet,
     return pd.DataFrame({
         "前走距離": back("dist_minus_last"),
         "平均距離": back("dist_minus_mean"),
-        "好走距離": back("dist_minus_top3_mean"),
         "同距離帯の出走": np.expm1(frame["own_log_runs_surface_dband"].astype(float))
         .round(0).astype("Int64"),
+        # 負なら短い距離ほど走れている（1km 延びると負かす馬の割合がこれだけ変わる）
+        "距離の傾き": frame["own_slope_pf"].astype(float).round(3),
         "父": rows["ped_S"].map(names).fillna("") if "ped_S" in rows else "",
+        "父産駒の好走距離": back("ped_S_dist_minus_top3_mean"),
     }, index=rows.index)
 
 
@@ -152,7 +154,7 @@ MODELS: dict[str, ModelSpec] = {
         build_features=_distance_features,
         stats_history=lambda config: config.distance.stats_history,
         baselines=_distance_baselines, asof_checks=_distance_checks,
-        required_columns=("result_margin_sec", "result_weight_kg"),
+        required_columns=("result_margin_sec",),
         describe=_distance_describe),
 }
 

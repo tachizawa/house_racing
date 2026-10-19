@@ -5,6 +5,15 @@
 ここでは**その馬の普段の走りに対する相対的な量**だけを作る。強さの水準が入らないので、
 統合するときに過去成績モデルと情報が二重に数えられにくい。
 
+**守ること: 強さだけが違う2頭（どの走りも同じだけ良い／悪い）は、本人の特徴量が完全に
+一致する**（tests/ml/test_ml_distance.py が固定している）。次のものは強さの代わりになるので
+入れない（2026-10-20、実データの重要度で見つけて外した。docs/ml/README.md §10）:
+
+- 3着以内に入った距離の平均 … 3着以内の経験が無い馬で欠損になり、欠損かどうかが強さを表す
+- 走りの質で重みを付けた平均距離 … 走りの水準で重みの付き方が変わる
+- 総出走数・前走の馬体重 … 距離と関係なく好走のしやすさと相関する
+- 祖先の産駒の出走数 … 種牡馬の人気 = 血統の質（血統モデルの担当）
+
 1走ごとの「走りの質」は2つで測る（どちらも大きいほど良い）:
 
 - ``pf``（beat fraction）… 負かした馬の割合。(頭数 − 着順) / (頭数 − 1)。1着 1.0、最下位 0.0
@@ -21,14 +30,13 @@
 2. **本人の距離と走りの傾き**（``own_slope_*`` / ``own_fit_*``）… 走りの質を距離（km）に
    回帰した傾きと、それを今回の距離に当てはめた値（傾き × (今回の距離 − 平均出走距離)）。
    正なら「今回の距離はこの馬の普段より走れる側」
-3. **距離の経験**（``dist_minus_*``）… 今回の距離 − 平均出走距離・前走距離・最長・最短・
-   3着以内に入った距離の平均・走りの質で重みを付けた平均距離（m）。延長・短縮もここで表す
-4. **体格**（``own_last_weight``）… 前走の馬体重。当日の馬体重は前日には分からないので使わない
-5. **血統から見た距離の傾向**（``ped_<位置>_*``）… 父・母父の産駒の、距離帯ごとの走り
-   （産駒全体の平均と比べた相対値）、距離と走りの傾き、3着以内に入った距離の平均。
-   本人の過去走は除く（DistanceConfig.exclude_self）。初出走の馬は 1〜4 が欠損になり、
-   ここだけが手がかりになる
-6. **条件**（DistanceConfig.context）
+3. **距離の経験**（``dist_minus_*`` / ``own_log_runs_*``）… 今回の距離 − 平均出走距離・
+   前走距離・最長・最短（m）と、今回の距離帯での出走数。延長・短縮もここで表す
+4. **血統から見た距離の傾向**（``ped_<位置>_*``）… 父・母父の産駒の、距離帯ごとの走り
+   （産駒全体の平均と比べた相対値）、距離と走りの傾き、産駒の平均距離・3着以内に入った
+   距離の平均（好走した産駒がまだいなければ平均距離で埋める）。本人の過去走は除く
+   （DistanceConfig.exclude_self）。初出走の馬は 1〜3 が欠損になり、ここだけが手がかりになる
+5. **条件**（DistanceConfig.context）
 
 距離は km で計算し、距離との差は m で出す。
 """
@@ -48,7 +56,7 @@ _PERF_SUMS = {
     "s_pfd": "_pfd", "s_pmd": "_pmd",
 }
 #: 距離の経験を集める列。
-_RUN_SUMS = {"n_r": "_run", "s_dr": "_d", "n_t3": "_t3", "s_dt3": "_dt3"}
+_RUN_SUMS = {"n_r": "_run", "s_dr": "_d"}
 
 
 def prepare(df: pd.DataFrame, config: DistanceConfig) -> pd.DataFrame:
@@ -78,8 +86,6 @@ def prepare(df: pd.DataFrame, config: DistanceConfig) -> pd.DataFrame:
     df["_t3"] = top3.astype(float)
     df["_dt3"] = np.where(top3, km, 0.0)
     df["_km"] = np.where(run, km, np.nan)
-    df["_weight"] = pd.to_numeric(df["result_weight_kg"], errors="coerce").astype(float) \
-        .where(has)
     df["_target_km"] = km
     return df
 
@@ -120,7 +126,7 @@ def _slope(s: pd.DataFrame, value: str, cross: str, ridge: float) -> pd.Series:
 
 
 def own_features(prepared: pd.DataFrame, config: DistanceConfig) -> pd.DataFrame:
-    """本人の過去走から作る特徴量（上の docstring の 1〜4）。"""
+    """本人の過去走から作る特徴量（上の docstring の 1〜3）。"""
     m = config.own_shrinkage
     target_km = prepared["_target_km"]
     out = pd.DataFrame(index=prepared.index)
@@ -128,14 +134,13 @@ def own_features(prepared: pd.DataFrame, config: DistanceConfig) -> pd.DataFrame
     whole = _sums(prepared, ["ketto_num"], {**_PERF_SUMS, **_RUN_SUMS})
     extremes = asof(prepared, ["ketto_num"],
                     {"last_km": ("_km", "last"), "max_km": ("_km", "max"),
-                     "min_km": ("_km", "min"), "last_weight": ("_weight", "last")},
+                     "min_km": ("_km", "min")},
                     include=prepared["has_result"].to_numpy(dtype=bool))
     perf_names = {"n_p": "_perf", "s_pf": "_pf", "s_pm": "_pm", "n_r": "_run"}
     band = _sums(prepared, ["ketto_num", "distance_band"], perf_names)
     surface = _sums(prepared, ["ketto_num", "track_kind"], perf_names)
     surface_band = _sums(prepared, ["ketto_num", "track_kind", "distance_band"], perf_names)
 
-    out["own_log_runs"] = np.log1p(whole["n_r"])
     out["own_log_runs_dband"] = np.log1p(band["n_r"])
     out["own_log_runs_surface_dband"] = np.log1p(surface_band["n_r"])
     for q in ("pf", "pm"):
@@ -151,14 +156,11 @@ def own_features(prepared: pd.DataFrame, config: DistanceConfig) -> pd.DataFrame
     out["dist_minus_last"] = (target_km - extremes["last_km"]) * to_m
     out["dist_minus_max"] = (target_km - extremes["max_km"]) * to_m
     out["dist_minus_min"] = (target_km - extremes["min_km"]) * to_m
-    out["dist_minus_top3_mean"] = (target_km - _mean(whole["s_dt3"], whole["n_t3"])) * to_m
-    out["dist_minus_pref"] = (target_km - _mean(whole["s_pfd"], whole["s_pf"])) * to_m
-    out["own_last_weight"] = extremes["last_weight"]
     return out
 
 
 def pedigree_features(prepared: pd.DataFrame, config: DistanceConfig) -> pd.DataFrame:
-    """父・母父などの産駒の距離の傾向（上の docstring の 5）。"""
+    """父・母父などの産駒の距離の傾向（上の docstring の 4）。"""
     m = config.pedigree_shrinkage
     target_km = prepared["_target_km"]
     out = pd.DataFrame(index=prepared.index)
@@ -172,15 +174,17 @@ def pedigree_features(prepared: pd.DataFrame, config: DistanceConfig) -> pd.Data
         surface_band = _sums(prepared, [col, "track_kind", "distance_band"], perf_names,
                              exclude_self=config.exclude_self)
         prefix = f"ped_{path}"
-        out[f"{prefix}_log_runs"] = np.log1p(whole["n_p"])
-        out[f"{prefix}_log_runs_surface_dband"] = np.log1p(surface_band["n_p"])
+        mean_km = _mean(whole["s_d"], whole["n_p"])
         out[f"{prefix}_rel_pf_surface_dband"] = _shrunk_relative(
             surface_band["s_pf"], surface_band["n_p"], surface["s_pf"], surface["n_p"], m)
         slope = _slope(whole, "s_pf", "s_pfd", config.slope_ridge)
         out[f"{prefix}_slope_pf"] = slope
-        out[f"{prefix}_fit_pf"] = slope * (target_km - _mean(whole["s_d"], whole["n_p"]))
-        out[f"{prefix}_dist_minus_top3_mean"] = \
-            (target_km - _mean(whole["s_dt3"], whole["n_t3"])) * 1000.0
+        out[f"{prefix}_fit_pf"] = slope * (target_km - mean_km)
+        out[f"{prefix}_dist_minus_mean"] = (target_km - mean_km) * 1000.0
+        # 3着以内の産駒がまだいない祖先は、産駒の平均距離で埋める。欠損のままだと
+        # 「好走した産駒がいるか」= 祖先の質を表してしまう（血統モデルの担当）。
+        top3_km = _mean(whole["s_dt3"], whole["n_t3"]).fillna(mean_km)
+        out[f"{prefix}_dist_minus_top3_mean"] = (target_km - top3_km) * 1000.0
     return out
 
 

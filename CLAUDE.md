@@ -25,7 +25,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `src/keiba/evaluate/{top3_metrics,top3_backtest,coverage}.py` | 3着内の採点・比較・データ充足度 |
 | `src/keiba/store/top3_records.py` | 3着内予想の記録（`data/top3/`） |
 | `scripts/` | `update_data` / `predict` / `fit_weights` / `backtest` / `smoke_test` / `dossier` / `backtest_top3` / `data_coverage` |
-| `src/keiba_ml/` | **機械学習系（血統 CatBoost ほか）。既存モデルとは独立**。説明は `docs/ml/README.md` |
+| `src/keiba_ml/` | **機械学習系（血統・距離適性の CatBoost ほか）。既存モデルとは独立**。モデルは `registry.py` で束ねる。説明は `docs/ml/README.md` |
 | `scripts/ml/` / `configs/ml/` / `tests/ml/` | 機械学習系の CLI・設定・テスト |
 | `vendor/jravan-sdk-500-64bit/` | JRA-VAN SDK 5.0.0（64bit）の展開物。再配布不可のため `.gitignore` 済み |
 | `data/` | 取得したデータ版・予想記録・重み。再配布不可のため `.gitignore` 済み |
@@ -259,12 +259,17 @@ Phase 2（血統モデル）。**2026-10-19 に実データで端から端まで
 - 依存は `requirements-ml.txt`（catboost / pyarrow。2026-10-19 に `.venv` へ導入済み）。既存のテストはこれ無しで通る
 - **血統は既存の BLDN の版（`data/blood/`）を読む**（`data.pedigree_source = "blood"`、既定）。
   `scripts/ml/update_pedigree.py` は UM で補いたいときだけ。BLOD は使わない
-- 手順（現在の最終モデルは `data/ml/runs/20261019_final/10y`）:
+- **個別モデルは登録表 `src/keiba_ml/registry.py` で束ねる（2026-10-20）。** モデルごとに違うのは
+  特徴量・比較用の基準・未来情報の検算・予想時の表示・要る列だけで、学習・評価・予想の手順
+  （`experiment.py`、`scripts/ml/train.py` / `evaluate.py` / `predict.py` / `compare_runs.py`）は共通。
+  設定は `configs/ml/<model>.toml`（`[experiment] model` で種類を示す）、出力は `data/ml/runs/<model>/<run_id>/`。
+  モデルの足し方は `docs/ml/README.md` §9。`*_pedigree.py` は `--model pedigree` に固定した互換の入口
+- 手順（血統の最終モデルは `data/ml/runs/20261019_final/10y`。2026-10-19 の実行は `runs/<model>/` の下に無い）:
 
   ```bash
   .venv/Scripts/python.exe scripts/ml/build_dataset.py --race-data-dir data/_40y
-  .venv/Scripts/python.exe scripts/ml/train_pedigree.py --years 10
-  .venv/Scripts/python.exe scripts/ml/predict_pedigree.py --model data/ml/runs/<run_id>/10y
+  .venv/Scripts/python.exe scripts/ml/train.py --model pedigree --years 10      # または --model distance
+  .venv/Scripts/python.exe scripts/ml/predict.py --model data/ml/runs/<model>/<run_id>/10y
   ```
 
 - **独立な評価は 2026年（2026-01-04〜10-12、2,636レース）**。`evaluate_pedigree.py` で1回だけ実行した。

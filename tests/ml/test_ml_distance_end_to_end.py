@@ -60,15 +60,14 @@ def dataset(world):
 
 
 def test_features_recover_the_true_preferred_distance(world, dataset):
-    """平均出走距離ではなく走りから決まる「好走距離」が、真の得意距離と相関する。"""
+    """距離と走りの傾きは真の得意距離と、今回の距離への当てはめは真の距離の合い方と同じ向き。"""
     df, _, _ = dataset
     frame = build_features(df, load_config(model="distance").distance).frame
     km = df["kyori_m"].astype(float)
-    best = (km - frame["dist_minus_pref"].astype(float)) / 1000.0
     truth = df["ketto_num"].map(lambda k: world.horses[k]["pref_km"])
-    late = (df["year"] >= 2018) & frame["own_log_runs"].gt(np.log1p(5))
-    assert np.corrcoef(best[late], truth[late])[0, 1] > 0.3
-    # 本人の「今回の距離での走り − 普段の走り」は、真の距離の合い方と同じ向き
+    runs_before = df.groupby("ketto_num").cumcount()
+    late = (df["year"] >= 2018) & (runs_before >= 6)
+    assert np.corrcoef(frame.loc[late, "own_slope_pf"], truth[late])[0, 1] > 0.2
     fit = -(km / 1000.0 - truth) ** 2
     assert np.corrcoef(frame.loc[late, "own_fit_pf"], fit[late])[0, 1] > 0.2
 
@@ -135,7 +134,7 @@ def test_train_script_writes_under_the_model_name_and_checks_the_config(world, d
 
 def test_old_dataset_without_the_new_columns_is_refused(dataset, tmp_path):
     df, _, _ = dataset
-    old = df.drop(columns=["result_margin_sec", "result_weight_kg"])
+    old = df.drop(columns=["result_margin_sec"])
     with pytest.raises(IntegrityError, match="build_dataset.py"):
         run_comparison(old, _distance_config(), out_root=tmp_path, run_id="x")
     assert not (tmp_path / "x").exists()        # 実行の記録を書く前に止める

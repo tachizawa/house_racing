@@ -92,18 +92,43 @@ def test_sprinter_looks_better_at_short_distance():
                 "own_fit_pf", "own_fit_pm"):
         assert frame.at[short, col] > 0 > frame.at[long_, col], col
     assert frame.at[short, "own_slope_pf"] < 0
-    assert frame.at[short, "own_log_runs"] == pytest.approx(np.log1p(5))
     assert frame.at[short, "own_log_runs_dband"] == pytest.approx(np.log1p(3))
+    assert frame.at[long_, "own_log_runs_dband"] == pytest.approx(np.log1p(2))
     assert frame.at[short, "dist_minus_last"] == 0.0
     assert frame.at[long_, "dist_minus_last"] == 800.0
     assert frame.at[long_, "dist_minus_max"] == 0.0
     assert frame.at[short, "dist_minus_min"] == 0.0
-    assert frame.at[short, "dist_minus_top3_mean"] == 0.0     # 3着以内は全部 1200m
     assert frame.at[short, "dist_minus_mean"] == pytest.approx(1200 - 7600 / 5)
-    assert frame.at[short, "own_last_weight"] == 490.0
-    # 父の産駒（本人を除く = Y だけ）が3着以内に入ったのは 1200m
+    # 父の産駒（本人を除く = Y だけ）が3着以内に入ったのは 1200m、走った平均は 1800m
     assert frame.at[long_, "ped_S_dist_minus_top3_mean"] == 800.0
-    assert frame.at[short, "ped_S_log_runs"] == pytest.approx(np.log1p(2))
+    assert frame.at[long_, "ped_S_dist_minus_mean"] == pytest.approx(200.0)
+    for removed in ("own_log_runs", "own_last_weight", "dist_minus_top3_mean",
+                    "dist_minus_pref", "ped_S_log_runs"):
+        assert removed not in frame.columns
+
+
+def _two_horses_differing_only_in_strength() -> pd.DataFrame:
+    """A と B は、どの距離でも B が同じだけ悪い（負かした馬の割合も、1km あたりの着差も）。"""
+    rows = []
+    for ketto, shift_rank, shift_pm, sire in (("A", 0, 0.0, "SA"), ("B", 3, 0.5, "SB")):
+        for day, kyori, rank, pm in (("2020-01-05", 1200, 1, 0.0), ("2020-02-05", 2000, 3, 0.3),
+                                     ("2020-03-05", 1600, 2, 0.1), ("2020-04-05", 1200, 2, 0.2)):
+            margin = (pm + shift_pm) * kyori / 1000.0
+            rows.append(_run(ketto, day, kyori, rank + shift_rank, margin=margin, sire=sire,
+                             race=f"{ketto}{day}"))
+        rows.append(_run(ketto, "2020-06-05", 2000, 0, has=False, sire=sire, race=f"{ketto}t"))
+    return pd.DataFrame(rows)
+
+
+def test_features_do_not_carry_the_horses_strength():
+    """強さだけが違う2頭は、本人の特徴量が完全に一致する（強さは過去成績モデルの担当）。"""
+    df = _two_horses_differing_only_in_strength()
+    frame = distance.build_features(df, DistanceConfig()).frame
+    own = [c for c in frame.columns if c.startswith(("own_", "dist_"))]
+    assert len(own) >= 12
+    a = frame.loc[df.index[df["race_id"] == "At"][0], own].astype(float)
+    b = frame.loc[df.index[df["race_id"] == "Bt"][0], own].astype(float)
+    pd.testing.assert_series_equal(a, b, check_names=False, atol=1e-5)
 
 
 def test_first_runner_has_no_own_history_but_has_pedigree():
@@ -111,7 +136,7 @@ def test_first_runner_has_no_own_history_but_has_pedigree():
                        _run("Z", "2020-03-05", 1200, 0, has=False, race="z")])
     frame = distance.build_features(df, DistanceConfig()).frame
     z = frame.index[df["race_id"] == "z"][0]
-    assert frame.at[z, "own_log_runs"] == 0.0
+    assert frame.at[z, "own_log_runs_dband"] == 0.0
     assert np.isnan(frame.at[z, "own_rel_pf_dband"])
     assert np.isnan(frame.at[z, "dist_minus_mean"])
     assert frame.at[z, "ped_S_dist_minus_top3_mean"] == 0.0
@@ -125,7 +150,7 @@ def test_stopped_runs_count_as_experience_but_not_as_performance():
     ])
     frame = distance.build_features(df, DistanceConfig()).frame
     t = frame.index[df["race_id"] == "t"][0]
-    assert frame.at[t, "own_log_runs"] == pytest.approx(np.log1p(2))
+    assert frame.at[t, "dist_minus_mean"] == pytest.approx(-600.0)   # 中止の 2400m も経験に数える
     assert frame.at[t, "dist_minus_max"] == -1200.0
     assert frame.at[t, "own_rel_pf_dband"] == pytest.approx(0.0)  # 走りの質は 1200m の1走だけ
 
@@ -231,8 +256,7 @@ def test_invalid_distance_settings_are_rejected(raw):
 
 def test_missing_columns_are_reported_for_old_datasets():
     spec = registry.get("distance")
-    assert spec.missing_columns(pd.DataFrame({"race_id": []})) == [
-        "result_margin_sec", "result_weight_kg"]
+    assert spec.missing_columns(pd.DataFrame({"race_id": []})) == ["result_margin_sec"]
     assert registry.get("pedigree").missing_columns(pd.DataFrame()) == []
 
 
