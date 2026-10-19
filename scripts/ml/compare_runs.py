@@ -1,6 +1,6 @@
-"""学習期間の比較（train_pedigree.py --compare）の差を、保存済みの予測から出し直す。
+"""学習期間の比較（train.py --compare）の差を、保存済みの予測から出し直す。
 
-    .venv/Scripts/python.exe scripts/ml/compare_runs.py --run data/ml/runs/<run_id>
+    .venv/Scripts/python.exe scripts/ml/compare_runs.py --run data/ml/runs/<model>/<run_id>
 
 学習した順の先頭の期間（comparison.csv の並び。既定の設定なら 10y）に対する各期間の
 的中数の差を、同じテストレースでの対応ありブートストラップ（evaluate.metrics.paired_difference。
@@ -28,14 +28,14 @@ from keiba import console  # noqa: E402
 from keiba_ml.config import ML_DATA_DIR, config_from_dict  # noqa: E402
 from keiba_ml.dataset import build  # noqa: E402
 from keiba_ml.dataset.split import Window, split_frame  # noqa: E402
+from keiba_ml import registry  # noqa: E402
 from keiba_ml.experiment import to_markdown, write_window_differences  # noqa: E402
-from keiba_ml.models.pedigree_catboost import MODEL_NAME  # noqa: E402
 
 
-def trained_order(run_dir: Path) -> list[str]:
+def trained_order(run_dir: Path, model_name: str = "pedigree_catboost") -> list[str]:
     """学習した順の期間名（comparison.csv の並び）。並べ替えると差の基準が変わる。"""
     table = pd.read_csv(run_dir / "comparison.csv")
-    return list(dict.fromkeys(table.loc[table["model"] == MODEL_NAME, "window"]))
+    return list(dict.fromkeys(table.loc[table["model"] == model_name, "window"]))
 
 
 def resolve_dataset_id(run_dir: Path, requested: str | None) -> tuple[str | None, str]:
@@ -69,7 +69,7 @@ def mismatched_rows(run_dir: Path, labels: list[str], truth: pd.DataFrame) -> li
 def main(argv: list[str] | None = None) -> int:
     console.enable_utf8_output()
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--run", type=Path, required=True, help="data/ml/runs/<run_id>")
+    parser.add_argument("--run", type=Path, required=True, help="data/ml/runs/<model>/<run_id>")
     parser.add_argument("--ml-data-dir", type=Path, default=ML_DATA_DIR)
     parser.add_argument("--dataset-id", default=None,
                         help="学習に使ったデータセット（dataset.json の無い実行だけ必要）")
@@ -82,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     config = config_from_dict(json.loads(run_config.read_text(encoding="utf-8")),
                               source=str(run_config))
-    labels = trained_order(args.run)
+    labels = trained_order(args.run, registry.for_config(config).model_name)
     if len(labels) < 2:
         print(f"比べる学習期間が2つ以上ありません: {labels}")
         return 2

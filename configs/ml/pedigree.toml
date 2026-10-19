@@ -1,6 +1,9 @@
 # 血統モデル（Phase 2）の設定。キーの意味は src/keiba_ml/config.py の docstring を参照。
 # 知らないキーを書くとエラーになる（誤記を黙って無視しないため）。
 
+[experiment]
+model = "pedigree"
+
 [data]
 # 既存のデータ版（data/versions/）のうち読むもの。空なら data/CURRENT の1版だけ。
 # 期間を分けて取得した版を束ねるときは並べる。

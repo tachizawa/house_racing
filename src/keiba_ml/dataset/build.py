@@ -25,7 +25,11 @@ from keiba_ml.dataset.pedigree import (
 )
 from keiba_ml.dataset.races import load_runners
 
-DATASET_SCHEMA_VERSION = "1"
+#: 2: 結果の列 result_margin_sec（1着馬とのタイム差）と result_weight_kg（馬体重）を足した。
+DATASET_SCHEMA_VERSION = "2"
+#: 読めるスキーマ。列を足しただけなので 1 も読める。足した列を使うモデル（距離適性）は
+#: registry の required_columns で列の有無を確かめ、無ければ作り直しを促す。
+READABLE_SCHEMA_VERSIONS = frozenset({"1", "2"})
 
 
 def attach_pedigree(runners: pd.DataFrame, ped: pd.DataFrame) -> pd.DataFrame:
@@ -159,10 +163,10 @@ def load(ml_data_dir: Path, dataset_id: str | None = None
     manifest = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
     if manifest.get("status") != "complete":
         raise RuntimeError(f"データセット {dataset_id} は完成していません。")
-    if manifest.get("schema_version") != DATASET_SCHEMA_VERSION:
+    if manifest.get("schema_version") not in READABLE_SCHEMA_VERSIONS:
         raise RuntimeError(
             f"データセット {dataset_id} の schema_version は {manifest.get('schema_version')!r} で、"
-            f"このコードが読めるのは {DATASET_SCHEMA_VERSION!r} です。"
+            f"このコードが読めるのは {sorted(READABLE_SCHEMA_VERSIONS)} です。"
             " build_dataset.py で作り直してください。")
     df = pd.read_parquet(path / "runners.parquet")
     names = json.loads((path / "ancestor_names.json").read_text(encoding="utf-8"))
