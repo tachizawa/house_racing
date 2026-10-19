@@ -57,7 +57,7 @@ def load_raw(data_dir: Path, versions: Sequence[str]) -> tuple[pd.DataFrame, pd.
     """指定した版の races / race_horses を縦に連結する（重複はまだ残る）。
 
     読む版の fromdate のうち最も古い日より前のレースは捨てる。セットアップ取得
-    （option 4）には 1954〜1985年などの訂正再配信がまばらに混じり（40年版で155レース）、
+    （option 4）には 1954〜1985年などの訂正再配信がまばらに混じり（40年版で156レース）、
     残すと「データは1954年からある」ことになって学習期間の truncated の判定が狂う。
 
     fromdate は JV-Link の「提供日」でレースの日付ではないので、版ごとに切らない。
