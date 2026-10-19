@@ -310,6 +310,16 @@ def test_blood_versions_are_stacked_so_a_delta_current_keeps_setup_rows(tmp_path
     sires = dict(zip(sources["SK"]["ketto_num"], sources["SK"]["anc_S"]))
     assert sires == {"2015100001": "1000000001", "2015100002": "1000000009"}
 
+    # 書きかけ（.partial）は飛ばす
+    (tmp_path / "versions" / "20260301T000000Z.partial").mkdir()
+    assert load_blood_sources(tmp_path)["versions"] == ["20260101T000000Z", "20260201T000000Z"]
+    # 完成した名前なのに manifest が壊れた版は、黙って飛ばさず止める
+    broken = tmp_path / "versions" / "20260401T000000Z"
+    broken.mkdir()
+    (broken / "manifest.json").write_text("{", encoding="utf-8")
+    with pytest.raises(keiba_store.DataVersionError):
+        load_blood_sources(tmp_path)
+
 
 def _saved_dataset(ml_data_dir, config):
     df = pd.DataFrame({"race_id": ["r1"], "race_date": pd.to_datetime(["2020-01-01"]),

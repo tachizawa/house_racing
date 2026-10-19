@@ -93,7 +93,11 @@ def load_sources(ml_data_dir: Path, versions: Sequence[str] = ()) -> dict[str, p
 
 
 def complete_blood_versions(blood_data_dir: Path) -> list[str]:
-    """既存の血統の版のうち完成済みのものを古い順に。.partial と壊れた版は含めない。"""
+    """既存の血統の版のうち完成済みのものを古い順に。書きかけ（.partial）は含めない。
+
+    .partial でないのに manifest が読めない・完成していない版は DataVersionError で止める。
+    全版を重ねるので、黙って飛ばすと訂正の入った版が抜けたまま学習データが変わってしまう。
+    """
     root = Path(blood_data_dir) / "versions"
     if not root.exists():
         return []
@@ -101,10 +105,7 @@ def complete_blood_versions(blood_data_dir: Path) -> list[str]:
     for path in sorted(root.iterdir()):
         if not path.is_dir() or path.name.endswith(".partial"):
             continue
-        try:
-            keiba_store.read_manifest(path)
-        except keiba_store.DataVersionError:
-            continue
+        keiba_store.read_manifest(path)
         result.append(path.name)
     return result
 

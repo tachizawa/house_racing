@@ -278,7 +278,7 @@ Phase 2（血統モデル）。**2026-10-19 に実データで端から端まで
 - 産駒成績の特徴量は as-of（レース日より前・本人の過去走を除く）。この規律を外すと
   未来情報や本人の成績が血統モデルに混ざる。`tests/ml/test_ml_features_metrics.py` が固定している
 - 学習期間の比較（10/20/30/40年）では差が確認できなかった（40年−10年 +0.005 [−0.016, +0.024]、
-  対応ありブートストラップ。`scripts/ml/compare_runs.py` で出し直せる）。最終モデルは10年。
+  対応ありブートストラップ。`scripts/ml/compare_runs.py --run data/ml/runs/20261019_compare --dataset-id 20261019T060220Z` で出し直せる）。最終モデルは10年。
   40年の比較は Python だけで最大 13.3GB 使う
 
 ## 何を作るのか
@@ -581,7 +581,7 @@ venv は `.venv`（Python 3.13.3 / 64bit）。コマンドは `.venv` の python
 # 依存（初回のみ）
 .venv/Scripts/python.exe -m pip install -r requirements.txt
 
-# テスト全体（2026-10-19 実行: 1691 passed。catboost を入れると skip は 0）
+# テスト全体（2026-10-19 実行: 1693 passed。catboost を入れると skip は 0）
 .venv/Scripts/python.exe -m pytest
 
 # テスト1件だけ

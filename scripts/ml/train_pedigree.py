@@ -80,7 +80,8 @@ def main(argv: list[str] | None = None) -> int:
         tuple(args.years or config.split.train_years[:1])
     run_id = args.run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     table = run_comparison(df, config, out_root=args.ml_data_dir / "runs", run_id=run_id,
-                           train_years=years, allow_integrity_fail=args.allow_integrity_fail)
+                           train_years=years, allow_integrity_fail=args.allow_integrity_fail,
+                           dataset_id=manifest["dataset_id"])
     print(f"\n結果: {args.ml_data_dir / 'runs' / run_id}")
     print(to_markdown(table))
     return 0

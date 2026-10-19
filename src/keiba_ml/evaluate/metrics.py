@@ -104,8 +104,11 @@ def paired_difference(pred_a: pd.DataFrame, pred_b: pd.DataFrame, truth: pd.Data
     レースごとの差を対応ありでブートストラップする（同じレースの難しさが両方に効くので、
     差の区間は片方ずつの区間よりずっと狭い）。両方に予測があるレースだけを使う。
     """
-    a = per_race(pred_a, truth, top_n=top_n).set_index("race_id")
-    b = per_race(pred_b, truth, top_n=top_n).set_index("race_id")
+    a, b = per_race(pred_a, truth, top_n=top_n), per_race(pred_b, truth, top_n=top_n)
+    if a.empty or b.empty:
+        # per_race は対象が無いと列の無い表を返す（set_index できない）。
+        return {"races": 0}
+    a, b = a.set_index("race_id"), b.set_index("race_id")
     common = a.index.intersection(b.index)
     a, b = a.loc[common], b.loc[common]
     out: dict = {"races": int(len(common))}
@@ -114,10 +117,19 @@ def paired_difference(pred_a: pd.DataFrame, pred_b: pd.DataFrame, truth: pd.Data
     for name in ("hits", "all_hit", "winner_in_pred", "ndcg"):
         diff = (a[name] - b[name]).to_numpy(dtype=float)
         low, high = _bootstrap_ci(diff, n_boot=n_boot, seed=seed)
-        out[name] = {"a": float(np.nanmean(a[name])), "b": float(np.nanmean(b[name])),
-                     "diff": float(np.nanmean(diff)), "ci95": [low, high],
-                     "races_differing": float(np.mean(diff != 0))}
+        # nDCG は理想の関連度が 0 のレースで NaN。差の定まらないレースは数えない。
+        finite = diff[np.isfinite(diff)]
+        out[name] = {"a": _mean(a[name]), "b": _mean(b[name]), "diff": _mean(diff),
+                     "ci95": [low, high],
+                     "races_differing": float(np.mean(finite != 0)) if len(finite) else np.nan}
     return out
+
+
+def _mean(values) -> float:
+    """NaN を除いた平均。全部 NaN なら NaN（np.nanmean の警告を出さない）。"""
+    values = np.asarray(values, dtype=float)
+    values = values[~np.isnan(values)]
+    return float(values.mean()) if len(values) else np.nan
 
 
 def calibration(prob: np.ndarray, y: np.ndarray, *, bins: int = 10) -> dict:

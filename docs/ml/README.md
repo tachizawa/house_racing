@@ -20,7 +20,7 @@
 | `src/keiba_ml/experiment.py` | 学習期間ごとの実験と比較表 |
 | `scripts/ml/` | CLI（下記） |
 | `configs/ml/pedigree.toml` | 設定。学習期間・テスト期間・世代数・目的関数など |
-| `tests/ml/` | テスト（129件）。catboost が無ければ結合テストだけ飛ぶ |
+| `tests/ml/` | テスト（131件）。catboost が無ければ結合テストだけ飛ぶ |
 | `data/ml/` | 出力（`.gitignore` 済み。JRA-VAN のデータは再配布不可） |
 
 既存モデルとの関係:
@@ -69,8 +69,10 @@
 
 # Phase 2-2. 学習期間の比較（10/20/30/40年。テスト期間は固定）。差は window_differences.md に出る
 .venv\Scripts\python.exe scripts\ml\train_pedigree.py --compare
-#            差だけを保存済みの予測から出し直す（学習しない）
-.venv\Scripts\python.exe scripts\ml\compare_runs.py --run data\ml\runs\<run_id>
+#            差だけを保存済みの予測から出し直す（学習しない）。正解は学習に使ったデータセット
+#            （<run_id>\dataset.json）から取り、予測とレース・馬が一致しなければ止まる。
+#            dataset.json の無い実行（2026-10-19 の 20261019_compare など）は --dataset-id が要る
+.venv\Scripts\python.exe scripts\ml\compare_runs.py --run data\ml\runs\<run_id> [--dataset-id <id>]
 
 # Phase 2-3. 設定と学習期間を決めた後、まだ使っていない期間で1回だけ評価する
 #            （テスト期間より後の期間だけを受け付け、同じ期間の結果は上書きしない）
@@ -102,6 +104,7 @@ data/ml/
   datasets/<id>/                   runners.parquet pedigree.parquet ancestor_names.json
                                    integrity.json manifest.json
   runs/<run_id>/config.json        実行時の設定（そのまま再現できる）
+  runs/<run_id>/dataset.json       学習に使ったデータセットの ID（compare_runs.py が正解に使う）
   runs/<run_id>/comparison.md|csv  学習期間 × モデル の比較表
   runs/<run_id>/window_differences.md|csv  先頭の学習期間との的中数の差（対応ありブートストラップ）
   runs/<run_id>/<10y|20y...>/      model.cbm model_meta.json metrics.json checks.json
@@ -275,6 +278,8 @@ Logloss、最良の反復 1122、学習は約6分）。学習 2014〜2023 / 検�
 
 `scripts/ml/evaluate_pedigree.py --model data\ml\runs\20261019_final\10y --from 2026-01-01 --to 2026-10-18`
 を 2026-10-19 に1回だけ実行した（`holdout_20260101_20261018.json`。同じ期間はスクリプトが上書きを拒む）。
+この実行は、評価の中に as-of の検算を入れる前のもの。後から同じ作り方の特徴量で、評価した行から
+父・母・母父・父父を各100行選んで検算し、不一致 0 だった（結果は作り直していない）。
 2026-01-04〜10-12 の結果のある 2,636 レース・36,438 頭。学習の終わり（2023年末）から 2〜3年後にあたる。
 
 | モデル | 的中数 [95%] | 偶然 | 3頭とも3着内 | 1着を上位3頭に含む | 1位が1着 | nDCG@3 | Brier（基準） | ECE |
@@ -324,7 +329,9 @@ Logloss、最良の反復 1122、学習は約6分）。学習 2014〜2023 / 検�
 
 - 差の区間は同じテストレースでの対応ありブートストラップ（`metrics.paired_difference`、レース単位、
   設定の `evaluate.bootstrap` = 1,000回、seed 0）。`run_comparison` が `window_differences.md|csv` に書き、
-  保存済みの予測から `scripts/ml/compare_runs.py --run data\ml\runs\20261019_compare` で出し直せる。どれも 0 を含む
+  保存済みの予測から `scripts/ml/compare_runs.py --run data\ml\runs\20261019_compare --dataset-id 20261019T060220Z`
+  で出し直せる（この実行は dataset.json を残す前のもの。学習に使ったデータセットは同じ中身で作り直してあり、
+  予測と正解のレース・馬が完全に一致することをスクリプトが確かめる）。どれも 0 を含む
 - 的中数が10年と違うレースは各 31〜33%（レースごとには変わるが、平均は変わらない）
 - **学習期間を10年より延ばした効果は確認できなかった。** 最終モデルは学習が最も軽い10年にした
 - 40年は設定の開始日（1984-01-01）まで遡れず、`truncated=True`・実際の開始 1986-01-05 と出る（§7.2 の 2）

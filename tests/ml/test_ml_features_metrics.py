@@ -170,6 +170,20 @@ def test_paired_difference_is_per_race_and_only_on_common_races():
     assert same["hits"]["diff"] == 0 and same["hits"]["ci95"] == [0.0, 0.0]
 
 
+def test_paired_difference_without_matching_races_and_with_undefined_ndcg():
+    ranks = [1, 2, 3, 4, 5, 6]
+    pred, truth = _race([6, 5, 4, 3, 2, 1], ranks, "r1")
+    elsewhere, _ = _race([6, 5, 4, 3, 2, 1], ranks, "other")
+    assert metrics.paired_difference(elsewhere, pred, truth) == {"races": 0}
+    # 全頭が中止・失格のレースは理想の関連度が 0 で nDCG が NaN。「違う」とは数えない。
+    nan_a, nan_truth = _race([6, 5, 4], [None, None, None], "r2")
+    nan_b, _ = _race([1, 2, 3], [None, None, None], "r2")
+    diff = metrics.paired_difference(nan_a, nan_b, nan_truth, n_boot=50)
+    assert diff["races"] == 1
+    assert np.isnan(diff["ndcg"]["races_differing"])
+    assert diff["hits"]["races_differing"] == 0.0
+
+
 def test_per_race_hits_and_chance():
     pred, truth = _race([0.9, 0.8, 0.1, 0.7, 0.2, 0.3], [1, 5, 2, 3, 4, 6])
     races = metrics.per_race(pred, truth)

@@ -79,9 +79,9 @@ def test_growth_report_recovers_true_maturity(world, dataset):
     assert np.corrcoef(table["maturity"], truth)[0, 1] > 0.6
 
 
-def test_pedigree_model_beats_chance_on_fixed_test_period(world, dataset):
+def test_pedigree_model_beats_chance_on_fixed_test_period(world, dataset, capsys):
     pytest.importorskip("catboost")
-    df, _, _ = dataset
+    df, _, manifest = dataset
     config = MLConfig(
         pedigree=PedigreeConfig(generations=4, inbreeding_generations=4),
         split=SplitConfig(test_start=date(2022, 1, 1), test_end=date(2022, 12, 31),
@@ -89,7 +89,8 @@ def test_pedigree_model_beats_chance_on_fixed_test_period(world, dataset):
         model=ModelConfig(iterations=150, learning_rate=0.1, early_stopping_rounds=30,
                           thread_count=2))
     out_root = world.ml_data_dir / "runs"
-    table = run_comparison(df, config, out_root=out_root, run_id="t", log_period=0)
+    table = run_comparison(df, config, out_root=out_root, run_id="t", log_period=0,
+                           dataset_id=manifest["dataset_id"])
     model_rows = table[table["model"] == "pedigree_catboost"]
     assert list(model_rows["window"]) == ["5y", "10y"]
     assert model_rows["test_races"].nunique() == 1          # 同じテストを受けている
@@ -101,9 +102,29 @@ def test_pedigree_model_beats_chance_on_fixed_test_period(world, dataset):
     diffs = pd.read_csv(out_root / "t" / "window_differences.csv")
     assert list(diffs["window"]) == ["10y"] and list(diffs["versus"]) == ["5y"]
     assert diffs["diff_ci_low"].iloc[0] <= diffs["hits_diff"].iloc[0] <= diffs["diff_ci_high"].iloc[0]
-    assert _script("compare_runs").main(["--run", str(out_root / "t"),
-                                         "--ml-data-dir", str(world.ml_data_dir)]) == 0
+    compare = _script("compare_runs")
+    common = ["--run", str(out_root / "t"), "--ml-data-dir", str(world.ml_data_dir)]
+    assert compare.main(common) == 0              # 学習時のデータセット（dataset.json）を使う
     pd.testing.assert_frame_equal(pd.read_csv(out_root / "t" / "window_differences.csv"), diffs)
+    capsys.readouterr()
+    assert compare.main([*common, "--dataset-id", "other"]) == 2   # 違うデータセットとは突き合わせない
+    assert "突き合わせません" in capsys.readouterr().out
+
+    # 正解のレースが予測と違うデータセットとは突き合わせない
+    shrunk = df[df["race_id"] != df.loc[df["year"] == 2022, "race_id"].iloc[0]]
+    build.save(shrunk, pd.DataFrame(), {}, {"race_versions": [], "pedigree_versions": [],
+                                         "checks": []},
+               config, ml_data_dir=world.ml_data_dir, dataset_id="shrunk")
+    (out_root / "t" / "dataset.json").rename(out_root / "t" / "dataset.json.bak")
+    try:
+        assert compare.main(common) == 2                            # 記録が無ければ ID が要る
+        assert "--dataset-id" in capsys.readouterr().out
+        assert compare.main([*common, "--dataset-id", "shrunk"]) == 2
+        assert "正解にだけある 0 行" in capsys.readouterr().out     # 予測にだけあるレースがある
+    finally:
+        (out_root / "t" / "dataset.json.bak").rename(out_root / "t" / "dataset.json")
+        (world.ml_data_dir / "datasets" / "CURRENT").write_text(manifest["dataset_id"],
+                                                                 encoding="utf-8")
 
     # 保存したモデルを読み直して同じ予測になる
     model = PedigreeCatBoost.load(out_root / "t" / "10y")
@@ -118,6 +139,7 @@ def test_holdout_evaluation_uses_only_a_period_after_the_test_and_runs_once(worl
     pytest.importorskip("catboost")
     df, _, _ = dataset
     config = MLConfig(
+        data=DataConfig(pedigree_source="ml"),      # データセットを作ったときと同じ設定
         pedigree=PedigreeConfig(generations=4, inbreeding_generations=4),
         split=SplitConfig(test_start=date(2021, 1, 1), test_end=date(2021, 12, 31),
                           valid_years=1, train_years=(5,)),
@@ -138,10 +160,38 @@ def test_holdout_evaluation_uses_only_a_period_after_the_test_and_runs_once(worl
     assert hits["ci95"][0] > hits["random"]
     diff = result["differences"]["pedigree_catboost-sire_ae"]["hits"]
     assert diff["races_differing"] > 0 and diff["ci95"][0] <= diff["diff"] <= diff["ci95"][1]
+    # 学習時と同じ未来情報の検査を通している
+    assert {c["name"]: c["status"] for c in result["checks"]} == {
+        "feature_columns": "ok", "asof_sample": "ok"}
 
     # 2回目は上書きしない（見てから評価し直すと、その期間も選択に使ったことになる）
     assert evaluate.main([*common, "--from", "2022-01-01", "--to", "2022-12-31"]) == 2
     assert "上書きしません" in capsys.readouterr().out
+
+    # 学習時と違う設定で作られたデータセットでは評価しない
+    run_config = model_dir.parent / "config.json"
+    original = run_config.read_text(encoding="utf-8")
+    changed = json.loads(original)
+    changed["data"]["pedigree_source"] = "blood"
+    run_config.write_text(json.dumps(changed), encoding="utf-8")
+    try:
+        assert evaluate.main([*common, "--from", "2022-02-01", "--to", "2022-12-31"]) == 2
+        assert "data.pedigree_source" in capsys.readouterr().out
+    finally:
+        run_config.write_text(original, encoding="utf-8")
+
+
+def test_compare_runs_keeps_the_trained_order():
+    """--years 20 --years 10 で学習した実行の基準は 20y。名前で並べ替えると差の符号が逆になる。"""
+    import tempfile
+    from pathlib import Path
+    compare = _script("compare_runs")
+    with tempfile.TemporaryDirectory() as tmp:
+        run = Path(tmp)
+        pd.DataFrame({"window": ["20y", "20y", "10y", "10y", "5y"],
+                      "model": ["pedigree_catboost", "sire_ae", "pedigree_catboost", "sire_ae",
+                                "pedigree_catboost"]}).to_csv(run / "comparison.csv", index=False)
+        assert compare.trained_order(run) == ["20y", "10y", "5y"]
 
 
 def test_ranking_loss_runs(world, dataset):

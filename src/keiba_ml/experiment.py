@@ -141,6 +141,17 @@ def evaluate_period(df: pd.DataFrame, config: MLConfig, model: PedigreeCatBoost,
                    & (history["race_date"].dt.date >= period_start)]
     if rows.empty:
         raise IntegrityError(f"{period_start}〜{period_end} に結果のあるレースがありません。")
+    # 学習時（run_window）と同じ検査。as-of の検算は評価する期間の行から選ぶ。
+    checks = [
+        integrity.check_feature_columns(features.columns),
+        integrity.check_asof_samples(
+            history, features.frame, paths=config.pedigree.stat_paths,
+            shrinkage=config.pedigree.shrinkage, exclude_self=config.pedigree.exclude_self,
+            sample=100, only=rows.index),
+    ]
+    failed = [c for c in checks if c["status"] == "fail"]
+    if failed:
+        raise IntegrityError("整合性検査に失敗しました:\n" + integrity.summarize(failed))
     ev = config.evaluate
     kwargs = dict(top_n=ev.top_n, bins=ev.calibration_bins, n_boot=ev.bootstrap,
                   seed=ev.bootstrap_seed)
@@ -156,21 +167,27 @@ def evaluate_period(df: pd.DataFrame, config: MLConfig, model: PedigreeCatBoost,
                    "first_race": str(rows["race_date"].min().date()),
                    "last_race": str(rows["race_date"].max().date())},
         "races": int(rows["race_id"].nunique()), "rows": int(len(rows)),
-        "results": results, "differences": differences,
-        "checks": [integrity.check_feature_columns(features.columns)],
+        "results": results, "differences": differences, "checks": checks,
     }
 
 
 def run_comparison(df: pd.DataFrame, config: MLConfig, *, out_root: Path, run_id: str,
                    train_years: tuple[int, ...] | None = None,
-                   allow_integrity_fail: bool = False, log_period: int = 200) -> pd.DataFrame:
-    """同じテスト期間に対して学習期間だけを変えて比較する。"""
+                   allow_integrity_fail: bool = False, log_period: int = 200,
+                   dataset_id: str | None = None) -> pd.DataFrame:
+    """同じテスト期間に対して学習期間だけを変えて比較する。
+
+    dataset_id を渡すと run_dir/dataset.json に残す。保存した予測を後から正解と突き合わせる
+    （compare_runs.py）とき、同じデータセットを使うため。
+    """
     train_years = train_years or config.split.train_years
     res = df[df["has_result"]]
     first = res["race_date"].min().date()
     run_dir = out_root / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     write_json(run_dir / "config.json", asdict(config))
+    if dataset_id is not None:
+        write_json(run_dir / "dataset.json", {"dataset_id": dataset_id})
     rows, test_races, previous_start = [], None, None
     labels: list[str] = []
     for years in train_years:

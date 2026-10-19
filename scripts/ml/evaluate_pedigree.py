@@ -9,6 +9,9 @@ train_pedigree.py のテスト期間は、特徴量の組や学習期間を選�
 - 期間はモデルのテスト期間の終わりより後でなければ受け付けない（学習・検証・テストと重ねない）
 - 結果は <model>/holdout_<from>_<to>.json に書く。同じ期間の結果が既にあれば上書きしない
   （1回目の結果を残す。見てから設定を変えて評価し直すと、その期間も選択に使ったことになる）
+- データセットは評価する期間の結果を含む新しいものでよいが、中身を決める設定（血統の出どころ・
+  世代数など。build.config_mismatches）が学習時と違えば止める
+- 学習時と同じ未来情報の検査（列名・as-of の検算。検算する行は評価する期間から選ぶ）を通す
 """
 
 from __future__ import annotations
@@ -61,6 +64,13 @@ def main(argv: list[str] | None = None) -> int:
                               source=str(run_config))
     model = PedigreeCatBoost.load(args.model)
     df, _names, manifest = build.load(args.ml_data_dir, args.dataset_id)
+    # 学習時より新しいデータセット（評価する期間の結果が入ったもの）を使うのは正当なので
+    # 版の ID は問わない。中身を決める設定（血統の出どころ・世代数など）は学習時と揃える。
+    mismatches = build.config_mismatches(manifest, config)
+    if mismatches:
+        print(f"データセット {manifest['dataset_id']} は学習時と違う設定で作られています:"
+              f" {mismatches}")
+        return 2
     result = evaluate_period(df, config, model,
                              train_start=date.fromisoformat(str(window["train_start"])),
                              period_start=args.period_start, period_end=args.period_end)
