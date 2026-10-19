@@ -1,8 +1,12 @@
 """機械学習系の設定。
 
-設定は TOML（既定 ``configs/ml/pedigree.toml``）から読む。学習期間・テスト期間・
-血統の世代数・CatBoost の目的関数など、**比較実験で切り替える値はすべてここを
-通す**（設計原則 3「学習期間を設定で切り替えられるようにする」）。
+設定は TOML（モデルごとに ``configs/ml/<モデル名>.toml``。血統なら ``pedigree.toml``）から
+読む。学習期間・テスト期間・血統の世代数・CatBoost の目的関数など、**比較実験で切り替える
+値はすべてここを通す**（設計原則 3「学習期間を設定で切り替えられるようにする」）。
+
+どのモデルの設定かは ``[experiment] model`` で示す（省略時は "pedigree"。この節が無かった
+ころの実行の config.json も血統モデルとして読める）。モデル固有の値はモデル名の節
+（``[pedigree]`` ``[distance]``）に置く。
 
 コードに直書きしてよいのは「決めた値」だけ。未決定事項（開発方針 §9）に
 当たる値は必ず設定に出し、既定値は仮置きであることをコメントで示す。
@@ -26,7 +30,17 @@ BLOOD_DATA_DIR = keiba_config.BLOOD_DATA_DIR
 #: 機械学習系の出力（血統の版・データセット・モデル・予測・評価）。/data/ 配下なので
 #: .gitignore 済み（JRA-VAN のデータは再配布不可）。
 ML_DATA_DIR = keiba_config.DATA_DIR / "ml"
-DEFAULT_CONFIG_PATH = PROJECT_ROOT / "configs" / "ml" / "pedigree.toml"
+CONFIG_DIR = PROJECT_ROOT / "configs" / "ml"
+DEFAULT_CONFIG_PATH = CONFIG_DIR / "pedigree.toml"
+
+#: 登録してある個別モデルの名前。registry.MODELS のキーと一致させる（テストで固定）。
+#: config から registry を import すると循環するので、名前だけをここに置く。
+MODEL_KINDS: tuple[str, ...] = ("pedigree", "distance")
+
+
+def config_path(model: str) -> Path:
+    """モデルの既定の設定ファイル（configs/ml/<model>.toml）。"""
+    return CONFIG_DIR / f"{model}.toml"
 
 #: 3代血統の14枠の並び（JV-Data の「3代血統情報」の配列順）。
 #: S=父（sire）、D=母（dam）。左から辿る。例: "DS" = 母の父（母父）。
@@ -152,6 +166,45 @@ class PedigreeConfig:
 
 
 @dataclass(frozen=True)
+class DistanceConfig:
+    """距離適性モデル（features/distance.py）の設定。
+
+    距離適性モデルは「その馬がどれだけ強いか」ではなく「今回の距離がその馬に合うか」だけを
+    見る。能力の水準そのもの（全体の着順・A/E）は特徴量に入れず、その馬の普段の走りとの差・
+    距離と走りの傾き・経験した距離との差のような**相対的な量**だけを渡す。能力は別の独立
+    モデル（過去成績）の担当。
+    """
+
+    #: 条件（レースの条件と馬の性齢）。field_size は3着以内の基準率を決めるので入れる。
+    context: tuple[str, ...] = (
+        "track_kind", "kyori_m", "distance_band", "jyo_cd", "age", "sex_cd", "field_size",
+    )
+    #: 履歴を学習期間の開始日以降に限るか（"window"）、全期間を使うか（"all"）。
+    #: 血統モデルの pedigree.stats_history と同じ意味。
+    stats_history: str = "window"
+    #: 距離帯ごとの走りを、その馬の全体の走りに向けて縮める強さ（何走ぶんの事前を足すか）。
+    #: 1走だけの距離帯で「得意」「苦手」と言い切らないため。
+    own_shrinkage: float = 3.0
+    #: 距離と走りの傾き（最小二乗）の分母に足す値（km²）。出走した距離の幅が狭い馬で
+    #: 傾きが暴れないようにする。0.25 km² は「500m の幅を1走ぶん」に相当する。
+    slope_ridge: float = 0.25
+    #: タイム差（1着馬との差）の上限（秒）。大敗の1走が平均を支配しないように切る。
+    margin_cap_sec: float = 3.0
+    #: 産駒の距離の傾向を出す祖先の位置（父・母父）。
+    pedigree_paths: tuple[str, ...] = ("S", "DS")
+    #: 産駒の距離帯ごとの走りを、産駒全体の走りに向けて縮める強さ（何走ぶん）。
+    pedigree_shrinkage: float = 30.0
+    #: 産駒の傾向から本人の過去走を除く（本人の分は本人の特徴量で入っている）。
+    exclude_self: bool = True
+
+
+@dataclass(frozen=True)
+class ExperimentConfig:
+    #: どの個別モデルの設定か（MODEL_KINDS のどれか）。
+    model: str = "pedigree"
+
+
+@dataclass(frozen=True)
 class FeatureConfig:
     #: 条件付けに使う文脈（レースの条件と馬の性齢）。血統の効果は距離・馬場・
     #: 年齢に依存して現れるため入れる。馬自身の過去成績・騎手・オッズは入れない
@@ -214,10 +267,13 @@ class EvalConfig:
 
 @dataclass(frozen=True)
 class MLConfig:
+    experiment: ExperimentConfig = field(default_factory=ExperimentConfig)
     data: DataConfig = field(default_factory=DataConfig)
     codes: CodeConfig = field(default_factory=CodeConfig)
     pedigree: PedigreeConfig = field(default_factory=PedigreeConfig)
+    #: 血統モデルの条件の列（この節は血統モデル専用。距離適性は distance.context）。
     features: FeatureConfig = field(default_factory=FeatureConfig)
+    distance: DistanceConfig = field(default_factory=DistanceConfig)
     split: SplitConfig = field(default_factory=SplitConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     evaluate: EvalConfig = field(default_factory=EvalConfig)
@@ -271,27 +327,40 @@ def _coerce(cls: type, values: dict[str, Any]) -> Any:
 
 
 _SECTIONS = {
-    "data": DataConfig, "codes": CodeConfig, "pedigree": PedigreeConfig,
-    "features": FeatureConfig, "split": SplitConfig, "model": ModelConfig,
-    "evaluate": EvalConfig,
+    "experiment": ExperimentConfig, "data": DataConfig, "codes": CodeConfig,
+    "pedigree": PedigreeConfig, "features": FeatureConfig, "distance": DistanceConfig,
+    "split": SplitConfig, "model": ModelConfig, "evaluate": EvalConfig,
 }
 
 
-def load_config(path: Path | None = None) -> MLConfig:
+def load_config(path: Path | None = None, *, model: str | None = None) -> MLConfig:
     """TOML を読む。知らないキーは誤記なので拒否する。
 
-    path を省いたときだけ、既定のファイル（DEFAULT_CONFIG_PATH）が無ければ既定値で
-    進める。明示したファイルが無いのは打ち間違いなので FileNotFoundError にする
+    path を省くと、model の既定の設定ファイル（configs/ml/<model>.toml。model も省けば
+    血統の DEFAULT_CONFIG_PATH）を読み、それが無ければ既定値で進める（その model の
+    設定として）。明示したファイルが無いのは打ち間違いなので FileNotFoundError にする
     （黙って既定値で学習し、config.json にその既定値が残るのを防ぐ）。
+
+    model を渡すと、ファイルの [experiment] model がそれと違えば ValueError にする
+    （距離適性の学習に血統の設定ファイルを渡す、といった取り違えを止める）。
     """
     if path is None:
-        if not DEFAULT_CONFIG_PATH.exists():
-            return MLConfig()
-        path = DEFAULT_CONFIG_PATH
+        default = config_path(model) if model else DEFAULT_CONFIG_PATH
+        if not default.exists():
+            config = MLConfig()
+            if model:
+                config = config.with_overrides(experiment=ExperimentConfig(model=model))
+            validate(config)
+            return config
+        path = default
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"設定ファイルがありません: {path}")
-    return config_from_dict(tomllib.loads(path.read_text(encoding="utf-8")), source=str(path))
+    config = config_from_dict(tomllib.loads(path.read_text(encoding="utf-8")), source=str(path))
+    if model and config.experiment.model != model:
+        raise ValueError(f"{path} は {config.experiment.model!r} モデルの設定です"
+                         f"（{model!r} の設定ファイルを渡してください）。")
+    return config
 
 
 def config_from_dict(raw: dict[str, Any], *, source: str = "設定") -> MLConfig:
@@ -306,6 +375,9 @@ def config_from_dict(raw: dict[str, Any], *, source: str = "設定") -> MLConfig
 
 
 def validate(config: MLConfig) -> None:
+    if config.experiment.model not in MODEL_KINDS:
+        raise ValueError(f"experiment.model は {list(MODEL_KINDS)} のどれかです:"
+                         f" {config.experiment.model!r}")
     if config.data.pedigree_source not in ("blood", "ml"):
         raise ValueError('data.pedigree_source は "blood" か "ml" です。')
     p = config.pedigree
@@ -331,6 +403,17 @@ def validate(config: MLConfig) -> None:
         raise ValueError("pedigree.shrinkage は正の値にしてください（0 だと出走0の祖先で割り算が壊れる）。")
     if p.stats_history not in ("window", "all"):
         raise ValueError('pedigree.stats_history は "window" か "all" です。')
+    d = config.distance
+    if d.stats_history not in ("window", "all"):
+        raise ValueError('distance.stats_history は "window" か "all" です。')
+    for name in ("own_shrinkage", "pedigree_shrinkage", "margin_cap_sec"):
+        if getattr(d, name) <= 0:
+            raise ValueError(f"distance.{name} は正の値にしてください。")
+    if d.slope_ridge < 0:
+        raise ValueError("distance.slope_ridge は 0 以上にしてください。")
+    bad = [x for x in d.pedigree_paths if x not in valid_paths]
+    if bad:
+        raise ValueError(f"distance.pedigree_paths に pedigree.generations を超える位置があります: {bad}")
     s = config.split
     if s.test_end < s.test_start:
         raise ValueError("split.test_end が test_start より前です。")

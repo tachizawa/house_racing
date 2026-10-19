@@ -1,8 +1,12 @@
-# 機械学習系（血統モデル ほか）
+# 機械学習系（個別モデル: 血統・距離適性 ほか）
 
 既存の Jev 統計モデル（`src/keiba/`）と**独立に**、CatBoost を中心とした個別モデルを
-`src/keiba_ml/` に置く。本書は Phase 1（データ基盤）と Phase 2（血統モデル）の
-使い方と設計判断をまとめる。
+`src/keiba_ml/` に置く。本書は Phase 1（データ基盤）と、個別モデル（Phase 2 の血統モデル、
+2026-10-20 の距離適性モデル）の使い方と設計判断をまとめる。
+
+最終的には、個別モデルがそれぞれ独立に予想し、それを統合する（Phase 4。統合の方式は未決定）。
+そのため**モデルは登録表（`src/keiba_ml/registry.py`）で束ね、学習・評価・予想の手順は共通にする**。
+モデルの一覧と足し方は「[9. 個別モデルの一覧と足し方](#9-個別モデルの一覧と足し方)」。
 
 > **2026-10-19 に実データで端から端まで確認した**（40年ぶんのレースの版 × 既存の血統の版
 > BLDN）。確認の内容と、実データを見て直した点は「[7. 実データでの確認](#7-実データでの確認2026-10-19)」、
@@ -14,13 +18,14 @@
 |---|---|
 | `src/keiba_ml/ingest/` | 血統レコード SK / HN / UM(3代血統) の分解と版付き保存 |
 | `src/keiba_ml/dataset/` | **Phase 1**。長期データの読み出し・コード体系の統一・血統の階層化・整合性検査・時系列分割 |
-| `src/keiba_ml/features/` | 特徴量生成（前処理と分離。as-of で未来情報を使わない） |
-| `src/keiba_ml/models/` | 血統 CatBoost と、全モデル共通の予測出力形式（`models/base.py`） |
+| `src/keiba_ml/features/` | 特徴量生成（前処理と分離。as-of で未来情報を使わない）。モデルごとに1ファイル（`pedigree.py` / `distance.py`）。共通部分は `base.py`（`FeatureSet`）・`asof.py`（as-of 集計） |
+| `src/keiba_ml/models/` | CatBoost の共通の包み（`catboost_model.py`）と、全モデル共通の予測出力形式（`models/base.py`） |
+| `src/keiba_ml/registry.py` | **個別モデルの登録表**。モデルごとに違う部分（特徴量・比較用の基準・未来情報の検算・予想時の表示・要る列）をまとめる |
 | `src/keiba_ml/evaluate/` | 上位3頭の指標・較正・早熟/晩成の集計 |
-| `src/keiba_ml/experiment.py` | 学習期間ごとの実験と比較表 |
-| `scripts/ml/` | CLI（下記） |
-| `configs/ml/pedigree.toml` | 設定。学習期間・テスト期間・世代数・目的関数など |
-| `tests/ml/` | テスト（131件）。catboost が無ければ結合テストだけ飛ぶ |
+| `src/keiba_ml/experiment.py` | 学習期間ごとの実験と比較表（どのモデルも同じ手順） |
+| `scripts/ml/` | CLI（下記）。`train.py` / `predict.py` / `evaluate.py` は `--model` か学習時の記録でモデルを切り替える |
+| `configs/ml/<model>.toml` | モデルごとの設定（`pedigree.toml` / `distance.toml`）。学習期間・テスト期間・目的関数など |
+| `tests/ml/` | テスト（159件）。catboost が無ければ結合テストだけ飛ぶ |
 | `data/ml/` | 出力（`.gitignore` 済み。JRA-VAN のデータは再配布不可） |
 
 既存モデルとの関係:
@@ -61,34 +66,41 @@
 #            UM の3代血統でも補いたいときだけ、この層の取得を使い data.pedigree_source = "ml" にする:
 #            .venv\Scripts\python.exe scripts\ml\update_pedigree.py --fromdate 19860101000000 --option 4 --dataspec BLDN --dataspec DIFN
 
-# Phase 1-3. データセット作成 + 整合性検査（FAIL があると終了コード 1）
+# Phase 1-3. データセット作成 + 整合性検査（FAIL があると終了コード 1）。全モデルで1つを共有する
+#            （距離適性は schema 2 で足した列を使う。2026-10-19 以前のデータセットでは学習を拒否する）
 .venv\Scripts\python.exe scripts\ml\build_dataset.py --race-data-dir data\_40y
 
-# Phase 2-1. 10年で基準モデル
-.venv\Scripts\python.exe scripts\ml\train_pedigree.py --years 10
+# Phase 2-1. 10年で基準モデル（--model は pedigree / distance。設定は configs\ml\<model>.toml）
+.venv\Scripts\python.exe scripts\ml\train.py --model distance --years 10
 
 # Phase 2-2. 学習期間の比較（10/20/30/40年。テスト期間は固定）。差は window_differences.md に出る
-.venv\Scripts\python.exe scripts\ml\train_pedigree.py --compare
+.venv\Scripts\python.exe scripts\ml\train.py --model pedigree --compare
 #            差だけを保存済みの予測から出し直す（学習しない）。正解は学習に使ったデータセット
 #            （<run_id>\dataset.json）から取り、予測とレース・馬が一致しなければ止まる。
 #            dataset.json の無い実行（2026-10-19 の 20261019_compare など）は --dataset-id が要る
-.venv\Scripts\python.exe scripts\ml\compare_runs.py --run data\ml\runs\<run_id> [--dataset-id <id>]
+.venv\Scripts\python.exe scripts\ml\compare_runs.py --run data\ml\runs\<model>\<run_id> [--dataset-id <id>]
 
 # Phase 2-3. 設定と学習期間を決めた後、まだ使っていない期間で1回だけ評価する
 #            （テスト期間より後の期間だけを受け付け、同じ期間の結果は上書きしない）
-.venv\Scripts\python.exe scripts\ml\evaluate_pedigree.py --model data\ml\runs\<run_id>\10y --from 2026-01-01 --to 2026-10-18
+.venv\Scripts\python.exe scripts\ml\evaluate.py --model data\ml\runs\<model>\<run_id>\10y --from 2026-01-01 --to 2026-10-18
 
 # 目的関数の比較（未決定事項）
-.venv\Scripts\python.exe scripts\ml\train_pedigree.py --years 10 --loss YetiRank
+.venv\Scripts\python.exe scripts\ml\train.py --model pedigree --years 10 --loss YetiRank
 
 # 早熟・晩成の集計（父ごとの年齢別 A/E。検証期間より前だけで集計）
 .venv\Scripts\python.exe scripts\ml\growth_report.py --path S
 
-# 出馬表のレースを予想（人が判断するための表。父・母父も並べる）
-.venv\Scripts\python.exe scripts\ml\predict_pedigree.py --model data\ml\runs\<run_id>\10y
+# 出馬表のレースを予想（人が判断するための表。モデルごとの根拠の列も並べる。
+# 血統なら父・母父、距離適性なら前走距離・平均距離・好走距離・同距離帯の出走数・父）
+.venv\Scripts\python.exe scripts\ml\predict.py --model data\ml\runs\<model>\<run_id>\10y
 ```
 
-**テスト期間は `configs/ml/pedigree.toml` の `[split]` で決める**（既定は 2025年の1年間、
+`train_pedigree.py` / `evaluate_pedigree.py` / `predict_pedigree.py` は `--model pedigree` に
+固定した互換の入口として残してある（血統以外の記録を渡すと拒否する）。
+**2026-10-20 から、学習の結果は `data/ml/runs/<model>/<run_id>/` に出る**。それより前の血統モデルの
+実行（`data/ml/runs/20261019_final/` など）は元の場所のままで、`--model` にそのパスを渡せば使える。
+
+**テスト期間は `configs/ml/<model>.toml` の `[split]` で決める**（既定は 2025年の1年間、
 その直前1年が検証期間）。手元のデータが学習期間に足りないと、比較表の `truncated` が
 True になり `actual_train_start` に実際の開始日が出る。40年と書いて実は10年で学習した、
 ということが表から分かるようにしてある。
@@ -103,7 +115,8 @@ data/ml/
   pedigree/versions/<id>/          sk.csv hn.csv um_ketto.csv manifest.json
   datasets/<id>/                   runners.parquet pedigree.parquet ancestor_names.json
                                    integrity.json manifest.json
-  runs/<run_id>/config.json        実行時の設定（そのまま再現できる）
+  runs/<model>/<run_id>/config.json  実行時の設定（そのまま再現できる。[experiment] model でモデルが分かる）
+  （以下 runs/<run_id>/ と書くのは runs/<model>/<run_id>/。2026-10-19 の血統の実行は runs/<run_id>/）
   runs/<run_id>/dataset.json       学習に使ったデータセットの ID（compare_runs.py が正解に使う）
   runs/<run_id>/comparison.md|csv  学習期間 × モデル の比較表
   runs/<run_id>/window_differences.md|csv  先頭の学習期間との的中数の差（対応ありブートストラップ）
@@ -186,6 +199,52 @@ CatBoost がこれらを超えないなら、学習の意味がない。
 | `*_random` | 同じレース構成で無作為に3頭選んだときの期待値。**必ずこれとの差で読む** |
 
 同着は実際の3着以内を4頭以上にする（`all3` は予測3頭がその集合に含まれれば的中）。
+
+### 4.4 距離適性モデル（2026-10-20）
+
+見たいのは「**今回の距離がその馬に合うか**」で、「その馬がどれだけ強いか」ではない。強さ（全体の
+着順の水準・3着以内の A/E）は別の独立モデル（過去成績）の担当なので、**強さの水準は特徴量に入れず、
+その馬の普段の走りに対する相対的な量だけを渡す**。血統モデルが本人の過去成績を外しているのと同じ
+考え方で、統合するときにモデル間で同じ情報が二重に数えられにくくするため（この線引きは実装者の判断。
+所有者の確認はまだ）。
+
+1走ごとの「走りの質」は2つで測る（どちらも大きいほど良い）:
+
+- `pf`（beat fraction）= (頭数 − 着順) / (頭数 − 1)。1着 1.0、最下位 0.0
+- `pm` = −min(1着馬とのタイム差, `margin_cap_sec`) ÷ 距離(km)。秒/km。大敗の1走が平均を支配しないよう 3.0 秒で切る
+
+競走中止・失格は走りの質に入れない（距離の経験としては数える）。データセットに
+`result_margin_sec`（1着馬とのタイム差。JV-Data の TimeDiff。実データで各年約99%埋まる）と
+`result_weight_kg`（馬体重。300〜700kg 以外は欠損。今は距離適性では使っていない）を足した（schema 2）。
+
+特徴量（`features/distance.py`。すべて as-of で、予想対象のレース日より**前**の走りだけ。同じ日は含めない）:
+
+| 系統 | 列 | 中身 |
+|---|---|---|
+| 本人の距離帯ごとの走り | `own_rel_{pf,pm}_dband` / `own_rel_{pf,pm}_surface_dband` | 距離帯での平均を本人の全体の平均へ縮めた値（`own_shrinkage` 走ぶん）− 全体の平均。芝ダ×距離帯は**同じ馬場の**平均と比べる（芝ダの向き不向きはコース適性の担当なので差し引く） |
+| 距離と走りの傾き | `own_slope_{pf,pm}` / `own_fit_{pf,pm}` | 走りの質を距離(km)に回帰した傾き（分母に `slope_ridge` を足して縮める）と、傾き ×（今回の距離 − 平均出走距離）。正なら「今回の距離は普段より走れる側」 |
+| 距離の経験 | `dist_minus_{mean,last,max,min}` | 今回の距離 − 平均出走距離・前走距離・最長・最短（m）。延長・短縮もここで表す |
+| 経験の量 | `own_log_runs_dband` / `own_log_runs_surface_dband` | log(1 + 今回の距離帯での出走数) |
+| 血統から見た距離の傾向 | `ped_{S,DS}_*` | 父・母父の産駒の、芝ダ×距離帯の相対的な走り（`pedigree_shrinkage` 走ぶん縮める）・距離との傾き・産駒の平均距離との差・3着以内の平均距離との差（好走した産駒がまだいなければ平均距離で埋める）。**本人の過去走は除く**。初出走の馬はここだけが手がかりになる |
+| 条件 | `track_kind` `kyori_m` `distance_band` `jyo_cd` `age` `sex_cd` `field_size` | 頭数は3着以内の基準率を決めるので入れる |
+
+**守ること: 強さだけが違う2頭（どの距離でも同じだけ良い／悪い）は、本人の特徴量が完全に一致する**
+（`tests/ml/test_ml_distance.py::test_features_do_not_carry_the_horses_strength`）。最初の版は
+これを守っておらず、実データで強さを拾っていた（§10）。次のものは強さの代わりになるので入れない:
+3着以内に入った距離の平均（3着以内の経験が無い馬で欠損になる）・走りの質で重みを付けた平均距離・
+総出走数・前走の馬体重・祖先の産駒の出走数（種牡馬の人気 = 血統の質）。
+
+比較対象（学習しない基準）: `dist_rel_band`（本人の芝ダ×距離帯の相対的な走りだけで並べる）、
+`dist_gap`（今回の距離が平均出走距離に近いほど上。陣営が選んできた距離を「合う距離」とみなす。
+過去走の無い馬はレースの中央値で埋める）。
+
+学習直前の未来情報の検査は `distance_asof_sample`: 無作為の100行で、本人の今回の距離帯での出走数・
+平均出走距離との差・前走距離との差・芝ダ×距離帯の相対的な走り・父/母父の産駒の平均距離と
+3着以内の平均距離との差を、
+「その日より前の行だけ」から素朴に計算し直して一致を確かめる。
+
+設定は `configs/ml/distance.toml` の `[distance]`（意味は `config.DistanceConfig`）。`[data]` `[codes]` と
+`[pedigree]` の世代数は血統モデルと同じ値にしてあり、**同じデータセットで両方を学習できる**。
 
 ## 5. 未決定事項の扱い
 
@@ -337,3 +396,84 @@ Logloss、最良の反復 1122、学習は約6分）。学習 2014〜2023 / 検�
 - 40年は設定の開始日（1984-01-01）まで遡れず、`truncated=True`・実際の開始 1986-01-05 と出る（§7.2 の 2）
 - 父の A/E の基準は 20〜40年で同じ値（0.8231 / 0.8510）。理由は確かめていない（2025年の出走馬の父の
   産駒が 2004年より前にはほとんど走っていないためと考えられる）
+
+## 9. 個別モデルの一覧と足し方
+
+| モデル（`--model`） | 予測のモデル名 | 何を見るか | 設定 | 特徴量 | 比較用の基準 |
+|---|---|---|---|---|---|
+| `pedigree` | `pedigree_catboost` | 血統（祖先の産駒成績・早熟/晩成・近交） | `configs/ml/pedigree.toml` | `features/pedigree.py` | `sire_ae` / `sire_cond_ae` |
+| `distance` | `distance_catboost` | 距離適性（今回の距離がその馬に合うか。強さは見ない。§4.4） | `configs/ml/distance.toml` | `features/distance.py` | `dist_rel_band` / `dist_gap` |
+
+どのモデルも予測を共通の形式（`models/base.py` の `PREDICTION_COLUMNS`）で
+`runs/<model>/<run_id>/<window>/predictions_*.parquet` に保存する。統合モデル（Phase 4）はこの表を
+モデル名で並べて読めばよい。
+
+**新しいモデルを足す手順**（`src/keiba_ml/registry.py` の docstring と同じ）:
+
+1. `src/keiba_ml/features/<name>.py` に `build_features(df, 設定) -> FeatureSet` を書く。
+   as-of（`features/asof.py` の `asof()` が使える）で、結果の列（`result_` / `target_` 接頭辞）を返さない
+2. `src/keiba_ml/config.py` に `<Name>Config` の節を足し、`MLConfig`・`_SECTIONS`・`MODEL_KINDS` に登録し、
+   `validate()` に値の検査を足す
+3. `configs/ml/<name>.toml` を作り、`[experiment] model = "<name>"` を書く。`[data]` `[codes]` と
+   `[pedigree]` の世代数は他のモデルと揃える（揃っていれば同じデータセットを共有できる）
+4. `src/keiba_ml/registry.py` の `MODELS` に `ModelSpec` を1つ足す（特徴量・`stats_history`・
+   学習しない基準・未来情報の検算・予想時の表示・データセットに要る列）
+5. データセットに無い列が要るなら `dataset/races.py` に足し、`DATASET_SCHEMA_VERSION` を上げる
+   （`READABLE_SCHEMA_VERSIONS` に古い版を残し、新しい列は `required_columns` で確かめる）
+6. `tests/ml/` に、合成データでの特徴量の向き・未来情報の検算・端から端までのテストを足す
+   （`tests/fixtures/ml_synthetic.py` の合成世界に、そのモデルが拾うべき効果を入れる）
+
+学習・評価・予想のスクリプト（`train.py` / `evaluate.py` / `predict.py` / `compare_runs.py`）と
+`experiment.py` はモデルを知らないので、触らなくてよい。
+
+## 10. 距離適性モデルの結果（2026-10-20）
+
+データセット `20261019T163248Z`（40年ぶんの版 × BLDN。schema 2。作成と同時に `datasets/CURRENT` が
+これに移った。中身は 2026-10-19 の `20261019T060220Z` に列を2つ足したもの）。学習 2014〜2023年・
+検証 2024年・テスト 2025年（血統モデルと同じ区切り）。最終モデルは
+**`data/ml/runs/distance/20261020_10y_v2/10y`**（2,000 反復前後で早期終了、最良 1989）。
+
+### 10.1 未使用期間での評価（2026年、独立な評価）
+
+`evaluate.py --from 2026-01-01 --to 2026-10-18` を1回だけ実行した（実際のレースは 2026-01-04〜10-12、
+2,636レース。`holdout_20260101_20261018.json`。同じ期間はもう評価し直せない）。
+
+| モデル | 的中数 [95%] | 偶然 | 3頭とも | 1着を含む | 1位が勝つ |
+|---|---|---|---|---|---|
+| distance_catboost | **1.099** [1.072, 1.126] | 0.689 | 0.026 | 0.411 | 0.159 |
+| dist_gap（平均出走距離に近い順） | 0.760 [0.731, 0.788] | 0.689 | — | — | — |
+| dist_rel_band（距離帯の相対的な走り） | 0.739 [0.714, 0.765] | 0.689 | — | — | — |
+
+学習しない基準との差（同じレースでの対応ありブートストラップ）: dist_gap に対して +0.339 [+0.302, +0.376]、
+dist_rel_band に対して +0.360 [+0.323, +0.395]。較正: brier 0.1594（基準率 0.1701）、ECE 0.0055。
+未来情報の検査（列名・as-of の総当たり検算 100 行）はどちらも ok。
+
+**読み方の注意:**
+
+- 血統モデル（2026年 0.974）より高いが、**「距離適性の方が強い」とは読まないこと**。前走からの距離の
+  変更（`dist_minus_last`）やその距離帯の出走数（`own_log_runs_*`）には陣営の選択が入る（好走した馬は
+  同じ距離を使い続け、凡走した馬は距離を変える）ので、調子の情報が一部混じる。距離の情報として正当な面も
+  あるが、過去成績モデルとは重なるはずで、その大きさは統合の段階で並べないと測れない
+- 重要度の上位: 年齢 6.9・芝ダ×距離帯の相対的な走り 6.8・頭数 6.4・前走との距離差 5.3・
+  同じ芝ダ×距離帯の出走数 5.0・距離との傾き 4.6（`feature_importance.csv`）。突出した列は無い
+- 市場（オッズ）との比較はしていない
+
+### 10.2 最初の版を捨てた理由（2025年のテストを見た後の変更）
+
+最初の版（`data/ml/runs/distance/20261020_10y`。**使わない**）はテストの的中数が 1.214 と血統モデルを
+大きく上回り、重要度の1位が「3着以内に入った距離の平均との差」（17.4。他の約4倍）だった。この値は
+3着以内の経験が無い馬で欠損になるので、**欠損かどうかが「これまで好走したことがあるか」= 強さを表していた**。
+同じ理由で、走りの質で重みを付けた平均距離・総出走数・前走の馬体重・祖先の産駒の出走数も外し、
+「強さだけが違う2頭は本人の特徴量が完全に一致する」テストを足した（§4.4）。外した後のテストは 1.067
+[1.042, 1.092]（dist_gap 0.756、dist_rel_band 0.734）。
+
+この変更はテストの結果を見た後のものだが、点数を上げる方向の調整ではなく（下がった）、設計の方針
+（強さを入れない）に合わせた修正。2026年の評価はこの修正の後に1回だけ行った。
+
+### 10.3 未確認・残っていること
+
+- 学習期間の比較（20/30/40年）はしていない（`train.py --model distance --compare`。40年は 13GB 前後使う）
+- 目的関数の比較（YetiRank など）はしていない
+- 馬体重（`result_weight_kg`）はデータセットに入れたが使っていない。体格と距離の関係を入れるなら、強さと
+  切り離した形（例: 同じ父の産駒の中での相対的な重さ）にする必要がある
+- 距離帯は SMILE に近い5区分（`config.DISTANCE_BANDS`）。1200m と 1000m は同じ区分になる

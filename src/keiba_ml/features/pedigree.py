@@ -25,14 +25,14 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 
 from keiba_ml.config import FeatureConfig, PedigreeConfig, all_paths
+from keiba_ml.features.base import MISSING, FeatureSet, context_columns
 
-MISSING = "NA"
+__all__ = ["MISSING", "FeatureSet", "build_features", "expected_top3", "prepare"]
 
 #: 年齢の区分（成長曲線用）。
 AGE_BUCKETS: tuple[tuple[str, int, int], ...] = (("2", 2, 2), ("3", 3, 3), ("4p", 4, 99))
@@ -175,20 +175,6 @@ def stat_features(df: pd.DataFrame, pedigree: PedigreeConfig) -> pd.DataFrame:
     return out
 
 
-@dataclass(frozen=True)
-class FeatureSet:
-    frame: pd.DataFrame
-    cat_features: tuple[str, ...]
-    num_features: tuple[str, ...]
-
-    @property
-    def columns(self) -> list[str]:
-        return [*self.cat_features, *self.num_features]
-
-
-_CATEGORICAL_CONTEXT = {"track_kind", "distance_band", "baba_cd", "jyo_cd", "sex_cd"}
-
-
 def build_features(df: pd.DataFrame, *, pedigree: PedigreeConfig,
                    features: FeatureConfig) -> FeatureSet:
     """特徴量表を作る。df は prepare() 前のデータセットでよい。"""
@@ -203,13 +189,10 @@ def build_features(df: pd.DataFrame, *, pedigree: PedigreeConfig,
         name = f"ped_{path}"
         frame[name] = prepared[name].replace("", MISSING).fillna(MISSING).astype(str)
         cats.append(name)
-    for name in features.context:
-        if name in _CATEGORICAL_CONTEXT:
-            frame[name] = prepared[name].fillna(MISSING).replace("", MISSING).astype(str)
-            cats.append(name)
-        else:
-            frame[name] = pd.to_numeric(prepared[name], errors="coerce").astype(float)
-            nums.append(name)
+    context, context_cats, context_nums = context_columns(prepared, features.context)
+    frame = frame.join(context)
+    cats.extend(context_cats)
+    nums.extend(context_nums)
     for name in ("inbreeding_f", "n_cross", "closest_cross"):
         frame[name] = pd.to_numeric(prepared[name], errors="coerce").astype(float)
         nums.append(name)
