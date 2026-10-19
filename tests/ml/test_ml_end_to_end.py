@@ -51,6 +51,7 @@ def test_blood_version_gives_the_same_pedigree_as_the_ml_version(world):
         built[source] = (df, ped, report)
     ml_ped, blood_ped = built["ml"][1], built["blood"][1]
     from_sk = ml_ped.index[ml_ped["pedigree_source"] == "SK"]
+    assert len(from_sk) > 0
     cols = [c for c in ml_ped.columns if c.startswith("ped_")] + ["birth_year", "inbreeding_f"]
     pd.testing.assert_frame_equal(blood_ped.loc[from_sk, cols], ml_ped.loc[from_sk, cols])
     um_only = ml_ped.index[ml_ped["pedigree_source"] == "UM"]

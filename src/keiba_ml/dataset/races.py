@@ -56,29 +56,35 @@ def _read(path: Path, usecols: Sequence[str]) -> pd.DataFrame:
 def load_raw(data_dir: Path, versions: Sequence[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
     """指定した版の races / race_horses を縦に連結する（重複はまだ残る）。
 
-    版の fromdate より前の日付のレースは捨てる。セットアップ取得（option 4）には
-    1954〜1985年などの訂正再配信がまばらに混じり（40年版で約180行）、残すと
-    「データは1954年からある」ことになって学習期間の truncated の判定が狂う。
-    捨てた件数は attrs["dropped_before_fromdate"] に版ごとに残す。
+    読む版の fromdate のうち最も古い日より前のレースは捨てる。セットアップ取得
+    （option 4）には 1954〜1985年などの訂正再配信がまばらに混じり（40年版で155レース）、
+    残すと「データは1954年からある」ことになって学習期間の truncated の判定が狂う。
+
+    fromdate は JV-Link の「提供日」でレースの日付ではないので、版ごとに切らない。
+    option 1 の差分の版には、それより前の日付のレースの訂正が正当に入っていて、
+    古い版と重ねたときに新しい値を勝たせる必要がある。どの版も覆っていない日付だけを
+    捨てる。fromdate の無い版が1つでもあれば、覆う範囲が分からないので捨てない。
+    捨てたレース数と境の日は attrs["dropped_before_fromdate"] に残す。
     """
-    races, runners = [], []
-    dropped: dict[str, int] = {}
+    races, runners, fromdates = [], [], []
     for version_id in versions:
         path = version_dir(data_dir, version_id)
         manifest = read_manifest(path)   # 未完成・壊れた版は DataVersionError で止める
-        race_rows = _read(path / "races.csv", _RACE_USECOLS)
-        runner_rows = _read(path / "race_horses.csv", _RUNNER_USECOLS)
+        races.append(_read(path / "races.csv", _RACE_USECOLS))
+        runners.append(_read(path / "race_horses.csv", _RUNNER_USECOLS))
         fromdate = str(manifest.get("fromdate") or "")[:8]
-        if len(fromdate) == 8 and fromdate.isdigit():
-            keep = race_rows["race_id"].str[:8] >= fromdate
-            dropped[version_id] = int((~keep).sum())
-            race_rows = race_rows[keep]
-            runner_rows = runner_rows[runner_rows["race_id"].str[:8] >= fromdate]
-        races.append(race_rows)
-        runners.append(runner_rows)
+        fromdates.append(fromdate if len(fromdate) == 8 and fromdate.isdigit() else None)
     races_all = pd.concat(races, ignore_index=True)
+    runners_all = pd.concat(runners, ignore_index=True)
+    dropped: dict = {"cutoff": None, "races": 0}
+    if fromdates and None not in fromdates:
+        cutoff = min(fromdates)
+        keep = races_all["race_id"].str[:8] >= cutoff
+        dropped = {"cutoff": cutoff, "races": int(races_all.loc[~keep, "race_id"].nunique())}
+        races_all = races_all[keep]
+        runners_all = runners_all[runners_all["race_id"].str[:8] >= cutoff]
     races_all.attrs["dropped_before_fromdate"] = dropped
-    return races_all, pd.concat(runners, ignore_index=True)
+    return races_all, runners_all
 
 
 def pick_by_data_kubun(rows: pd.DataFrame, keys: Sequence[str]) -> pd.DataFrame:

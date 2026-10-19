@@ -8,7 +8,7 @@ race_versions = []
 # 血統の出どころ。"blood" = 既存の血統の版（data/blood/。dataspec BLDN。実データで照合済み）、
 # "ml" = scripts/ml/update_pedigree.py の版（data/ml/pedigree/。UM の3代血統で補える）。
 pedigree_source = "blood"
-# 血統の版。空なら "blood" は data/blood/CURRENT、"ml" は完成済みの全版を古い順に重ねる。
+# 血統の版。空なら出どころの完成済みの全版を古い順に重ねる（差分の版が CURRENT でも欠けない）。
 pedigree_versions = []
 jra_only = true
 include_jump = false

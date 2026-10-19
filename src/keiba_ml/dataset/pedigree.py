@@ -92,21 +92,37 @@ def load_sources(ml_data_dir: Path, versions: Sequence[str] = ()) -> dict[str, p
     return sources
 
 
+def complete_blood_versions(blood_data_dir: Path) -> list[str]:
+    """既存の血統の版のうち完成済みのものを古い順に。.partial と壊れた版は含めない。"""
+    root = Path(blood_data_dir) / "versions"
+    if not root.exists():
+        return []
+    result = []
+    for path in sorted(root.iterdir()):
+        if not path.is_dir() or path.name.endswith(".partial"):
+            continue
+        try:
+            keiba_store.read_manifest(path)
+        except keiba_store.DataVersionError:
+            continue
+        result.append(path.name)
+    return result
+
+
 def load_blood_sources(blood_data_dir: Path, versions: Sequence[str] = ()
                        ) -> dict[str, pd.DataFrame]:
     """既存の血統の版（BLDN）を読み、load_sources と同じ形で返す。
 
-    versions が空なら CURRENT の1版。複数なら古い順に重ねて新しい行を勝たせる。
+    versions が空なら完成済みの版を全部、古い順に重ねて新しい行を勝たせる。
+    CURRENT の1版だけにしないのは、セットアップ取得の後に option 1 で取った版が
+    差分しか持たず、CURRENT がそれを指すことがあるため（重ねないと SK/HN の大半が落ちる）。
     UM は空（既存の版は UM の3代血統を持たない）。
     """
-    versions = list(versions)
+    versions = list(versions) or complete_blood_versions(blood_data_dir)
     if not versions:
-        current = keiba_store.current_version(blood_data_dir)
-        if current is None:
-            raise FileNotFoundError(
-                f"{blood_data_dir} に血統の版がありません。"
-                " scripts/update_data.py --kind blood を先に実行してください。")
-        versions = [current]
+        raise FileNotFoundError(
+            f"{blood_data_dir} に血統の版がありません。"
+            " scripts/update_data.py --kind blood を先に実行してください。")
     sk, hn = [], []
     for order, version_id in enumerate(versions):
         path = keiba_store.version_dir(blood_data_dir, version_id)

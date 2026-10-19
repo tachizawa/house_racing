@@ -83,9 +83,10 @@ def manifest_config(config: MLConfig) -> dict:
 
 
 #: 突き合わせから外す data の項目。読んだ版そのものは manifest の race_versions /
-#: pedigree_source / pedigree_versions に残っており、build_dataset.py の --race-version
-#: などで設定ファイルと違う版を読むのは正当な使い方なので。
-_UNCOMPARED_DATA_KEYS = ("race_versions", "pedigree_source", "pedigree_versions")
+#: pedigree_versions に残っており、build_dataset.py の --race-version で設定ファイルと
+#: 違う版を読むのは正当な使い方なので。pedigree_source は外さない（"ml" は UM だけの馬の
+#: 祖先を持つなど中身が違うので、設定と違う出どころのデータセットで学習させない）。
+_UNCOMPARED_DATA_KEYS = ("race_versions", "pedigree_versions")
 
 
 def config_mismatches(manifest: dict, config: MLConfig) -> list[str]:

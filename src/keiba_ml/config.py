@@ -94,9 +94,9 @@ class DataConfig:
     #:   "ml"    … この層の版（data/ml/pedigree/versions/。scripts/ml/update_pedigree.py）。
     #:              UM の3代血統で補えるのはこちらだけ
     pedigree_source: str = "blood"
-    #: 血統の版。空なら "blood" は data/blood/CURRENT の1版、"ml" は
-    #: data/ml/pedigree/versions/ の完成済みの版を全部、古い順に重ねる
-    #: （セットアップ取得 → 差分 の順に積む想定。新しい行が勝つ）。
+    #: 血統の版。空ならその出どころ（data/blood/versions/ か data/ml/pedigree/versions/）の
+    #: 完成済みの版を全部、古い順に重ねる（セットアップ取得 → 差分 の順に積む想定。
+    #: 新しい行が勝つ。CURRENT が差分だけの版を指していても SK/HN が欠けない）。
     pedigree_versions: tuple[str, ...] = ()
     #: 中央（01〜10）だけを使う。地方・海外は条件が揃わないため既定で除く。
     jra_only: bool = True
