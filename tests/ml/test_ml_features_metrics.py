@@ -149,6 +149,27 @@ def _race(scores, ranks, race_id="r1"):
     return pred, truth
 
 
+def test_paired_difference_is_per_race_and_only_on_common_races():
+    """A − B をレースごとに取る。片方にしか無いレースは数えない。"""
+    ranks = [1, 2, 3, 4, 5, 6]
+    good1, truth1 = _race([6, 5, 4, 3, 2, 1], ranks, "r1")    # 3頭とも当たる
+    bad1, _ = _race([1, 2, 3, 4, 5, 6], ranks, "r1")          # 1頭も当たらない
+    good2, truth2 = _race([6, 5, 1, 4, 2, 3], ranks, "r2")    # 2頭
+    only_a, truth3 = _race([6, 5, 4, 3, 2, 1], ranks, "r3")   # A にしか無い
+    truth = pd.concat([truth1, truth2, truth3], ignore_index=True)
+    a = pd.concat([good1, good2, only_a], ignore_index=True)
+    b = pd.concat([bad1, good2], ignore_index=True)
+    diff = metrics.paired_difference(a, b, truth, n_boot=200)
+    assert diff["races"] == 2
+    assert diff["hits"]["a"] == pytest.approx(2.5)
+    assert diff["hits"]["b"] == pytest.approx(1.0)
+    assert diff["hits"]["diff"] == pytest.approx(1.5)
+    assert diff["hits"]["races_differing"] == pytest.approx(0.5)
+    assert diff["hits"]["ci95"][0] <= 1.5 <= diff["hits"]["ci95"][1]
+    same = metrics.paired_difference(a, a, truth, n_boot=200)
+    assert same["hits"]["diff"] == 0 and same["hits"]["ci95"] == [0.0, 0.0]
+
+
 def test_per_race_hits_and_chance():
     pred, truth = _race([0.9, 0.8, 0.1, 0.7, 0.2, 0.3], [1, 5, 2, 3, 4, 6])
     races = metrics.per_race(pred, truth)

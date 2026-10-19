@@ -96,6 +96,30 @@ def summarize(races: pd.DataFrame, *, n_boot: int = 1000, seed: int = 0) -> dict
     return out
 
 
+def paired_difference(pred_a: pd.DataFrame, pred_b: pd.DataFrame, truth: pd.DataFrame, *,
+                      top_n: int = 3, n_boot: int = 1000, seed: int = 0) -> dict:
+    """同じレースでの A − B の差（hits / all_hit / winner_in_pred / ndcg）と 95% 区間。
+
+    2つのモデルを同じテスト期間で比べるときは、片方ずつの区間が重なるかではなく、
+    レースごとの差を対応ありでブートストラップする（同じレースの難しさが両方に効くので、
+    差の区間は片方ずつの区間よりずっと狭い）。両方に予測があるレースだけを使う。
+    """
+    a = per_race(pred_a, truth, top_n=top_n).set_index("race_id")
+    b = per_race(pred_b, truth, top_n=top_n).set_index("race_id")
+    common = a.index.intersection(b.index)
+    a, b = a.loc[common], b.loc[common]
+    out: dict = {"races": int(len(common))}
+    if not len(common):
+        return out
+    for name in ("hits", "all_hit", "winner_in_pred", "ndcg"):
+        diff = (a[name] - b[name]).to_numpy(dtype=float)
+        low, high = _bootstrap_ci(diff, n_boot=n_boot, seed=seed)
+        out[name] = {"a": float(np.nanmean(a[name])), "b": float(np.nanmean(b[name])),
+                     "diff": float(np.nanmean(diff)), "ci95": [low, high],
+                     "races_differing": float(np.mean(diff != 0))}
+    return out
+
+
 def calibration(prob: np.ndarray, y: np.ndarray, *, bins: int = 10) -> dict:
     """2値（3着以内）の確率の較正。ビンは予測確率の等幅。"""
     prob = np.clip(np.asarray(prob, dtype=float), 1e-6, 1 - 1e-6)

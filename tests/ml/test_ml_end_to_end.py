@@ -97,12 +97,51 @@ def test_pedigree_model_beats_chance_on_fixed_test_period(world, dataset):
     assert (model_rows["hits_ci_low"] > model_rows["hits_random"]).all()
     assert (model_rows["brier"] < model_rows["brier_base"]).all()
 
+    # 学習期間どうしの差（対応あり）は保存した予測から出し、学習し直さずに出し直せる
+    diffs = pd.read_csv(out_root / "t" / "window_differences.csv")
+    assert list(diffs["window"]) == ["10y"] and list(diffs["versus"]) == ["5y"]
+    assert diffs["diff_ci_low"].iloc[0] <= diffs["hits_diff"].iloc[0] <= diffs["diff_ci_high"].iloc[0]
+    assert _script("compare_runs").main(["--run", str(out_root / "t"),
+                                         "--ml-data-dir", str(world.ml_data_dir)]) == 0
+    pd.testing.assert_frame_equal(pd.read_csv(out_root / "t" / "window_differences.csv"), diffs)
+
     # 保存したモデルを読み直して同じ予測になる
     model = PedigreeCatBoost.load(out_root / "t" / "10y")
     assert model.feature_columns
     checks = json.loads((out_root / "t" / "10y" / "checks.json").read_text(encoding="utf-8"))
     assert {c["name"]: c["status"] for c in checks} == {
         "feature_columns": "ok", "split": "ok", "asof_sample": "ok"}
+
+
+def test_holdout_evaluation_uses_only_a_period_after_the_test_and_runs_once(world, dataset,
+                                                                            capsys):
+    pytest.importorskip("catboost")
+    df, _, _ = dataset
+    config = MLConfig(
+        pedigree=PedigreeConfig(generations=4, inbreeding_generations=4),
+        split=SplitConfig(test_start=date(2021, 1, 1), test_end=date(2021, 12, 31),
+                          valid_years=1, train_years=(5,)),
+        model=ModelConfig(iterations=100, learning_rate=0.1, early_stopping_rounds=30,
+                          thread_count=2))
+    run_comparison(df, config, out_root=world.ml_data_dir / "runs", run_id="hold", log_period=0)
+    model_dir = world.ml_data_dir / "runs" / "hold" / "5y"
+    evaluate = _script("evaluate_pedigree")
+    common = ["--model", str(model_dir), "--ml-data-dir", str(world.ml_data_dir)]
+
+    assert evaluate.main([*common, "--from", "2021-06-01", "--to", "2022-12-31"]) == 2
+    assert "テスト期間の終わり" in capsys.readouterr().out
+
+    assert evaluate.main([*common, "--from", "2022-01-01", "--to", "2022-12-31"]) == 0
+    result = json.loads((model_dir / "holdout_20220101_20221231.json").read_text(encoding="utf-8"))
+    assert result["period"]["first_race"] >= "2022-01-01"
+    hits = result["results"]["pedigree_catboost"]["ranking"]["hits"]
+    assert hits["ci95"][0] > hits["random"]
+    diff = result["differences"]["pedigree_catboost-sire_ae"]["hits"]
+    assert diff["races_differing"] > 0 and diff["ci95"][0] <= diff["diff"] <= diff["ci95"][1]
+
+    # 2回目は上書きしない（見てから評価し直すと、その期間も選択に使ったことになる）
+    assert evaluate.main([*common, "--from", "2022-01-01", "--to", "2022-12-31"]) == 2
+    assert "上書きしません" in capsys.readouterr().out
 
 
 def test_ranking_loss_runs(world, dataset):

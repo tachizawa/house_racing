@@ -123,6 +123,44 @@ def run_window(df: pd.DataFrame, config: MLConfig, window: Window, *, out_dir: P
     return summary
 
 
+def evaluate_period(df: pd.DataFrame, config: MLConfig, model: PedigreeCatBoost, *,
+                    train_start: date, period_start: date, period_end: date) -> dict:
+    """学習済みのモデルを、学習・検証・テストのどれにも使っていない期間で評価する。
+
+    特徴量は学習時と同じ規則（stats_history が "window" なら train_start 以降の履歴）で、
+    period_end までの行から as-of で作る。基準（sire_ae / sire_cond_ae）との差は
+    同じレースでの対応ありブートストラップ。
+    """
+    day = df["race_date"].dt.date
+    mask = day <= period_end
+    if config.pedigree.stats_history == "window":
+        mask &= day >= train_start
+    history = df[mask]
+    features = build_features(history, pedigree=config.pedigree, features=config.features)
+    rows = history[history["has_result"]
+                   & (history["race_date"].dt.date >= period_start)]
+    if rows.empty:
+        raise IntegrityError(f"{period_start}〜{period_end} に結果のあるレースがありません。")
+    ev = config.evaluate
+    kwargs = dict(top_n=ev.top_n, bins=ev.calibration_bins, n_boot=ev.bootstrap,
+                  seed=ev.bootstrap_seed)
+    pred = model.predict(features, rows, fold="holdout")
+    results = {MODEL_NAME: metrics.evaluate(pred, rows, **kwargs)}
+    differences = {}
+    for name, base in baseline_predictions(features, rows, fold="holdout").items():
+        results[name] = metrics.evaluate(base, rows, **kwargs)
+        differences[f"{MODEL_NAME}-{name}"] = metrics.paired_difference(
+            pred, base, rows, top_n=ev.top_n, n_boot=ev.bootstrap, seed=ev.bootstrap_seed)
+    return {
+        "period": {"start": str(period_start), "end": str(period_end),
+                   "first_race": str(rows["race_date"].min().date()),
+                   "last_race": str(rows["race_date"].max().date())},
+        "races": int(rows["race_id"].nunique()), "rows": int(len(rows)),
+        "results": results, "differences": differences,
+        "checks": [integrity.check_feature_columns(features.columns)],
+    }
+
+
 def run_comparison(df: pd.DataFrame, config: MLConfig, *, out_root: Path, run_id: str,
                    train_years: tuple[int, ...] | None = None,
                    allow_integrity_fail: bool = False, log_period: int = 200) -> pd.DataFrame:
@@ -134,6 +172,7 @@ def run_comparison(df: pd.DataFrame, config: MLConfig, *, out_root: Path, run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     write_json(run_dir / "config.json", asdict(config))
     rows, test_races, previous_start = [], None, None
+    labels: list[str] = []
     for years in train_years:
         window = make_window(config.split, years, first)
         if window.truncated:
@@ -152,9 +191,44 @@ def run_comparison(df: pd.DataFrame, config: MLConfig, *, out_root: Path, run_id
                                  f" {test_races} → {current}")
         test_races = current
         rows.extend(comparison_rows(summary))
+        labels.append(window.label)
     table = pd.DataFrame(rows)
     table.to_csv(run_dir / "comparison.csv", index=False, encoding="utf-8-sig")
     (run_dir / "comparison.md").write_text(to_markdown(table), encoding="utf-8")
+    if len(labels) > 1:
+        _, _, test = split_frame(df, window)
+        write_window_differences(run_dir, labels, test, config)
+    return table
+
+
+def window_differences(run_dir: Path, labels: list[str], truth: pd.DataFrame,
+                       config: MLConfig) -> pd.DataFrame:
+    """先頭の学習期間に対する、各学習期間の差（同じテストレースでの対応ありブートストラップ）。
+
+    保存済みの predictions_test.parquet から計算するので、学習をやり直さずに出し直せる
+    （scripts/ml/compare_runs.py）。
+    """
+    ev = config.evaluate
+    base = pd.read_parquet(run_dir / labels[0] / "predictions_test.parquet")
+    rows = []
+    for label in labels[1:]:
+        other = pd.read_parquet(run_dir / label / "predictions_test.parquet")
+        diff = metrics.paired_difference(other, base, truth, top_n=ev.top_n,
+                                         n_boot=ev.bootstrap, seed=ev.bootstrap_seed)
+        hits = diff["hits"]
+        rows.append({"window": label, "versus": labels[0], "races": diff["races"],
+                     "hits": hits["a"], "hits_versus": hits["b"], "hits_diff": hits["diff"],
+                     "diff_ci_low": hits["ci95"][0], "diff_ci_high": hits["ci95"][1],
+                     "races_differing": hits["races_differing"],
+                     "ndcg_diff": diff["ndcg"]["diff"]})
+    return pd.DataFrame(rows)
+
+
+def write_window_differences(run_dir: Path, labels: list[str], truth: pd.DataFrame,
+                             config: MLConfig) -> pd.DataFrame:
+    table = window_differences(run_dir, labels, truth, config)
+    table.to_csv(run_dir / "window_differences.csv", index=False, encoding="utf-8-sig")
+    (run_dir / "window_differences.md").write_text(to_markdown(table), encoding="utf-8")
     return table
 
 
