@@ -1,8 +1,12 @@
-"""血統モデルの結合テスト用の合成世界。
+"""血統モデル・距離適性モデルの結合テスト用の合成世界。
 
 父の「能力」「成長型（晩成ほど年齢とともに伸びる）」「芝ダートの向き」と、
 母父の能力が子の着順に効くように作る。血統モデルがこれを拾えれば、
 偶然より明らかに上位3頭が当たる。
+
+距離適性: 馬ごとに得意距離（pref_km。父の距離の向き + 個体差）があり、レースの距離が
+得意距離から離れるほど走りが落ちる（DISTANCE_PENALTY × 距離差²）。着差（1着馬との
+タイム差）は走りの差から作り、馬体重は短距離向きほど重くする。
 
 生成物:
 - 既存形式のデータ版（data/versions/<id>/races.csv ほか）… tests.fixtures.csv_data で書く
@@ -20,6 +24,11 @@ from pathlib import Path
 
 import numpy as np
 
+#: 得意距離から 1km 離れたときの走りの落ち方（ガンベル雑音の尺度 1.0 と比べる）。
+DISTANCE_PENALTY = 1.5
+#: 父の距離の向きの平均（km）。
+BASE_KM = 1.8
+
 from keiba.ingest import records as keiba_records
 from keiba.ingest import store as keiba_store
 from keiba_ml.ingest import pedigree_records, pedigree_store
@@ -36,6 +45,7 @@ class Breeder:
     quality: float = 0.0
     maturity: float = 0.0
     turf: float = 0.0
+    distance: float = 0.0     # 得意距離の、BASE_KM からのずれ（km）
 
 
 @dataclass
@@ -64,6 +74,8 @@ def build_world(tmp_path: Path, *, first_year: int = 2011, last_year: int = 2022
                 races_per_year: int = 160, seed: int = 7,
                 um_only_rate: float = 0.05) -> World:
     rng = np.random.default_rng(seed)
+    # 距離適性の値は別の乱数列で引く（血統の値の引き方を変えないため）。
+    drng = np.random.default_rng(seed + 1000)
     breeders: dict[str, Breeder] = {}
     counter = iter(range(1, 10**6))
 
@@ -94,6 +106,7 @@ def build_world(tmp_path: Path, *, first_year: int = 2011, last_year: int = 2022
         b.quality = float(rng.normal(0, 0.6))
         b.maturity = float(rng.normal(0, 0.6))
         b.turf = float(rng.normal(0, 0.6))
+        b.distance = float(drng.normal(0, 0.35))
     for num in l1_mares:
         b = breeders[num]
         b.quality = 0.6 * breeders[b.father].quality + float(rng.normal(0, 0.3))
@@ -105,9 +118,12 @@ def build_world(tmp_path: Path, *, first_year: int = 2011, last_year: int = 2022
             ketto = f"{birth_year}{len(horses) + 1:06d}"
             ability = (breeders[sire].quality + 0.5 * breeders[dam].quality
                        + float(rng.normal(0, 0.5)))
+            pref_km = BASE_KM + 0.8 * breeders[sire].distance + float(drng.normal(0, 0.2))
             horses[ketto] = {"sire": sire, "dam": dam, "birth_year": birth_year,
                              "ability": ability, "sex": str(rng.choice(["1", "2"])),
-                             "bamei": f"ウマ{len(horses) + 1}"}
+                             "bamei": f"ウマ{len(horses) + 1}", "pref_km": pref_km,
+                             "weight": 470.0 + 40.0 * (BASE_KM - pref_km)
+                             + float(drng.normal(0, 15))}
 
     races, runners = [], []
     by_year: dict[int, list[str]] = {}
@@ -124,29 +140,34 @@ def build_world(tmp_path: Path, *, first_year: int = 2011, last_year: int = 2022
             turf = bool(rng.random() < 0.55)
             n = int(rng.integers(8, 15))
             field_horses = rng.choice(pool, size=n, replace=False)
+            kyori = int(drng.choice([1200, 1600, 2000, 2400]))
             perf = []
             for k in field_horses:
                 h, s = horses[k], breeders[horses[k]["sire"]]
                 age = year - h["birth_year"]
                 p = (h["ability"] + 0.4 * s.maturity * (age - 3)
-                     + 0.5 * s.turf * (1 if turf else -1) + float(rng.gumbel(0, 1.0)))
+                     + 0.5 * s.turf * (1 if turf else -1) + float(rng.gumbel(0, 1.0))
+                     - DISTANCE_PENALTY * (kyori / 1000.0 - h["pref_km"]) ** 2)
                 perf.append(p)
             order = np.argsort(-np.array(perf))
             ranks = np.empty(n, dtype=int)
             ranks[order] = np.arange(1, n + 1)
+            margins = np.minimum(np.round((max(perf) - np.array(perf)) * 0.4, 1), 9.9)
             races.append(csv_data.make_race(
                 race_id=race_id, hasso_at=f"{day:%Y-%m-%d}T{10 + race_num % 6:02d}:00:00+09:00",
-                jyo_cd=jyo, kyori_m=str(int(rng.choice([1200, 1600, 2000, 2400]))),
+                jyo_cd=jyo, kyori_m=str(kyori),
                 track_cd="17" if turf else "24", track_kind="turf" if turf else "dirt",
                 baba_cd=str(int(rng.choice([1, 1, 1, 2, 3]))), grade_cd="",
                 jyoken_cd_youngest="005", toroku_tosu=str(n), syusso_tosu=str(n),
                 nyusen_tosu=str(n), data_kubun="7", make_date=f"{day + timedelta(days=1):%Y%m%d}"))
-            for i, (k, rank) in enumerate(zip(field_horses, ranks)):
+            for i, (k, rank, margin) in enumerate(zip(field_horses, ranks, margins)):
                 h = horses[k]
                 runners.append(csv_data.make_race_horse(
                     race_id=race_id, umaban=f"{i + 1:02d}", ketto_num=k, bamei=h["bamei"],
                     sex_cd=h["sex"], barei=f"{year - h['birth_year']:02d}",
-                    result_kakutei_jyuni=str(int(rank)), data_kubun="7",
+                    result_kakutei_jyuni=str(int(rank)), result_margin_sec=f"{margin:.1f}",
+                    result_ba_taijyu_kg=str(int(round(h["weight"] + drng.normal(0, 4)))),
+                    data_kubun="7",
                     make_date=f"{day + timedelta(days=1):%Y%m%d}"))
 
     # 結果の出ていない出馬表のレース（予想スクリプト用）

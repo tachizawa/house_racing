@@ -222,6 +222,85 @@ def check_asof_samples(history: pd.DataFrame, feature_frame: pd.DataFrame, *,
                             for p, r in by_path.items()})
 
 
+def _distance_m(values) -> pd.Series:
+    """距離（m）。features.distance.prepare と同じく 0 以下は欠損とみなす。"""
+    m = pd.to_numeric(values, errors="coerce").astype(float)
+    return m.where(m > 0)
+
+
+def _beat_fraction(rows: pd.DataFrame) -> pd.Series:
+    """走りの質（features.distance の pf）を素朴に計算する。走りの質に入らない行は落とす。"""
+    km = _distance_m(rows["kyori_m"])
+    rank = pd.to_numeric(rows["result_rank"], errors="coerce").astype(float)
+    n = rows["field_size"].astype(float)
+    ok = rows["result_margin_sec"].notna() & rank.notna() & (n >= 2) & km.notna()
+    return ((n - rank) / (n - 1)).clip(0.0, 1.0)[ok]
+
+
+def check_distance_asof_sample(history: pd.DataFrame, feature_frame: pd.DataFrame, *,
+                               config, sample: int = 100, seed: int = 0,
+                               only: pd.Index | None = None) -> dict:
+    """距離適性の特徴量を、無作為に選んだ行で「その日より前の行だけ」から計算し直して比べる。
+
+    features.distance の累積計算（groupby + 累積 + merge_asof）が同じ日・後の日の結果を
+    使っていないことを、遅いが自明に正しい方法で検算する。config は DistanceConfig。
+    確かめる列: 本人の今回の距離帯での出走数・平均出走距離との差・前走距離との差・
+    芝ダ×距離帯の相対的な走り、祖先ごとの産駒の平均距離・3着以内の平均距離との差。
+    """
+    hist = history[history["has_result"]]
+    candidates = history.index if only is None else history.index.intersection(only)
+    if len(candidates) == 0:
+        return _result("distance_asof_sample", "warn", "検算できる行がありません。")
+    rng = np.random.default_rng(seed)
+    picked = rng.choice(candidates, size=min(sample, len(candidates)), replace=False)
+    m = config.own_shrinkage
+    mismatches = []
+    for idx in picked:
+        row = history.loc[idx]
+        km = float(_distance_m(pd.Series([row["kyori_m"]], dtype=object)).iloc[0])
+        prior = hist[(hist["ketto_num"] == row["ketto_num"])
+                     & (hist["race_date"] < row["race_date"])]
+        # 距離の無い走りは数えない（features.distance の "last" も欠損でない最後の値）。
+        dist = _distance_m(prior.sort_values("race_date", kind="mergesort")["kyori_m"]).dropna()
+        same_band = _distance_m(prior.loc[prior["distance_band"] == row["distance_band"],
+                                          "kyori_m"]).dropna()
+        expected = {
+            "own_log_runs_dband": np.log1p(len(same_band)),
+            "dist_minus_mean": km - dist.mean() if len(dist) else np.nan,
+            "dist_minus_last": km - float(dist.iloc[-1]) if len(dist) else np.nan,
+        }
+        surface = prior[prior["track_kind"] == row["track_kind"]]
+        pf_surface = _beat_fraction(surface)
+        pf_band = _beat_fraction(surface[surface["distance_band"] == row["distance_band"]])
+        if len(pf_surface):
+            base = pf_surface.mean()
+            expected["own_rel_pf_surface_dband"] = (
+                (pf_band.sum() + m * base) / (len(pf_band) + m) - base)
+        else:
+            expected["own_rel_pf_surface_dband"] = np.nan
+        for path in config.pedigree_paths:
+            col = f"ped_{path}"
+            if row[col] in ("", None) or pd.isna(row[col]):
+                continue
+            kin = hist[(hist[col] == row[col]) & (hist["race_date"] < row["race_date"])]
+            if config.exclude_self:
+                kin = kin[kin["ketto_num"] != row["ketto_num"]]
+            top3 = _distance_m(kin.loc[kin["target_top3"] == 1, "kyori_m"]).dropna()
+            ran = _distance_m(kin.loc[_beat_fraction(kin).index, "kyori_m"])
+            mean = ran.mean() if len(ran) else np.nan
+            expected[f"ped_{path}_dist_minus_mean"] = km - mean
+            expected[f"ped_{path}_dist_minus_top3_mean"] = km - (top3.mean() if len(top3) else mean)
+        for name, value in expected.items():
+            feature = float(feature_frame.at[idx, name])
+            if not np.isclose(value, feature, rtol=1e-5, atol=1e-5, equal_nan=True):
+                mismatches.append({"index": int(idx), "feature": name,
+                                   "recomputed": float(value), "value": feature})
+    return _result("distance_asof_sample", "ok" if not mismatches else "fail",
+                   "距離適性の特徴量（本人の距離の経験・相対的な走り・産駒の距離の傾向）を"
+                   "総当たりで検算して一致するか",
+                   checked=int(len(picked)), mismatches=mismatches[:10])
+
+
 def summarize(checks: Sequence[dict]) -> str:
     lines = []
     for check in checks:

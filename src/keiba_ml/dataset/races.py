@@ -28,8 +28,12 @@ _RACE_USECOLS = (
 )
 _RUNNER_USECOLS = (
     "race_id", "umaban", "ketto_num", "bamei", "sex_cd", "barei",
-    "result_ijyo_cd", "result_kakutei_jyuni", "data_kubun", "make_date",
+    "result_ijyo_cd", "result_kakutei_jyuni", "result_margin_sec", "result_ba_taijyu_kg",
+    "data_kubun", "make_date",
 )
+
+#: 馬体重として成り立つ範囲（kg）。JV-Data は計不を 999、取消を 000 で入れる。
+WEIGHT_RANGE_KG = (300, 700)
 
 _RESULT_KUBUN = keiba_config.DATA_KUBUN_RESULT_PRIORITY
 _PRIORITY = keiba_config.DATA_KUBUN_RESULT_PRIORITY + keiba_config.DATA_KUBUN_ENTRY_PRIORITY
@@ -158,10 +162,17 @@ def build_runners(races: pd.DataFrame, runners: pd.DataFrame, *,
     can_finish = ~df["result_ijyo_cd"].str.strip().isin(keiba_config.IJYO_NO_TIME)
     df["target_top3"] = np.where(has, (can_finish & (rank.fillna(99) <= 3)).astype(float), np.nan)
     df["target_win"] = np.where(has, (can_finish & (rank.fillna(99) == 1)).astype(float), np.nan)
+    # 1着馬とのタイム差（秒）。競走中止・失格は着差として読まない（keiba.models の has_time）。
+    margin = pd.to_numeric(df["result_margin_sec"].replace("", np.nan), errors="coerce")
+    df["result_margin_sec"] = margin.where(has & can_finish).astype(float)
+    weight = pd.to_numeric(df["result_ba_taijyu_kg"].replace("", np.nan), errors="coerce")
+    low, high = WEIGHT_RANGE_KG
+    df["result_weight_kg"] = weight.where(has & (weight >= low) & (weight <= high)).astype(float)
     keep = ["race_id", "race_date", "hasso_at", "year", "month", "jyo_cd", "kyori_m",
             "track_kind", "distance_band", "baba_cd", "grade_tier", "field_size",
             "umaban", "ketto_num", "bamei", "sex_cd", "barei_raw", "age_from_barei",
-            "has_result", "result_ijyo_cd", "result_rank", "target_top3", "target_win",
+            "has_result", "result_ijyo_cd", "result_rank", "result_margin_sec",
+            "result_weight_kg", "target_top3", "target_win",
             "data_kubun", "race_data_kubun"]
     df = df[keep].rename(columns={"data_kubun": "runner_data_kubun"})
     return df.sort_values(["race_date", "race_id", "umaban"], kind="mergesort").reset_index(drop=True)

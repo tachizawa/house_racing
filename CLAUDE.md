@@ -25,7 +25,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `src/keiba/evaluate/{top3_metrics,top3_backtest,coverage}.py` | 3着内の採点・比較・データ充足度 |
 | `src/keiba/store/top3_records.py` | 3着内予想の記録（`data/top3/`） |
 | `scripts/` | `update_data` / `predict` / `fit_weights` / `backtest` / `smoke_test` / `dossier` / `backtest_top3` / `data_coverage` |
-| `src/keiba_ml/` | **機械学習系（血統 CatBoost ほか）。既存モデルとは独立**。説明は `docs/ml/README.md` |
+| `src/keiba_ml/` | **機械学習系（血統・距離適性の CatBoost ほか）。既存モデルとは独立**。モデルは `registry.py` で束ねる。説明は `docs/ml/README.md` |
 | `scripts/ml/` / `configs/ml/` / `tests/ml/` | 機械学習系の CLI・設定・テスト |
 | `vendor/jravan-sdk-500-64bit/` | JRA-VAN SDK 5.0.0（64bit）の展開物。再配布不可のため `.gitignore` 済み |
 | `data/` | 取得したデータ版・予想記録・重み。再配布不可のため `.gitignore` 済み |
@@ -259,12 +259,17 @@ Phase 2（血統モデル）。**2026-10-19 に実データで端から端まで
 - 依存は `requirements-ml.txt`（catboost / pyarrow。2026-10-19 に `.venv` へ導入済み）。既存のテストはこれ無しで通る
 - **血統は既存の BLDN の版（`data/blood/`）を読む**（`data.pedigree_source = "blood"`、既定）。
   `scripts/ml/update_pedigree.py` は UM で補いたいときだけ。BLOD は使わない
-- 手順（現在の最終モデルは `data/ml/runs/20261019_final/10y`）:
+- **個別モデルは登録表 `src/keiba_ml/registry.py` で束ねる（2026-10-20）。** モデルごとに違うのは
+  特徴量・比較用の基準・未来情報の検算・予想時の表示・要る列だけで、学習・評価・予想の手順
+  （`experiment.py`、`scripts/ml/train.py` / `evaluate.py` / `predict.py` / `compare_runs.py`）は共通。
+  設定は `configs/ml/<model>.toml`（`[experiment] model` で種類を示す）、出力は `data/ml/runs/<model>/<run_id>/`。
+  モデルの足し方は `docs/ml/README.md` §9。`*_pedigree.py` は `--model pedigree` に固定した互換の入口
+- 手順（血統の最終モデルは `data/ml/runs/20261019_final/10y`。2026-10-19 の実行は `runs/<model>/` の下に無い）:
 
   ```bash
   .venv/Scripts/python.exe scripts/ml/build_dataset.py --race-data-dir data/_40y
-  .venv/Scripts/python.exe scripts/ml/train_pedigree.py --years 10
-  .venv/Scripts/python.exe scripts/ml/predict_pedigree.py --model data/ml/runs/<run_id>/10y
+  .venv/Scripts/python.exe scripts/ml/train.py --model pedigree --years 10      # または --model distance
+  .venv/Scripts/python.exe scripts/ml/predict.py --model data/ml/runs/<model>/<run_id>/10y
   ```
 
 - **独立な評価は 2026年（2026-01-04〜10-12、2,636レース）**。`evaluate_pedigree.py` で1回だけ実行した。
@@ -272,6 +277,13 @@ Phase 2（血統モデル）。**2026-10-19 に実データで端から端まで
   +0.124 [+0.092, +0.156]（対応ありブートストラップ）。ECE 0.0050。市場（オッズ）との比較はしていない。
   **2025年（テスト期間）の 1.0015 は、祖先カテゴリの組と学習期間を選ぶのに使った後の値**なので独立ではない。
   2026年の同じ期間は `holdout_20260101_20261018.json` があるので再評価できない（上書きを拒む）
+- **距離適性モデル（2026-10-20、`--model distance`）** は「今回の距離がその馬に合うか」だけを見る。
+  **強さの水準は特徴量に入れない**（強さだけが違う2頭は本人の特徴量が完全に一致する。
+  `tests/ml/test_ml_distance.py` が固定）。最初の版は「3着以内に入った距離の平均」の欠損が強さを表して
+  いたので捨てた。最終モデル `data/ml/runs/distance/20261020_10y_v2/10y`、2026年（2,636レース）で1回だけ
+  評価して的中数 **1.099 [1.072, 1.126]**（偶然 0.689、平均出走距離に近い順の基準 0.760）。
+  前走からの距離の変更などに陣営の選択（＝調子）が混じるので、過去成績モデルとは一部重なる。
+  詳細は `docs/ml/README.md` §4.4・§10。データセットは schema 2（`20261019T163248Z`。タイム差・馬体重の列を追加）
 - **祖先の繁殖登録番号を CatBoost のカテゴリにしない**（`categorical_generations = 0`）。ordered TS は
   本人・近親の過去走を数え（`exclude_self` が効かない）、学習期間の値で固定される。入れると母・母母が
   重要度 30〜40% を占めて35反復前後で過学習し、テストの的中数は 0.889。この判断はテストを見た後のもの
@@ -581,7 +593,7 @@ venv は `.venv`（Python 3.13.3 / 64bit）。コマンドは `.venv` の python
 # 依存（初回のみ）
 .venv/Scripts/python.exe -m pip install -r requirements.txt
 
-# テスト全体（2026-10-19 実行: 1693 passed。catboost を入れると skip は 0）
+# テスト全体（2026-10-30 実行: 1730 passed。catboost を入れると skip は 0）
 .venv/Scripts/python.exe -m pytest
 
 # テスト1件だけ

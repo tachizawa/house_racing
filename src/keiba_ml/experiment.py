@@ -1,11 +1,15 @@
 """学習期間ごとの実験（Phase 2「10年で基準モデル → 20/30/40年へ拡張 → 期間別の比較」）。
 
+どの個別モデル（血統・距離適性 …）も同じ手順で学習・評価する。モデルごとに違う部分
+（特徴量・比較用の基準・未来情報の検算）は設定の ``[experiment] model`` から
+``registry`` の ModelSpec を引いて使う。
+
 1つの学習期間（Window）について:
-  1. 産駒成績の履歴を決める（stats_history="window" なら学習開始日以降だけ）
+  1. 履歴を決める（stats_history="window" なら学習開始日以降だけ）
   2. 特徴量を作る（as-of。テスト期間の行もテスト日より前の情報だけで作られる）
   3. 時系列で分割し、未来情報の検査（列名・分割・as-of の総当たり検算）を通す
   4. CatBoost を学習（検証期間で early stopping）
-  5. テスト期間を予測し、モデルと比較用の基準（偶然・父 A/E だけ）を評価する
+  5. テスト期間を予測し、モデルと比較用の基準（偶然・学習しない目安）を評価する
 
 出力（data/ml/runs/<run_id>/<window>/）:
   model.cbm / model_meta.json / predictions_valid.parquet / predictions_test.parquet /
@@ -22,13 +26,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from keiba_ml import registry
 from keiba_ml.config import MLConfig
 from keiba_ml.dataset import integrity
 from keiba_ml.dataset.split import Window, history_frame, make_window, split_frame
 from keiba_ml.evaluate import metrics
-from keiba_ml.features.pedigree import build_features
-from keiba_ml.models.base import make_predictions
-from keiba_ml.models.pedigree_catboost import MODEL_NAME, PedigreeCatBoost
+from keiba_ml.features.base import FeatureSet
+from keiba_ml.models.catboost_model import CatBoostModel
 
 
 class IntegrityError(RuntimeError):
@@ -50,37 +54,46 @@ def write_json(path: Path, payload) -> None:
                     encoding="utf-8")
 
 
-def baseline_predictions(features, rows: pd.DataFrame, *, fold: str) -> dict[str, pd.DataFrame]:
-    """学習しない比較対象。CatBoost がこれを超えないなら学習の意味がない。
+def baseline_predictions(features: FeatureSet, rows: pd.DataFrame, *, fold: str,
+                         spec: registry.ModelSpec | None = None) -> dict[str, pd.DataFrame]:
+    """学習しない比較対象（ModelSpec.baselines）。CatBoost がこれを超えないなら学習の意味がない。
 
-    - sire_ae: 父の産駒の as-of 3着以内 A/E だけで並べる（血統の最も素朴な使い方）
-    - sire_cond_ae: 父 × 芝ダ × 距離区分 の as-of A/E だけで並べる
+    spec を省くと血統モデルの基準（父 A/E だけ・父 × 芝ダ × 距離区分の A/E だけ）。
     """
-    frame = features.frame.loc[rows.index]
-    out = {}
-    for name, col in (("sire_ae", "st_S_ae_top3"), ("sire_cond_ae", "st_S_ae_top3_surface_dband")):
-        if col in frame:
-            out[name] = make_predictions(rows, frame[col].to_numpy(), model_name=name,
-                                         model_version="heuristic", fold=fold)
-    return out
+    spec = spec or registry.get("pedigree")
+    return spec.baselines(features, rows, fold)
+
+
+def require_columns(df: pd.DataFrame, spec: registry.ModelSpec) -> None:
+    missing = spec.missing_columns(df)
+    if missing:
+        raise IntegrityError(
+            f"{spec.title}モデルに要る列がデータセットにありません: {missing}。"
+            " scripts/ml/build_dataset.py でデータセットを作り直してください。")
+
+
+def build_model_features(df: pd.DataFrame, config: MLConfig) -> FeatureSet:
+    """設定のモデルの特徴量（予想スクリプトからも使う）。"""
+    spec = registry.for_config(config)
+    require_columns(df, spec)
+    return spec.build_features(df, config)
 
 
 def run_window(df: pd.DataFrame, config: MLConfig, window: Window, *, out_dir: Path,
                run_id: str, allow_integrity_fail: bool = False,
                log_period: int = 200) -> dict:
+    spec = registry.for_config(config)
+    require_columns(df, spec)
     out_dir.mkdir(parents=True, exist_ok=True)
-    history = history_frame(df, window, config.pedigree.stats_history)
-    features = build_features(history, pedigree=config.pedigree, features=config.features)
+    history = history_frame(df, window, spec.stats_history(config))
+    features = spec.build_features(history, config)
     train, valid, test = split_frame(history, window)
 
     checks = [
         integrity.check_feature_columns(features.columns),
         integrity.check_split(train, valid, test),
+        *spec.asof_checks(history, features, config, None),
     ]
-    checks.append(integrity.check_asof_samples(
-        history, features.frame, paths=config.pedigree.stat_paths,
-        shrinkage=config.pedigree.shrinkage, exclude_self=config.pedigree.exclude_self,
-        sample=100))
     write_json(out_dir / "checks.json", checks)
     failed = [c for c in checks if c["status"] == "fail"]
     if failed and not allow_integrity_fail:
@@ -90,7 +103,8 @@ def run_window(df: pd.DataFrame, config: MLConfig, window: Window, *, out_dir: P
             f"{window.label}: 学習 {len(train)} 行 / 検証 {len(valid)} 行 / テスト {len(test)} 行。"
             " 空の区間があります。split の日付とデータの期間を確かめてください。")
 
-    model = PedigreeCatBoost(config.model, model_version=f"{run_id}/{window.label}")
+    model = CatBoostModel(config.model, model_name=spec.model_name,
+                          model_version=f"{run_id}/{window.label}")
     model.fit(features, train, valid, log_period=log_period)
     model.save(out_dir)
     pred_valid = model.predict(features, valid, fold="valid")
@@ -103,9 +117,9 @@ def run_window(df: pd.DataFrame, config: MLConfig, window: Window, *, out_dir: P
     ev = config.evaluate
     kwargs = dict(top_n=ev.top_n, bins=ev.calibration_bins, n_boot=ev.bootstrap,
                   seed=ev.bootstrap_seed)
-    results = {MODEL_NAME: {"valid": metrics.evaluate(pred_valid, valid, **kwargs),
-                            "test": metrics.evaluate(pred_test, test, **kwargs)}}
-    for name, pred in baseline_predictions(features, test, fold="test").items():
+    results = {spec.model_name: {"valid": metrics.evaluate(pred_valid, valid, **kwargs),
+                                 "test": metrics.evaluate(pred_test, test, **kwargs)}}
+    for name, pred in baseline_predictions(features, test, fold="test", spec=spec).items():
         results[name] = {"test": metrics.evaluate(pred, test, **kwargs)}
 
     summary = {
@@ -114,6 +128,7 @@ def run_window(df: pd.DataFrame, config: MLConfig, window: Window, *, out_dir: P
         "races": {"train": int(train["race_id"].nunique()),
                   "valid": int(valid["race_id"].nunique()),
                   "test": int(test["race_id"].nunique())},
+        "model": spec.name,
         "best_iteration": model.best_iteration,
         "loss_function": config.model.loss_function,
         "results": results,
@@ -123,20 +138,22 @@ def run_window(df: pd.DataFrame, config: MLConfig, window: Window, *, out_dir: P
     return summary
 
 
-def evaluate_period(df: pd.DataFrame, config: MLConfig, model: PedigreeCatBoost, *,
+def evaluate_period(df: pd.DataFrame, config: MLConfig, model: CatBoostModel, *,
                     train_start: date, period_start: date, period_end: date) -> dict:
     """学習済みのモデルを、学習・検証・テストのどれにも使っていない期間で評価する。
 
     特徴量は学習時と同じ規則（stats_history が "window" なら train_start 以降の履歴）で、
-    period_end までの行から as-of で作る。基準（sire_ae / sire_cond_ae）との差は
+    period_end までの行から as-of で作る。基準（ModelSpec.baselines）との差は
     同じレースでの対応ありブートストラップ。
     """
+    spec = registry.for_config(config)
+    require_columns(df, spec)
     day = df["race_date"].dt.date
     mask = day <= period_end
-    if config.pedigree.stats_history == "window":
+    if spec.stats_history(config) == "window":
         mask &= day >= train_start
     history = df[mask]
-    features = build_features(history, pedigree=config.pedigree, features=config.features)
+    features = spec.build_features(history, config)
     rows = history[history["has_result"]
                    & (history["race_date"].dt.date >= period_start)]
     if rows.empty:
@@ -144,10 +161,7 @@ def evaluate_period(df: pd.DataFrame, config: MLConfig, model: PedigreeCatBoost,
     # 学習時（run_window）と同じ検査。as-of の検算は評価する期間の行から選ぶ。
     checks = [
         integrity.check_feature_columns(features.columns),
-        integrity.check_asof_samples(
-            history, features.frame, paths=config.pedigree.stat_paths,
-            shrinkage=config.pedigree.shrinkage, exclude_self=config.pedigree.exclude_self,
-            sample=100, only=rows.index),
+        *spec.asof_checks(history, features, config, rows.index),
     ]
     failed = [c for c in checks if c["status"] == "fail"]
     if failed:
@@ -156,11 +170,11 @@ def evaluate_period(df: pd.DataFrame, config: MLConfig, model: PedigreeCatBoost,
     kwargs = dict(top_n=ev.top_n, bins=ev.calibration_bins, n_boot=ev.bootstrap,
                   seed=ev.bootstrap_seed)
     pred = model.predict(features, rows, fold="holdout")
-    results = {MODEL_NAME: metrics.evaluate(pred, rows, **kwargs)}
+    results = {spec.model_name: metrics.evaluate(pred, rows, **kwargs)}
     differences = {}
-    for name, base in baseline_predictions(features, rows, fold="holdout").items():
+    for name, base in baseline_predictions(features, rows, fold="holdout", spec=spec).items():
         results[name] = metrics.evaluate(base, rows, **kwargs)
-        differences[f"{MODEL_NAME}-{name}"] = metrics.paired_difference(
+        differences[f"{spec.model_name}-{name}"] = metrics.paired_difference(
             pred, base, rows, top_n=ev.top_n, n_boot=ev.bootstrap, seed=ev.bootstrap_seed)
     return {
         "period": {"start": str(period_start), "end": str(period_end),
@@ -181,6 +195,8 @@ def run_comparison(df: pd.DataFrame, config: MLConfig, *, out_root: Path, run_id
     （compare_runs.py）とき、同じデータセットを使うため。
     """
     train_years = train_years or config.split.train_years
+    # 列の足りない古いデータセットなら、実行の記録（config.json）を書く前に止める。
+    require_columns(df, registry.for_config(config))
     res = df[df["has_result"]]
     first = res["race_date"].min().date()
     run_dir = out_root / run_id

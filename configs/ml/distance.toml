@@ -1,0 +1,57 @@
+# 距離適性モデルの設定。キーの意味は src/keiba_ml/config.py の docstring を参照。
+# 知らないキーを書くとエラーになる（誤記を黙って無視しないため）。
+#
+# 距離適性モデルは「今回の距離がその馬に合うか」だけを見る。馬の強さそのもの（全体の着順・A/E）は
+# 特徴量に入れない（過去成績モデルの担当）。特徴量の中身は src/keiba_ml/features/distance.py。
+
+[experiment]
+model = "distance"
+
+# [data] [codes] と [pedigree] の generations / inbreeding_generations はデータセットの中身を決める。
+# 血統モデル（pedigree.toml）と同じ値にしておけば、同じデータセットで両方のモデルを学習できる。
+[data]
+race_versions = []
+pedigree_source = "blood"
+pedigree_versions = []
+jra_only = true
+include_jump = false
+
+[codes]
+kazoe_age_until_year = 2000
+
+[pedigree]
+generations = 5
+inbreeding_generations = 5
+
+[distance]
+context = ["track_kind", "kyori_m", "distance_band", "jyo_cd", "age", "sex_cd", "field_size"]
+stats_history = "window"       # "window" = 学習開始日以降の走りだけで集計（学習期間の比較を正しく切り分ける）
+own_shrinkage = 3.0            # 距離帯の走りを本人の普段の走りへ縮める強さ（何走ぶん）
+slope_ridge = 0.25             # 距離と走りの傾きの分母に足す値（km²）
+margin_cap_sec = 3.0           # 1着馬とのタイム差の上限（秒）
+pedigree_paths = ["S", "DS"]   # 産駒の距離の傾向を出す祖先（父・母父）
+pedigree_shrinkage = 30.0      # 産駒の距離帯の走りを産駒全体へ縮める強さ（何走ぶん）
+exclude_self = true
+
+[split]
+# テスト期間は血統モデルと同じ。学習期間だけを変えて比べる。
+test_start = "2025-01-01"
+test_end = "2025-12-31"
+valid_years = 1
+train_years = [10, 20, 30, 40]
+
+[model]
+loss_function = "Logloss"
+iterations = 3000
+learning_rate = 0.05
+depth = 6
+l2_leaf_reg = 3.0
+early_stopping_rounds = 200
+random_seed = 42
+thread_count = -1
+
+[evaluate]
+top_n = 3
+calibration_bins = 10
+bootstrap = 1000
+bootstrap_seed = 0
