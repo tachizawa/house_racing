@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import math
 import tomllib
 from dataclasses import dataclass, field, fields, replace
 from datetime import date
@@ -406,6 +407,10 @@ def validate(config: MLConfig) -> None:
     d = config.distance
     if d.stats_history not in ("window", "all"):
         raise ValueError('distance.stats_history は "window" か "all" です。')
+    # TOML の nan / inf は大小の比較をすり抜けて特徴量に入るので、先に有限かを確かめる。
+    for name in ("own_shrinkage", "pedigree_shrinkage", "margin_cap_sec", "slope_ridge"):
+        if not math.isfinite(getattr(d, name)):
+            raise ValueError(f"distance.{name} は有限の値にしてください。")
     for name in ("own_shrinkage", "pedigree_shrinkage", "margin_cap_sec"):
         if getattr(d, name) <= 0:
             raise ValueError(f"distance.{name} は正の値にしてください。")

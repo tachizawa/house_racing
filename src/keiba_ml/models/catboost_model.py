@@ -150,6 +150,13 @@ class CatBoostModel:
         }
         (directory / "model_meta.json").write_text(
             json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        # 途中で切れたファイルは、後で evaluate.py / predict.py が読むまで気付けない。
+        # 保存した直後に読み直して確かめる。
+        reloaded = type(self).load(directory)
+        if (reloaded.feature_columns != self.feature_columns
+                or reloaded.cat_features != self.cat_features
+                or reloaded.model.tree_count_ != self.model.tree_count_):
+            raise RuntimeError(f"保存したモデルを読み直した内容が一致しません: {directory}")
 
     @classmethod
     def load(cls, directory: Path) -> "CatBoostModel":

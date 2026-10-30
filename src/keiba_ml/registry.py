@@ -89,8 +89,11 @@ def _pedigree_checks(history: pd.DataFrame, features: FeatureSet, config: MLConf
 
 def _pedigree_describe(rows: pd.DataFrame, features: FeatureSet,
                        names: dict[str, str]) -> pd.DataFrame:
-    return pd.DataFrame({"父": rows["ped_S"].map(names).fillna(""),
-                         "母父": rows["ped_DS"].map(names).fillna("")}, index=rows.index)
+    # 世代数を減らした設定では祖先の列が無いことがある（generations = 1 なら母父が無い）。
+    def ancestor(col: str) -> pd.Series | str:
+        return rows[col].map(names).fillna("") if col in rows else ""
+
+    return pd.DataFrame({"父": ancestor("ped_S"), "母父": ancestor("ped_DS")}, index=rows.index)
 
 
 # --- 距離適性 ---------------------------------------------------------------
@@ -127,7 +130,9 @@ def _distance_describe(rows: pd.DataFrame, features: FeatureSet,
     km = pd.to_numeric(rows["kyori_m"], errors="coerce").astype(float)
 
     def back(col: str) -> pd.Series:
-        """「今回の距離 − X」から X（m）に戻す。"""
+        """「今回の距離 − X」から X（m）に戻す。列が無ければ（pedigree_paths に S が無いなど）欠損。"""
+        if col not in frame:
+            return pd.Series(pd.NA, index=rows.index, dtype="Int64")
         return (km - frame[col].astype(float)).round(0).astype("Int64")
 
     return pd.DataFrame({

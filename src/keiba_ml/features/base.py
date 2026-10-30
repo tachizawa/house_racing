@@ -34,7 +34,8 @@ def context_columns(df: pd.DataFrame, names: Sequence[str]
     nums: list[str] = []
     for name in names:
         if name in CATEGORICAL_CONTEXT:
-            frame[name] = df[name].fillna(MISSING).replace("", MISSING).astype(str)
+            # カテゴリ型の列は MISSING がカテゴリに無いと fillna が落ちるので object にしてから埋める。
+            frame[name] = df[name].astype(object).fillna(MISSING).replace("", MISSING).astype(str)
             cats.append(name)
         else:
             frame[name] = pd.to_numeric(df[name], errors="coerce").astype(float)

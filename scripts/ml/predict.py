@@ -77,6 +77,8 @@ def main(argv: list[str] | None = None, *, expected_model: str | None = None) ->
     parser.add_argument("--race-id", action="append", default=None)
     parser.add_argument("--top-n", type=int, default=3)
     args = parser.parse_args(argv)
+    if args.top_n < 1:
+        parser.error("--top-n は 1 以上にしてください。")
 
     try:
         config, train_start = config_from_run(args.model)
@@ -89,7 +91,13 @@ def main(argv: list[str] | None = None, *, expected_model: str | None = None) ->
               f" scripts/ml/predict.py を使ってください。")
         return 2
     model = CatBoostModel.load(args.model)
-    df, names, _ = build.load(args.ml_data_dir, args.dataset_id)
+    df, names, manifest = build.load(args.ml_data_dir, args.dataset_id)
+    # 世代数などが学習時と違うと、同じ名前の列が別の中身になり、スコアが黙って狂う。
+    mismatches = build.config_mismatches(manifest, config)
+    if mismatches:
+        print(f"データセット {manifest['dataset_id']} は学習時と違う設定で作られています:"
+              f" {mismatches}")
+        return 2
     if spec.stats_history(config) == "window":
         df = df[df["race_date"].dt.date >= train_start]
     df, targets = live_rows(df)

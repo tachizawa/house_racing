@@ -2,8 +2,10 @@
 
 scripts/ml/evaluate.py と同じ（以前からの入口として残す。血統モデル以外の記録は拒否する）。
 
-    .venv/Scripts/python.exe scripts/ml/evaluate_pedigree.py --model data/ml/runs/<run_id>/10y \\
+    .venv/Scripts/python.exe scripts/ml/evaluate_pedigree.py --model data/ml/runs/pedigree/<run_id>/10y \\
         --from 2026-01-01 --to 2026-10-18
+
+2026-10-19 の血統の実行（20261019_final など）は以前の置き場所 data/ml/runs/<run_id>/10y にある。
 """
 
 from __future__ import annotations

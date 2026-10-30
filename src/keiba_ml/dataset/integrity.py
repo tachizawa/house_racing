@@ -222,9 +222,15 @@ def check_asof_samples(history: pd.DataFrame, feature_frame: pd.DataFrame, *,
                             for p, r in by_path.items()})
 
 
+def _distance_m(values) -> pd.Series:
+    """距離（m）。features.distance.prepare と同じく 0 以下は欠損とみなす。"""
+    m = pd.to_numeric(values, errors="coerce").astype(float)
+    return m.where(m > 0)
+
+
 def _beat_fraction(rows: pd.DataFrame) -> pd.Series:
     """走りの質（features.distance の pf）を素朴に計算する。走りの質に入らない行は落とす。"""
-    km = pd.to_numeric(rows["kyori_m"], errors="coerce")
+    km = _distance_m(rows["kyori_m"])
     rank = pd.to_numeric(rows["result_rank"], errors="coerce").astype(float)
     n = rows["field_size"].astype(float)
     ok = rows["result_margin_sec"].notna() & rank.notna() & (n >= 2) & km.notna()
@@ -251,17 +257,17 @@ def check_distance_asof_sample(history: pd.DataFrame, feature_frame: pd.DataFram
     mismatches = []
     for idx in picked:
         row = history.loc[idx]
-        km = float(row["kyori_m"]) if pd.notna(row["kyori_m"]) else np.nan
+        km = float(_distance_m(pd.Series([row["kyori_m"]], dtype=object)).iloc[0])
         prior = hist[(hist["ketto_num"] == row["ketto_num"])
                      & (hist["race_date"] < row["race_date"])]
-        dist = pd.to_numeric(prior["kyori_m"], errors="coerce").dropna()
-        same_band = pd.to_numeric(prior.loc[prior["distance_band"] == row["distance_band"],
-                                            "kyori_m"], errors="coerce").dropna()
+        # 距離の無い走りは数えない（features.distance の "last" も欠損でない最後の値）。
+        dist = _distance_m(prior.sort_values("race_date", kind="mergesort")["kyori_m"]).dropna()
+        same_band = _distance_m(prior.loc[prior["distance_band"] == row["distance_band"],
+                                          "kyori_m"]).dropna()
         expected = {
             "own_log_runs_dband": np.log1p(len(same_band)),
             "dist_minus_mean": km - dist.mean() if len(dist) else np.nan,
-            "dist_minus_last": (km - float(prior.sort_values("race_date")["kyori_m"].iloc[-1])
-                                if len(dist) else np.nan),
+            "dist_minus_last": km - float(dist.iloc[-1]) if len(dist) else np.nan,
         }
         surface = prior[prior["track_kind"] == row["track_kind"]]
         pf_surface = _beat_fraction(surface)
@@ -279,8 +285,8 @@ def check_distance_asof_sample(history: pd.DataFrame, feature_frame: pd.DataFram
             kin = hist[(hist[col] == row[col]) & (hist["race_date"] < row["race_date"])]
             if config.exclude_self:
                 kin = kin[kin["ketto_num"] != row["ketto_num"]]
-            top3 = pd.to_numeric(kin.loc[kin["target_top3"] == 1, "kyori_m"], errors="coerce")
-            ran = pd.to_numeric(kin.loc[_beat_fraction(kin).index, "kyori_m"], errors="coerce")
+            top3 = _distance_m(kin.loc[kin["target_top3"] == 1, "kyori_m"]).dropna()
+            ran = _distance_m(kin.loc[_beat_fraction(kin).index, "kyori_m"])
             mean = ran.mean() if len(ran) else np.nan
             expected[f"ped_{path}_dist_minus_mean"] = km - mean
             expected[f"ped_{path}_dist_minus_top3_mean"] = km - (top3.mean() if len(top3) else mean)

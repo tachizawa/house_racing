@@ -12,6 +12,7 @@ train.py のテスト期間は、特徴量の組や学習期間を選ぶのに�
   （1回目の結果を残す。見てから設定を変えて評価し直すと、その期間も選択に使ったことになる）
 - データセットは評価する期間の結果を含む新しいものでよいが、中身を決める設定（血統の出どころ・
   世代数など。build.config_mismatches）が学習時と違えば止める
+- データセットの整合性検査に FAIL があれば止める（train.py と同じ）
 - 学習時と同じ未来情報の検査（列名・as-of の検算。検算する行は評価する期間から選ぶ）を通す
 """
 
@@ -73,6 +74,11 @@ def main(argv: list[str] | None = None, *, expected_model: str | None = None) ->
         return 2
     model = CatBoostModel.load(args.model)
     df, _names, manifest = build.load(args.ml_data_dir, args.dataset_id)
+    if manifest.get("checks_failed"):
+        # train.py と同じ関門。重複・壊れた行のあるデータで1回きりの評価を消費しない。
+        print(f"データセット {manifest['dataset_id']} は整合性検査で FAIL があります:"
+              f" {manifest['checks_failed']}")
+        return 2
     # 学習時より新しいデータセット（評価する期間の結果が入ったもの）を使うのは正当なので
     # 版の ID は問わない。中身を決める設定（血統の出どころ・世代数など）は学習時と揃える。
     mismatches = build.config_mismatches(manifest, config)

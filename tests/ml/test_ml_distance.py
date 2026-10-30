@@ -50,6 +50,17 @@ def test_asof_rejects_unknown_aggregation():
     df = pd.DataFrame({"key": ["a"], "race_date": [_day("2020-01-01")], "v": [1.0]})
     with pytest.raises(ValueError):
         asof(df, ["key"], {"x": ("v", "median")}, include=[True])
+    # 履歴に入る行が無くても黙って NaN を返さない
+    with pytest.raises(ValueError):
+        asof(df, ["key"], {"x": ("v", "median")}, include=[False])
+
+
+def test_context_columns_fill_missing_categories():
+    from keiba_ml.features.base import MISSING, context_columns
+    df = pd.DataFrame({"jyo_cd": pd.Categorical(["05", None]), "age": [3, None]})
+    frame, cats, nums = context_columns(df, ["jyo_cd", "age"])
+    assert frame["jyo_cd"].tolist() == ["05", MISSING]
+    assert cats == ["jyo_cd"] and nums == ["age"]
 
 
 # --- 特徴量 -------------------------------------------------------------------
@@ -155,6 +166,41 @@ def test_stopped_runs_count_as_experience_but_not_as_performance():
     assert frame.at[t, "own_rel_pf_dband"] == pytest.approx(0.0)  # 走りの質は 1200m の1走だけ
 
 
+def test_zero_distance_is_treated_as_missing():
+    """壊れた距離（0）は経験にも走りの質にも入れない。無限大を特徴量に入れない。"""
+    df = pd.DataFrame([
+        _run("X", "2020-01-05", 1200, 1),
+        _run("X", "2020-02-05", 0, 2, race="broken"),
+        _run("X", "2020-03-05", 1200, 0, has=False, race="t"),
+    ])
+    features = distance.build_features(df, DistanceConfig())
+    frame = features.frame
+    t = frame.index[df["race_id"] == "t"][0]
+    values = frame[list(features.num_features)].to_numpy(dtype=float)
+    assert not np.isinf(values).any()
+    assert frame.at[t, "dist_minus_last"] == 0.0     # 0m の走りを前走とみなさない
+    assert frame.at[t, "dist_minus_mean"] == 0.0
+    check = integrity.check_distance_asof_sample(df, frame, config=DistanceConfig(), sample=10)
+    assert check["status"] == "ok", check
+
+
+def test_distance_asof_check_skips_runs_without_a_distance():
+    """最新の過去走に距離が無くても、検算は特徴量と同じく距離のある最後の走りで比べる。"""
+    df = pd.DataFrame([
+        _run("X", "2020-01-05", 1200, 1),
+        _run("X", "2020-02-05", 1600, 2, race="nodist"),
+        _run("Y", "2020-02-05", 1600, 1, race="y-nodist"),
+        _run("X", "2020-03-05", 2000, 0, has=False, race="t"),
+    ])
+    df["kyori_m"] = df["kyori_m"].astype(object)
+    df.loc[df["race_id"].isin(["nodist", "y-nodist"]), "kyori_m"] = pd.NA
+    frame = distance.build_features(df, DistanceConfig()).frame
+    t = frame.index[df["race_id"] == "t"][0]
+    assert frame.at[t, "dist_minus_last"] == 800.0
+    check = integrity.check_distance_asof_sample(df, frame, config=DistanceConfig(), sample=10)
+    assert check["status"] == "ok", check
+
+
 def test_features_do_not_change_when_a_later_result_changes():
     df = _sprinter_history()
     base = distance.build_features(df, DistanceConfig()).frame
@@ -197,6 +243,20 @@ def test_distance_baselines_rank_within_each_race():
 
 
 # --- データセットの列 -----------------------------------------------------------
+
+def test_describe_tolerates_missing_ancestor_columns():
+    """世代数や pedigree_paths を減らした設定でも、予想の表を出せる。"""
+    df = _sprinter_history().drop(columns=["ped_DS"])
+    config = DistanceConfig(pedigree_paths=("SS",))
+    df["ped_SS"] = "SS1"
+    features = distance.build_features(df, config)
+    rows = df[~df["has_result"]]
+    view = registry.get("distance").describe(rows, features, {"S1": "父馬"})
+    assert view["父産駒の好走距離"].isna().all()
+    assert view["父"].tolist() == ["父馬", "父馬"]
+    ped = registry.get("pedigree").describe(rows, features, {"S1": "父馬"})
+    assert ped["母父"].tolist() == ["", ""]
+
 
 def test_dataset_keeps_margin_and_weight_only_for_finishers():
     rid = "2026032106011101"
@@ -247,6 +307,9 @@ def test_old_run_config_without_experiment_reads_as_pedigree():
     {"distance": {"stats_history": "forever"}},
     {"distance": {"own_shrinkage": 0.0}},
     {"distance": {"slope_ridge": -1.0}},
+    {"distance": {"slope_ridge": float("nan")}},
+    {"distance": {"margin_cap_sec": float("nan")}},
+    {"distance": {"own_shrinkage": float("inf")}},
     {"distance": {"pedigree_paths": ["SSSSSS"]}},
 ])
 def test_invalid_distance_settings_are_rejected(raw):

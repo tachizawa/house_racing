@@ -33,8 +33,8 @@
 3. **距離の経験**（``dist_minus_*`` / ``own_log_runs_*``）… 今回の距離 − 平均出走距離・
    前走距離・最長・最短（m）と、今回の距離帯での出走数。延長・短縮もここで表す
 4. **血統から見た距離の傾向**（``ped_<位置>_*``）… 父・母父の産駒の、距離帯ごとの走り
-   （産駒全体の平均と比べた相対値）、距離と走りの傾き、産駒の平均距離・3着以内に入った
-   距離の平均（好走した産駒がまだいなければ平均距離で埋める）。本人の過去走は除く
+   （産駒全体の平均と比べた相対値）、距離と走りの傾き、産駒の平均距離（走りの質に入る走りだけ）・
+   3着以内に入った距離の平均（好走した産駒がまだいなければ平均距離で埋める）。本人の過去走は除く
    （DistanceConfig.exclude_self）。初出走の馬は 1〜3 が欠損になり、ここだけが手がかりになる
 5. **条件**（DistanceConfig.context）
 
@@ -64,6 +64,8 @@ def prepare(df: pd.DataFrame, config: DistanceConfig) -> pd.DataFrame:
     df = df.copy()
     has = df["has_result"].to_numpy(dtype=bool)
     km = pd.to_numeric(df["kyori_m"], errors="coerce").astype(float) / 1000.0
+    # 0 以下の距離（壊れた "0000" など）は欠損とみなす。割り算で無限大が特徴量に入らないように。
+    km = km.where(km > 0)
     rank = pd.to_numeric(df["result_rank"], errors="coerce").astype(float)
     n = pd.to_numeric(df["field_size"], errors="coerce").astype(float)
     margin = pd.to_numeric(df["result_margin_sec"], errors="coerce").astype(float)
@@ -174,6 +176,8 @@ def pedigree_features(prepared: pd.DataFrame, config: DistanceConfig) -> pd.Data
         surface_band = _sums(prepared, [col, "track_kind", "distance_band"], perf_names,
                              exclude_self=config.exclude_self)
         prefix = f"ped_{path}"
+        # 産駒の平均距離は走りの質に入る走り（_PERF_SUMS）だけで数える。傾きと同じ走りの
+        # 平均なので fit_pf の中心として釣り合う（本人の dist_minus_mean は中止・失格も数える）。
         mean_km = _mean(whole["s_d"], whole["n_p"])
         out[f"{prefix}_rel_pf_surface_dband"] = _shrunk_relative(
             surface_band["s_pf"], surface_band["n_p"], surface["s_pf"], surface["n_p"], m)

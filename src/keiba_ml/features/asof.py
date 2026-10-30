@@ -46,6 +46,10 @@ def asof(df: pd.DataFrame, keys: Sequence[str], columns: Mapping[str, tuple[str,
     """
     keys = list(keys)
     names = list(columns)
+    # 履歴が空でも誤りは誤りとして返す（黙って NaN / 0 を返さない）。
+    bad = sorted({how for _col, how in columns.values() if how not in _HOW})
+    if bad:
+        raise ValueError(f"集計の種類が違います: {bad}")
     sums = [n for n in names if columns[n][1] == "sum"]
     result = pd.DataFrame(np.nan, index=df.index, columns=names)
     result[sums] = 0.0
@@ -55,9 +59,7 @@ def asof(df: pd.DataFrame, keys: Sequence[str], columns: Mapping[str, tuple[str,
         return result
     source = hist[keys + ["race_date"]].copy()
     for name in names:
-        col, how = columns[name]
-        if how not in _HOW:
-            raise ValueError(f"集計の種類が違います: {how!r}")
+        col, _how = columns[name]
         source[name] = pd.to_numeric(hist[col], errors="coerce").astype(float)
     agg = (source.groupby(keys + ["race_date"], sort=False)
            .agg(**{n: (n, _HOW[columns[n][1]][0]) for n in names})

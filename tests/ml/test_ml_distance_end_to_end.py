@@ -150,3 +150,49 @@ def test_pedigree_model_still_runs_through_the_generic_path(world, dataset):
     table = run_comparison(df, config, out_root=world.ml_data_dir / "runs" / "pedigree",
                            run_id="p", log_period=0, dataset_id=manifest["dataset_id"])
     assert {"pedigree_catboost", "sire_ae", "sire_cond_ae"} <= set(table["model"])
+
+
+def test_scripts_refuse_bad_inputs_before_scoring(world, dataset, monkeypatch, capsys):
+    """predict: --top-n < 1 と学習時と違う設定のデータセットを拒否。evaluate: FAIL のあるデータセットを拒否。"""
+    pytest.importorskip("catboost")
+    df, _, manifest = dataset
+    out_root = world.ml_data_dir / "runs" / "distance"
+    run_comparison(df, _distance_config(), out_root=out_root, run_id="refuse", log_period=0,
+                   dataset_id=manifest["dataset_id"])
+    model_dir = out_root / "refuse" / "5y"
+    common = ["--model", str(model_dir), "--ml-data-dir", str(world.ml_data_dir)]
+    predict = _script("predict")
+    with pytest.raises(SystemExit):
+        predict.main([*common, "--top-n", "0"])
+
+    monkeypatch.setattr(build, "config_mismatches", lambda _m, _c: ["pedigree_generations"])
+    capsys.readouterr()
+    assert predict.main(common) == 2
+    assert "pedigree_generations" in capsys.readouterr().out
+    monkeypatch.undo()
+
+    loaded = build.load(world.ml_data_dir)
+    failed = (loaded[0], loaded[1], {**loaded[2], "checks_failed": ["duplicates"]})
+    monkeypatch.setattr(build, "load", lambda *_a, **_k: failed)
+    assert _script("evaluate").main([*common, "--from", "2023-01-01", "--to", "2023-12-31"]) == 2
+    assert "FAIL" in capsys.readouterr().out
+    assert not (model_dir / "holdout_20230101_20231231.json").exists()
+
+
+def test_train_script_records_the_years_it_runs_and_keeps_old_runs(world, dataset, monkeypatch):
+    train = _script("train")
+    seen = {}
+
+    def fake_run_comparison(_df, config, *, out_root, run_id, train_years, **_kw):
+        seen["config"], seen["years"] = config, train_years
+        (out_root / run_id).mkdir(parents=True)
+        return pd.DataFrame()
+
+    monkeypatch.setattr(train, "run_comparison", fake_run_comparison)
+    common = ["--model", "distance", "--ml-data-dir", str(world.ml_data_dir), "--run-id", "years"]
+    assert train.main([*common, "--years", "20"]) == 0
+    assert seen["years"] == (20,) and seen["config"].split.train_years == (20,)
+    # 同じ出力先には書かない（前の実行の記録と混ざる）
+    seen.clear()
+    assert train.main([*common, "--years", "10"]) == 2
+    assert seen == {}

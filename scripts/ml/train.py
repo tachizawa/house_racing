@@ -85,8 +85,14 @@ def main(argv: list[str] | None = None, *, model: str | None = None) -> int:
 
     years = tuple(config.split.train_years) if args.compare else \
         tuple(args.years or config.split.train_years[:1])
-    run_id = args.run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    # 実際に回す学習期間を config.json に残す（--years 10 の実行を設定の全期間の比較と取り違えない）。
+    config = config.with_overrides(split=replace(config.split, train_years=years))
+    run_id = args.run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     out_root = args.ml_data_dir / "runs" / model
+    if (out_root / run_id).exists():
+        # 上書きすると前の実行の記録と今回の記録が混ざる。
+        print(f"実行の出力先が既にあります: {out_root / run_id}。別の --run-id を指定してください。")
+        return 2
     try:
         table = run_comparison(df, config, out_root=out_root, run_id=run_id,
                                train_years=years, allow_integrity_fail=args.allow_integrity_fail,

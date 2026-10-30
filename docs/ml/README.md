@@ -91,7 +91,7 @@
 .venv\Scripts\python.exe scripts\ml\growth_report.py --path S
 
 # 出馬表のレースを予想（人が判断するための表。モデルごとの根拠の列も並べる。
-# 血統なら父・母父、距離適性なら前走距離・平均距離・好走距離・同距離帯の出走数・父）
+# 血統なら父・母父、距離適性なら前走距離・平均距離・同距離帯の出走・距離の傾き・父・父産駒の好走距離）
 .venv\Scripts\python.exe scripts\ml\predict.py --model data\ml\runs\<model>\<run_id>\10y
 ```
 
@@ -418,7 +418,8 @@ Logloss、最良の反復 1122、学習は約6分）。学習 2014〜2023 / 検�
    `[pedigree]` の世代数は他のモデルと揃える（揃っていれば同じデータセットを共有できる）
 4. `src/keiba_ml/registry.py` の `MODELS` に `ModelSpec` を1つ足す（特徴量・`stats_history`・
    学習しない基準・未来情報の検算・予想時の表示・データセットに要る列）
-5. データセットに無い列が要るなら `dataset/races.py` に足し、`DATASET_SCHEMA_VERSION` を上げる
+5. データセットに無い列が要るなら `src/keiba_ml/dataset/races.py` に足し、
+   `src/keiba_ml/dataset/build.py` の `DATASET_SCHEMA_VERSION` を上げる
    （`READABLE_SCHEMA_VERSIONS` に古い版を残し、新しい列は `required_columns` で確かめる）
 6. `tests/ml/` に、合成データでの特徴量の向き・未来情報の検算・端から端までのテストを足す
    （`tests/fixtures/ml_synthetic.py` の合成世界に、そのモデルが拾うべき効果を入れる）
@@ -435,7 +436,8 @@ Logloss、最良の反復 1122、学習は約6分）。学習 2014〜2023 / 検�
 
 ### 10.1 未使用期間での評価（2026年、独立な評価）
 
-`evaluate.py --from 2026-01-01 --to 2026-10-18` を1回だけ実行した（実際のレースは 2026-01-04〜10-12、
+`scripts/ml/evaluate.py --model data/ml/runs/distance/20261020_10y_v2/10y --from 2026-01-01 --to 2026-10-18`
+を1回だけ実行した（実際のレースは 2026-01-04〜10-12、
 2,636レース。`holdout_20260101_20261018.json`。同じ期間はもう評価し直せない）。
 
 | モデル | 的中数 [95%] | 偶然 | 3頭とも | 1着を含む | 1位が勝つ |
