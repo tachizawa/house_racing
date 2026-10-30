@@ -33,7 +33,9 @@ import pandas as pd
 
 from keiba_ml.config import MODEL_KINDS, MLConfig
 from keiba_ml.dataset import integrity
+from keiba_ml.features import combined as combined_features
 from keiba_ml.features import distance as distance_features
+from keiba_ml.features import form as form_features
 from keiba_ml.features import pedigree as pedigree_features
 from keiba_ml.features.base import FeatureSet
 from keiba_ml.models.base import make_predictions
@@ -152,6 +154,46 @@ def _distance_describe(rows: pd.DataFrame, features: FeatureSet,
     }, index=rows.index)
 
 
+# --- 総合（血統 + 距離 + 近走 + 人 + 条件） ------------------------------------
+
+def _combined_features(df: pd.DataFrame, config: MLConfig) -> FeatureSet:
+    return combined_features.build_features(df, config)
+
+
+def _combined_baselines(features: FeatureSet, rows: pd.DataFrame,
+                        fold: str) -> dict[str, pd.DataFrame]:
+    """recent_form: 近走の走りの質（指数加重平均）だけ。speed_fig: タイム指数の直近3走の平均だけ。
+    過去走の無い馬はレースの中央値で埋める。"""
+    frame = features.frame.loc[rows.index]
+    columns = {}
+    for name, col in (("recent_form", "f_pf_ewm"), ("speed_fig", "s_fig_mean3")):
+        if col in frame:
+            score = frame[col].astype(float)
+            columns[name] = score.fillna(score.groupby(rows["race_id"]).transform("median")) \
+                .fillna(0.0)
+    return _heuristics(features, rows, fold, columns)
+
+
+def _combined_checks(history: pd.DataFrame, features: FeatureSet, config: MLConfig,
+                     only: pd.Index | None) -> list[dict]:
+    checks = _pedigree_checks(history, features, config, only) if config.combined.use_pedigree \
+        else []
+    checks.append(integrity.check_form_asof_sample(
+        history, features.frame, people_shrinkage=config.combined.people_shrinkage,
+        sample=100, only=only))
+    return checks
+
+
+def _combined_describe(rows: pd.DataFrame, features: FeatureSet,
+                       names: dict[str, str]) -> pd.DataFrame:
+    frame = features.frame.loc[rows.index]
+    out = _pedigree_describe(rows, features, names)
+    out.insert(0, "近走の質", frame["f_pf_ewm"].astype(float).round(2))
+    out.insert(1, "タイム指数(3走)", frame["s_fig_mean3"].astype(float).round(2))
+    out.insert(2, "騎手A/E", frame["h_jockey_ae"].astype(float).round(2))
+    return out
+
+
 MODELS: dict[str, ModelSpec] = {
     "pedigree": ModelSpec(
         name="pedigree", model_name="pedigree_catboost", title="血統",
@@ -166,6 +208,13 @@ MODELS: dict[str, ModelSpec] = {
         baselines=_distance_baselines, asof_checks=_distance_checks,
         required_columns=("result_margin_sec",),
         describe=_distance_describe),
+    "combined": ModelSpec(
+        name="combined", model_name="combined_catboost", title="総合",
+        build_features=_combined_features,
+        stats_history=lambda config: config.combined.stats_history,
+        baselines=_combined_baselines, asof_checks=_combined_checks,
+        required_columns=("result_margin_sec", *form_features.REQUIRED_COLUMNS),
+        describe=_combined_describe),
 }
 
 assert tuple(MODELS) == MODEL_KINDS, "config.MODEL_KINDS と registry.MODELS を揃えてください"

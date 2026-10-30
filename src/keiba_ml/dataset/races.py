@@ -32,6 +32,17 @@ _RUNNER_USECOLS = (
     "data_kubun", "make_date",
 )
 
+#: あれば読む列（schema 4。総合モデル combined が使う）。無い版・合成データでは空文字で埋める。
+#: 締切前に分かるもの: 枠・斤量・騎手・調教師・所属・ブリンカー・馬体重の増減（発走の約1時間前）。
+#: 結果: 走破タイム・4角の位置・上がり3F（過去走としてだけ使う）。
+_RUNNER_OPTIONAL = (
+    "wakuban", "futan_kg", "kisyu_code", "chokyosi_code", "tozai_cd", "blinker",
+    "result_zogen_sa_kg", "result_time_sec", "result_jyuni_4c", "result_last_3f_sec",
+)
+#: 出走表に残す名前（元の列名 → データセットの列名）。結果は result_ 接頭辞のまま
+#: （特徴量の列名の検査で弾かれる。特徴量にするのは過去走として集計した値だけ）。
+_RUNNER_OPTIONAL_RENAME = {"result_zogen_sa_kg": "weight_change_kg"}
+
 #: 馬体重として成り立つ範囲（kg）。JV-Data は計不を 999、取消を 000 で入れる。
 WEIGHT_RANGE_KG = (300, 700)
 
@@ -49,12 +60,17 @@ def resolve_race_versions(data_dir: Path, versions: Sequence[str]) -> list[str]:
     return [current]
 
 
-def _read(path: Path, usecols: Sequence[str]) -> pd.DataFrame:
+def _read(path: Path, usecols: Sequence[str], optional: Sequence[str] = ()) -> pd.DataFrame:
     header = pd.read_csv(path, dtype=str, nrows=0).columns
     missing = [c for c in usecols if c not in header]
     if missing:
         raise ValueError(f"{path} に必要な列がありません: {missing}")
-    return pd.read_csv(path, dtype=str, na_filter=False, usecols=list(usecols))
+    present = [c for c in optional if c in header]
+    frame = pd.read_csv(path, dtype=str, na_filter=False, usecols=[*usecols, *present])
+    for col in optional:
+        if col not in frame:
+            frame[col] = ""
+    return frame
 
 
 def load_raw(data_dir: Path, versions: Sequence[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -75,7 +91,7 @@ def load_raw(data_dir: Path, versions: Sequence[str]) -> tuple[pd.DataFrame, pd.
         path = version_dir(data_dir, version_id)
         manifest = read_manifest(path)   # 未完成・壊れた版は DataVersionError で止める
         races.append(_read(path / "races.csv", _RACE_USECOLS))
-        runners.append(_read(path / "race_horses.csv", _RUNNER_USECOLS))
+        runners.append(_read(path / "race_horses.csv", _RUNNER_USECOLS, _RUNNER_OPTIONAL))
         fromdate = str(manifest.get("fromdate") or "")[:8]
         fromdates.append(fromdate if len(fromdate) == 8 and fromdate.isdigit() else None)
     races_all = pd.concat(races, ignore_index=True)
@@ -174,7 +190,14 @@ def build_runners(races: pd.DataFrame, runners: pd.DataFrame, *,
             "has_result", "result_ijyo_cd", "result_rank", "result_margin_sec",
             "result_weight_kg", "target_top3", "target_win",
             "data_kubun", "race_data_kubun"]
-    df = df[keep].rename(columns={"data_kubun": "runner_data_kubun"})
+    for col in _RUNNER_OPTIONAL:
+        if col not in df:
+            df[col] = ""
+    # 結果の列は、結果の無い行（出馬表）では空にする（確定前の値を過去走として読まない）
+    for col in ("result_time_sec", "result_jyuni_4c", "result_last_3f_sec"):
+        df[col] = df[col].where(has, "")
+    keep += list(_RUNNER_OPTIONAL)
+    df = df[keep].rename(columns={"data_kubun": "runner_data_kubun", **_RUNNER_OPTIONAL_RENAME})
     return df.sort_values(["race_date", "race_id", "umaban"], kind="mergesort").reset_index(drop=True)
 
 
