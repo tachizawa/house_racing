@@ -30,6 +30,7 @@ import numpy as np
 import pandas as pd
 
 from keiba_ml.config import FeatureConfig, PedigreeConfig, all_paths
+from keiba_ml.features.asof import asof
 from keiba_ml.features.base import MISSING, FeatureSet, context_columns
 
 __all__ = ["MISSING", "FeatureSet", "build_features", "expected_top3", "prepare"]
@@ -70,12 +71,19 @@ def going_class(baba: pd.Series) -> pd.Series:
 
 
 def prepare(df: pd.DataFrame) -> pd.DataFrame:
-    """特徴量計算に要る補助列を足す（結果列は足さない）。"""
+    """特徴量計算に要る補助列を足す（結果列は足さない）。
+
+    ``birth_doy`` は生まれた日の年内の通し日（1月1日 = 1）。同じ世代の中での早生まれ・
+    遅生まれで、2〜3歳の成長の差に効く。条件の列（``features.context``）で使える。
+    """
     df = df.copy()
     df["age_bucket"] = age_bucket(df["age"])
     df["going_class"] = going_class(df["baba_cd"])
     df["_e3"] = expected_top3(df["field_size"])
     df["_ew"] = 1.0 / df["field_size"].astype(float)
+    if "birth_date" in df:
+        birth = pd.to_datetime(df["birth_date"], errors="coerce")
+        df["birth_doy"] = birth.dt.dayofyear.astype(float)
     return df
 
 
@@ -175,6 +183,196 @@ def stat_features(df: pd.DataFrame, pedigree: PedigreeConfig) -> pd.DataFrame:
     return out
 
 
+#: 拡張の条件別 A/E（PedigreeConfig.extended_stats）。位置 → {接尾辞: 条件列}。
+#: 条件列は extended_stat_features が足す結合キー。
+EXTENDED_CONDITIONS: dict[str, dict[str, str]] = {
+    "S": {"sdg": "_surf_dband_going", "sj": "_surf_jyo", "sa": "_surf_age",
+          "st": "_surf_tier", "ss": "_surf_sex"},
+    "DS": {"sdg": "_surf_dband_going", "sj": "_surf_jyo", "sa": "_surf_age",
+           "st": "_surf_tier", "ss": "_surf_sex"},
+    "D": {"st": "_surf_tier", "sa": "_surf_age"},
+    "SS": {"st": "_surf_tier", "sa": "_surf_age"},
+}
+#: 全体と芝ダ別の A/E だけを出す追加の位置（父母・母母・母父父・母母父）。
+EXTENDED_PATHS: tuple[str, ...] = ("SD", "DD", "DSS", "DDS")
+#: 産駒の走りの質と格を出す位置（父・母 = 兄弟・母父・母母 = 一族）。
+QUALITY_PATHS: tuple[str, ...] = ("S", "D", "DS", "DD")
+#: 「格の高いレース」とみなす grade_tier の下限（4 = 3勝クラス相当以上）。
+HIGH_TIER = 4
+
+#: レース内で相対化する列（PedigreeConfig.race_relative）。無い列は飛ばす。
+RELATIVE_SOURCES: tuple[str, ...] = (
+    "st_S_ae_top3", "st_S_ae_top3_surface_dband", "st_S_ae_win", "st_D_ae_top3",
+    "st_DS_ae_top3", "st_DS_ae_top3_surface_dband", "st_S_ae_top3_age", "st_D_ae_win",
+    "stx_S_pf", "stx_D_pf", "stx_DS_pf", "stx_S_pf_surface", "stx_D_pf_surface",
+    "stx_S_tier_top3", "stx_D_tier_top3", "stx_S_ae_sdg", "stx_DS_ae_sa", "stx_S_ae_sa",
+    "stx_DD_ae_top3", "birth_doy", "stx_S_ae_st", "stx_D_tier_mean",
+    # parent_racing / breeder_stats の列（有効なときだけある）
+    "par_D_pf", "par_D_ae", "par_D_tier3", "par_S_pf", "par_DS_pf",
+    "brd_ae_all", "brd_pf", "brd_ae_age",
+)
+
+
+def beat_fraction(df: pd.DataFrame) -> pd.Series:
+    """1走の走りの質 = (頭数 − 着順) / (頭数 − 1)。1着 1.0、最下位 0.0。中止・失格・着順なしは欠損。"""
+    rank = pd.to_numeric(df["result_rank"], errors="coerce").astype(float)
+    n = df["field_size"].astype(float)
+    ok = df["result_ijyo_cd"].astype(str).isin(["0", ""]) & rank.notna() & (rank > 0)
+    return ((n - rank) / (n - 1).clip(lower=1)).where(ok)
+
+
+def asof_mean(df: pd.DataFrame, keys: Sequence[str], column: str, include: pd.Series, *,
+              prior_n: float, exclude_self: bool) -> pd.Series:
+    """keys ごとの column の as-of 平均（レース日より前・exclude_self なら本人を除く）。
+
+    全体の平均へ prior_n 件ぶん縮める。全体の平均も as-of（その日より前の include の行
+    すべて）で、履歴が1行も無い日は 0。履歴の無い祖先は全体の平均になる。
+    """
+    d = df.assign(_one=1.0, _all="all")
+    d[column] = d[column].where(include)
+    d["_one"] = d["_one"].where(include & d[column].notna(), 0.0)
+    columns = {"s": (column, "sum"), "c": ("_one", "sum")}
+    total = asof(d, keys, columns, include=include)
+    if exclude_self:
+        total = total - asof(d, [*keys, "ketto_num"], columns, include=include)
+    overall = asof(d, ["_all"], columns, include=include)
+    prior_mean = (overall["s"] / overall["c"].where(overall["c"] > 0)).fillna(0.0)
+    return (total["s"] + prior_n * prior_mean) / (total["c"] + prior_n)
+
+
+def extended_stat_features(df: pd.DataFrame, pedigree: PedigreeConfig) -> pd.DataFrame:
+    """拡張の産駒成績（``stx_``）。df は prepare() 後の表。すべて as-of・本人を除く。
+
+    1. 条件を組み合わせた A/E（EXTENDED_CONDITIONS）: 芝ダ×距離区分×馬場、芝ダ×競馬場、
+       芝ダ×年齢区分、芝ダ×格、芝ダ×性
+    2. 追加の位置の A/E（EXTENDED_PATHS）
+    3. 産駒の走りの質（beat fraction の平均）と格（出走した格の平均・格の高いレースへの出走の割合・
+       3着以内に入ったときの格の平均）（QUALITY_PATHS）。母の産駒 = 兄弟の到達度
+    """
+    d = df.copy()
+    include = pd.Series(d["has_result"].to_numpy(dtype=bool), index=d.index)
+    d["_pf"] = beat_fraction(d)
+    d["_tier"] = pd.to_numeric(d["grade_tier"], errors="coerce").astype(float)
+    d["_tier_top3"] = d["_tier"].where(d["target_top3"] == 1)
+    d["_hi"] = (d["_tier"] >= HIGH_TIER).astype(float)
+    surface = d["track_kind"].astype(str)
+    d["_surf_dband_going"] = (surface + "_" + d["distance_band"].astype(str)
+                              + "_" + d["going_class"].astype(str))
+    d["_surf_jyo"] = surface + "_" + d["jyo_cd"].astype(str)
+    d["_surf_age"] = surface + "_" + d["age_bucket"].astype(str)
+    d["_surf_tier"] = surface + "_" + d["grade_tier"].astype(str)
+    d["_surf_sex"] = surface + "_" + d["sex_cd"].astype(str)
+    out = pd.DataFrame(index=d.index)
+    m = pedigree.shrinkage
+    exclude = pedigree.exclude_self
+
+    def put(name: str, values: pd.Series) -> None:
+        out[name] = values.astype(np.float32)
+
+    for path, conds in EXTENDED_CONDITIONS.items():
+        for name, cond in conds.items():
+            s = asof_sums(d, [f"ped_{path}", cond], exclude_self=exclude)
+            put(f"stx_{path}_ae_{name}", _ae(s["k3"], s["e3"], m))
+    for path in EXTENDED_PATHS:
+        col = f"ped_{path}"
+        s = asof_sums(d, [col], exclude_self=exclude)
+        put(f"stx_{path}_ae_top3", _ae(s["k3"], s["e3"], m))
+        put(f"stx_{path}_log_n", np.log1p(s["n"]))
+        s = asof_sums(d, [col, "track_kind"], exclude_self=exclude)
+        put(f"stx_{path}_ae_surface", _ae(s["k3"], s["e3"], m))
+    has_pf = include & d["_pf"].notna()
+    for path in QUALITY_PATHS:
+        col = f"ped_{path}"
+        put(f"stx_{path}_pf", asof_mean(d, [col], "_pf", has_pf, prior_n=m,
+                                        exclude_self=exclude))
+        put(f"stx_{path}_pf_surface", asof_mean(d, [col, "track_kind"], "_pf", has_pf,
+                                                prior_n=m, exclude_self=exclude))
+        put(f"stx_{path}_tier_mean", asof_mean(d, [col], "_tier", include, prior_n=m,
+                                               exclude_self=exclude))
+        put(f"stx_{path}_hi_share", asof_mean(d, [col], "_hi", include, prior_n=m,
+                                              exclude_self=exclude))
+        put(f"stx_{path}_tier_top3", asof_mean(d, [col], "_tier_top3",
+                                               include & d["_tier_top3"].notna(), prior_n=3.0,
+                                               exclude_self=exclude))
+    return out
+
+
+def race_relative_features(frame: pd.DataFrame, race_id: pd.Series) -> pd.DataFrame:
+    """RELATIVE_SOURCES の列を、同じレースの出走馬の中での差（− レース平均）と順位（百分位）にする。
+
+    血統の値そのものではなく「このレースの相手と比べてどうか」を渡す。どの列も as-of なので、
+    同じレースの他の馬の値を使っても未来の結果は入らない。
+    """
+    cols = [c for c in RELATIVE_SOURCES if c in frame.columns]
+    out = pd.DataFrame(index=frame.index)
+    if not cols:
+        return out
+    grouped = frame[cols].groupby(race_id.to_numpy())
+    mean = grouped.transform("mean")
+    pct = grouped.rank(pct=True)
+    for c in cols:
+        out[f"rel_{c}_diff"] = (frame[c] - mean[c]).astype(np.float32)
+        out[f"rel_{c}_pct"] = pct[c].astype(np.float32)
+    return out
+
+
+#: parent_racing_features が使う、データセットの parent_* 列（dataset.build.attach_parent_racing）。
+PARENT_PATHS: tuple[str, ...] = ("S", "D", "DS")
+
+
+def parent_racing_features(df: pd.DataFrame) -> pd.DataFrame:
+    """父・母・母父**自身**の中央での成績（``par_``）。その馬が生まれる前のレースだけ。
+
+    集計はデータセットを作るときに済ませてある（dataset.build.attach_parent_racing）。ここでは
+    A/E（3頭ぶん縮める）・走りの質・到達した格にする。中央で走っていない祖先は欠損。
+    """
+    missing = [f"parent_{p}_n" for p in PARENT_PATHS if f"parent_{p}_n" not in df.columns]
+    if missing:
+        raise ValueError(f"データセットに {missing} がありません。parent_racing を使うには"
+                         " scripts/ml/build_dataset.py でデータセットを作り直してください（schema 3）。")
+    out = pd.DataFrame(index=df.index)
+    for path in PARENT_PATHS:
+        def col(item: str) -> pd.Series:
+            return pd.to_numeric(df[f"parent_{path}_{item}"], errors="coerce").astype(float)
+
+        n = col("n").fillna(0.0)
+        raced = n > 0
+        out[f"par_{path}_log_n"] = np.log1p(n).astype(np.float32)
+        out[f"par_{path}_ae"] = ((col("k3").fillna(0.0) + 3.0) / (col("e3").fillna(0.0) + 3.0)) \
+            .where(raced).astype(np.float32)
+        out[f"par_{path}_pf"] = col("pf").astype(np.float32)
+        out[f"par_{path}_tier3"] = col("tier3").fillna(-1.0).where(raced).astype(np.float32)
+        out[f"par_{path}_tiermax"] = col("tiermax").astype(np.float32)
+        out[f"par_{path}_raced"] = (col("linked").fillna(0.0) + raced).astype(np.float32)
+    return out
+
+
+def breeder_features(df: pd.DataFrame, pedigree: PedigreeConfig) -> pd.DataFrame:
+    """生産者の産駒成績（``brd_``）。df は prepare() 後の表。as-of・本人を除く。
+
+    生産者は血統ではなく「生まれ」の情報（同じ牧場の生産馬がどれだけ走っているか）。
+    本人の過去成績・騎手・オッズのどれでもないので血統モデルに入れられるが、境界の判断なので
+    PedigreeConfig.breeder_stats で外せるようにしてある。
+    """
+    if "breeder_code" not in df.columns:
+        raise ValueError("データセットに breeder_code がありません。breeder_stats を使うには"
+                         " scripts/ml/build_dataset.py でデータセットを作り直してください（schema 3）。")
+    d = df.assign(_breeder=df["breeder_code"].fillna("").astype(str))
+    m = pedigree.shrinkage
+    exclude = pedigree.exclude_self
+    out = pd.DataFrame(index=d.index)
+    for name, cond in (("all", []), ("surface", ["track_kind"]), ("age", ["age_bucket"])):
+        s = asof_sums(d, ["_breeder", *cond], exclude_self=exclude)
+        out[f"brd_ae_{name}"] = _ae(s["k3"], s["e3"], m).astype(np.float32)
+        if name == "all":
+            out["brd_log_n"] = np.log1p(s["n"]).astype(np.float32)
+    include = pd.Series(d["has_result"].to_numpy(dtype=bool), index=d.index)
+    d["_pf"] = beat_fraction(d)
+    out["brd_pf"] = asof_mean(d, ["_breeder"], "_pf", include & d["_pf"].notna(), prior_n=m,
+                              exclude_self=exclude).astype(np.float32)
+    return out
+
+
 def build_features(df: pd.DataFrame, *, pedigree: PedigreeConfig,
                    features: FeatureConfig) -> FeatureSet:
     """特徴量表を作る。df は prepare() 前のデータセットでよい。"""
@@ -201,4 +399,20 @@ def build_features(df: pd.DataFrame, *, pedigree: PedigreeConfig,
     stats = stat_features(prepared, pedigree)
     frame = frame.join(stats)
     nums.extend(stats.columns)
+    if pedigree.extended_stats:
+        extended = extended_stat_features(prepared, pedigree)
+        frame = frame.join(extended)
+        nums.extend(extended.columns)
+    if pedigree.parent_racing:
+        parents = parent_racing_features(prepared)
+        frame = frame.join(parents)
+        nums.extend(parents.columns)
+    if pedigree.breeder_stats:
+        breeders = breeder_features(prepared, pedigree)
+        frame = frame.join(breeders)
+        nums.extend(breeders.columns)
+    if pedigree.race_relative:
+        relative = race_relative_features(frame, prepared["race_id"])
+        frame = frame.join(relative)
+        nums.extend(relative.columns)
     return FeatureSet(frame=frame, cat_features=tuple(cats), num_features=tuple(nums))

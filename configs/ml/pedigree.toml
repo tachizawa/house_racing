@@ -32,10 +32,19 @@ stat_paths = ["S", "D", "DS", "SS"]
 shrinkage = 10.0               # A/E の縮小推定（階層ベイズの採否は未決定）
 exclude_self = true
 stats_history = "window"       # "window" = 学習開始日以降だけで産駒成績を集計
+# 2026-10-30 に足した特徴量（docs/ml/README.md §11）。条件を組み合わせた A/E・追加の位置・
+# 産駒の走りの質と到達した格（stx_）と、レース内での差と順位（rel_）
+extended_stats = true
+race_relative = true
+# 父・母・母父自身の中央での成績（生まれる前のレースだけ。データセットの schema 3 が要る）
+parent_racing = true
+# 生産者の産駒成績（as-of・本人を除く）。血統ではなく「生まれ」の情報。外すなら false
+breeder_stats = true
 
 [features]
+# grade_tier（競走の格）と birth_doy（生まれた日の年内の通し日）は 2026-10-30 に足した
 context = ["track_kind", "kyori_m", "distance_band", "baba_cd", "jyo_cd",
-           "age", "sex_cd", "field_size", "month"]
+           "age", "sex_cd", "field_size", "month", "grade_tier", "birth_doy"]
 
 [split]
 # テスト期間は固定。学習期間だけを変えて比べる。
@@ -45,8 +54,10 @@ valid_years = 1
 train_years = [10, 20, 30, 40]
 
 [model]
-# 目的関数は未決定。"Logloss"（3着以内の2値・確率が出る）か "YetiRank" などの順位学習。
-loss_function = "Logloss"
+# 目的関数。"Logloss"（3着以内の2値・確率が出る）か "YetiRank" などの順位学習。
+# 2026-10-30 に YetiRank にした（上位3頭の的中数が Logloss より高かった。docs/ml/README.md §11）。
+# 順位学習は確率を出さないので、較正（brier / ECE）は測れない。確率が要るなら "Logloss" に戻す
+loss_function = "YetiRank"
 iterations = 3000
 learning_rate = 0.05
 depth = 6

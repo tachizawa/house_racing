@@ -191,6 +191,9 @@ def build_pedigree(sk: pd.DataFrame, hn: pd.DataFrame, um: pd.DataFrame, *,
     birth = birth.where(birth != "", um_i["birth_date"].fillna(""))
     ped["birth_date"] = birth
     ped["birth_year"] = _year_from_date(birth)
+    # 生産者（SK の生産者コード）。血統そのものではなく「生まれ」の情報。UM には無い
+    ped["breeder_code"] = (sk_i["breeder_code"].fillna("") if "breeder_code" in sk_i.columns
+                           else "")
 
     # --- HN の父母リンクで埋める・突き合わせる --------------------------------
     father = dict(zip(hn.get("hansyoku_num", []), hn.get("father_num", [])))
@@ -221,7 +224,7 @@ def build_pedigree(sk: pd.DataFrame, hn: pd.DataFrame, um: pd.DataFrame, *,
     ped[ordered] = ped[ordered].fillna("")
     inbreeding = inbreeding_table(ped, inbreeding_generations)
     ped = ped.join(inbreeding)
-    ped = ped[[*ordered, "pedigree_source", "birth_date", "birth_year",
+    ped = ped[[*ordered, "pedigree_source", "birth_date", "birth_year", "breeder_code",
                "inbreeding_f", "n_cross", "closest_cross"]]
 
     stats = {

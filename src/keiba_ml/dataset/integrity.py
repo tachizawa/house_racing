@@ -222,6 +222,54 @@ def check_asof_samples(history: pd.DataFrame, feature_frame: pd.DataFrame, *,
                             for p, r in by_path.items()})
 
 
+def check_extended_asof_sample(history: pd.DataFrame, feature_frame: pd.DataFrame, *,
+                               paths: Sequence[str], shrinkage: float, exclude_self: bool,
+                               sample: int = 100, seed: int = 0,
+                               only: pd.Index | None = None) -> dict:
+    """拡張の産駒成績（features.pedigree.extended_stat_features）を総当たりで検算する。
+
+    無作為の行で、祖先ごとの産駒の走りの質の平均（``stx_<位置>_pf``）と出走した格の平均
+    （``stx_<位置>_tier_mean``）を「その日より前の行だけ」から計算し直して比べる。
+    縮小の先の全体の平均も、その日より前の行だけから出す。
+    """
+    from keiba_ml.features.pedigree import beat_fraction
+
+    names = [f"stx_{p}_{k}" for p in paths for k in ("pf", "tier_mean")]
+    absent = [c for c in names if c not in feature_frame.columns]
+    if absent:
+        return _result("extended_asof_sample", "warn", f"{absent} がありません。")
+    hist = history[history["has_result"]].copy()
+    hist["_pf"] = beat_fraction(hist)
+    hist["_tier"] = pd.to_numeric(hist["grade_tier"], errors="coerce").astype(float)
+    candidates = history.index if only is None else history.index.intersection(only)
+    if len(candidates) == 0:
+        return _result("extended_asof_sample", "warn", "検算できる行がありません。")
+    rng = np.random.default_rng(seed)
+    picked = rng.choice(candidates, size=min(sample, len(candidates)), replace=False)
+    mismatches = []
+    for idx in picked:
+        row = history.loc[idx]
+        before = hist[hist["race_date"] < row["race_date"]]
+        for path in paths:
+            key = row[f"ped_{path}"]
+            prior = before[before[f"ped_{path}"] == key] if key not in ("", "NA") \
+                else before.iloc[0:0]
+            if exclude_self:
+                prior = prior[prior["ketto_num"] != row["ketto_num"]]
+            for kind, col in (("pf", "_pf"), ("tier_mean", "_tier")):
+                overall = before[col].dropna()
+                base = float(overall.mean()) if len(overall) else 0.0
+                values = prior[col].dropna()
+                value = (values.sum() + shrinkage * base) / (len(values) + shrinkage)
+                feature = feature_frame.at[idx, f"stx_{path}_{kind}"]
+                if not np.isclose(value, feature, rtol=1e-4, atol=1e-5):   # 特徴量は float32
+                    mismatches.append({"index": int(idx), "column": f"stx_{path}_{kind}",
+                                       "recomputed": float(value), "feature": float(feature)})
+    return _result("extended_asof_sample", "ok" if not mismatches else "fail",
+                   f"拡張の産駒成績（{', '.join(names)}）を総当たりで検算して一致するか",
+                   checked=int(len(picked)), mismatches=mismatches[:10])
+
+
 def _distance_m(values) -> pd.Series:
     """距離（m）。features.distance.prepare と同じく 0 以下は欠損とみなす。"""
     m = pd.to_numeric(values, errors="coerce").astype(float)

@@ -264,7 +264,8 @@ Phase 2（血統モデル）。**2026-10-19 に実データで端から端まで
   （`experiment.py`、`scripts/ml/train.py` / `evaluate.py` / `predict.py` / `compare_runs.py`）は共通。
   設定は `configs/ml/<model>.toml`（`[experiment] model` で種類を示す）、出力は `data/ml/runs/<model>/<run_id>/`。
   モデルの足し方は `docs/ml/README.md` §9。`*_pedigree.py` は `--model pedigree` に固定した互換の入口
-- 手順（血統の最終モデルは `data/ml/runs/20261019_final/10y`。2026-10-19 の実行は `runs/<model>/` の下に無い）:
+- 手順（血統の最終モデルは 2026-10-30 から `data/ml/runs/pedigree/20261030_final/10y`。旧 `data/ml/runs/20261019_final/10y`
+  は `runs/<model>/` の下に無い）:
 
   ```bash
   .venv/Scripts/python.exe scripts/ml/build_dataset.py --race-data-dir data/_40y
@@ -277,6 +278,14 @@ Phase 2（血統モデル）。**2026-10-19 に実データで端から端まで
   +0.124 [+0.092, +0.156]（対応ありブートストラップ）。ECE 0.0050。市場（オッズ）との比較はしていない。
   **2025年（テスト期間）の 1.0015 は、祖先カテゴリの組と学習期間を選ぶのに使った後の値**なので独立ではない。
   2026年の同じ期間は `holdout_20260101_20261018.json` があるので再評価できない（上書きを拒む）
+- **血統モデルの改善（2026-10-30）**: 格・生まれ日、条件を組み合わせた A/E、産駒の走りの質と到達した格、
+  父・母・母父**自身**の中央での成績（生まれる前のレースだけ）、生産者の産駒成績、レース内での差と順位を足し、
+  YetiRank にした（設定 `pedigree.extended_stats` / `parent_racing` / `breeder_stats` / `race_relative`。既定は off）。
+  2024年までで選び（学習 2013〜2022 / 比較 2024）、**2025年 1.095 [1.069, 1.119]・2026年（1回だけ）1.068 [1.038, 1.096]**
+  （旧 1.0015 / 0.974）。**生産者は血統ではなく「生まれ」の情報で、入れるかは所有者の判断が残る**。YetiRank は確率を
+  出さない（確率が要るなら `runs/pedigree/20261030_final_logloss/10y`、2025年 1.067・ECE 0.0044）。
+  データセットは schema 3（`20261030T035344Z`。`parent_*` と `breeder_code` を追加）。詳細は `docs/ml/README.md` §11。
+  目標の「上位3頭に平均2頭」には遠い（市場の上位3頭でも 1.579）
 - **距離適性モデル（2026-10-20、`--model distance`）** は「今回の距離がその馬に合うか」だけを見る。
   **強さの水準は特徴量に入れない**（強さだけが違う2頭は本人の特徴量が完全に一致する。
   `tests/ml/test_ml_distance.py` が固定）。最初の版は「3着以内に入った距離の平均」の欠損が強さを表して
@@ -593,7 +602,7 @@ venv は `.venv`（Python 3.13.3 / 64bit）。コマンドは `.venv` の python
 # 依存（初回のみ）
 .venv/Scripts/python.exe -m pip install -r requirements.txt
 
-# テスト全体（2026-10-30 実行: 1730 passed。catboost を入れると skip は 0）
+# テスト全体（2026-10-30 実行: 1741 passed。catboost を入れると skip は 0）
 .venv/Scripts/python.exe -m pytest
 
 # テスト1件だけ
