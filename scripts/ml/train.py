@@ -85,6 +85,9 @@ def main(argv: list[str] | None = None, *, model: str | None = None) -> int:
 
     years = tuple(config.split.train_years) if args.compare else \
         tuple(args.years or config.split.train_years[:1])
+    if any(y < 1 for y in years):
+        # with_overrides は validate を通らないので、ここで弾かないと壊れた config.json が残る。
+        parser.error("--years は 1 以上の年数を指定してください。")
     # 実際に回す学習期間を config.json に残す（--years 10 の実行を設定の全期間の比較と取り違えない）。
     config = config.with_overrides(split=replace(config.split, train_years=years))
     run_id = args.run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")

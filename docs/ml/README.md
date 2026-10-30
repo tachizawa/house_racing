@@ -436,7 +436,7 @@ Logloss、最良の反復 1122、学習は約6分）。学習 2014〜2023 / 検�
 
 ### 10.1 未使用期間での評価（2026年、独立な評価）
 
-`scripts/ml/evaluate.py --model data/ml/runs/distance/20261020_10y_v2/10y --from 2026-01-01 --to 2026-10-18`
+`.venv\Scripts\python.exe scripts\ml\evaluate.py --model data\ml\runs\distance\20261020_10y_v2\10y --from 2026-01-01 --to 2026-10-18`
 を1回だけ実行した（実際のレースは 2026-01-04〜10-12、
 2,636レース。`holdout_20260101_20261018.json`。同じ期間はもう評価し直せない）。
 

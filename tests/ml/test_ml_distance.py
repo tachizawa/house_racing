@@ -17,6 +17,7 @@ from keiba_ml.dataset import integrity
 from keiba_ml.dataset.races import build_runners
 from keiba_ml.features import distance
 from keiba_ml.features.asof import asof
+from keiba_ml.features.base import MISSING
 from tests.fixtures import csv_data
 
 
@@ -56,7 +57,7 @@ def test_asof_rejects_unknown_aggregation():
 
 
 def test_context_columns_fill_missing_categories():
-    from keiba_ml.features.base import MISSING, context_columns
+    from keiba_ml.features.base import context_columns
     df = pd.DataFrame({"jyo_cd": pd.Categorical(["05", None]), "age": [3, None]})
     frame, cats, nums = context_columns(df, ["jyo_cd", "age"])
     assert frame["jyo_cd"].tolist() == ["05", MISSING]
@@ -171,8 +172,11 @@ def test_zero_distance_is_treated_as_missing():
     df = pd.DataFrame([
         _run("X", "2020-01-05", 1200, 1),
         _run("X", "2020-02-05", 0, 2, race="broken"),
+        _run("X", "2020-02-20", -1200, 3, race="negative"),
         _run("X", "2020-03-05", 1200, 0, has=False, race="t"),
     ])
+    # 距離が壊れていれば距離帯も決まらない（データセットでは空になる）
+    df.loc[df["race_id"].isin(["broken", "negative"]), "distance_band"] = ""
     features = distance.build_features(df, DistanceConfig())
     frame = features.frame
     t = frame.index[df["race_id"] == "t"][0]
@@ -180,6 +184,9 @@ def test_zero_distance_is_treated_as_missing():
     assert not np.isinf(values).any()
     assert frame.at[t, "dist_minus_last"] == 0.0     # 0m の走りを前走とみなさない
     assert frame.at[t, "dist_minus_mean"] == 0.0
+    assert frame.at[t, "dist_minus_min"] == 0.0      # -1200m を最短とみなさない
+    broken = frame.index[df["race_id"].isin(["broken", "negative"])]
+    assert (frame.loc[broken, "distance_band"] == MISSING).all()
     check = integrity.check_distance_asof_sample(df, frame, config=DistanceConfig(), sample=10)
     assert check["status"] == "ok", check
 

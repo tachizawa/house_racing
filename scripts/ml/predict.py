@@ -92,6 +92,10 @@ def main(argv: list[str] | None = None, *, expected_model: str | None = None) ->
         return 2
     model = CatBoostModel.load(args.model)
     df, names, manifest = build.load(args.ml_data_dir, args.dataset_id)
+    if manifest.get("checks_failed"):
+        print(f"データセット {manifest['dataset_id']} は整合性検査で FAIL があります:"
+              f" {manifest['checks_failed']}")
+        return 2
     # 世代数などが学習時と違うと、同じ名前の列が別の中身になり、スコアが黙って狂う。
     mismatches = build.config_mismatches(manifest, config)
     if mismatches:

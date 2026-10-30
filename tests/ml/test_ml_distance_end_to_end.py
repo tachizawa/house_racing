@@ -176,6 +176,8 @@ def test_scripts_refuse_bad_inputs_before_scoring(world, dataset, monkeypatch, c
     monkeypatch.setattr(build, "load", lambda *_a, **_k: failed)
     assert _script("evaluate").main([*common, "--from", "2023-01-01", "--to", "2023-12-31"]) == 2
     assert "FAIL" in capsys.readouterr().out
+    assert predict.main(common) == 2
+    assert "FAIL" in capsys.readouterr().out
     assert not (model_dir / "holdout_20230101_20231231.json").exists()
 
 
@@ -196,3 +198,7 @@ def test_train_script_records_the_years_it_runs_and_keeps_old_runs(world, datase
     seen.clear()
     assert train.main([*common, "--years", "10"]) == 2
     assert seen == {}
+    with pytest.raises(SystemExit):
+        train.main(["--model", "distance", "--ml-data-dir", str(world.ml_data_dir),
+                    "--run-id", "zero", "--years", "0"])
+    assert not (world.ml_data_dir / "runs" / "distance" / "zero").exists()
