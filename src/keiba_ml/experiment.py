@@ -29,7 +29,8 @@ import pandas as pd
 from keiba_ml import registry
 from keiba_ml.config import MLConfig
 from keiba_ml.dataset import integrity
-from keiba_ml.dataset.split import Window, history_frame, make_window, split_frame
+from keiba_ml.dataset.split import (
+    Window, history_frame, history_start, make_window, split_frame)
 from keiba_ml.evaluate import metrics
 from keiba_ml.features.base import FeatureSet
 from keiba_ml.models.catboost_model import CatBoostModel
@@ -150,8 +151,9 @@ def evaluate_period(df: pd.DataFrame, config: MLConfig, model: CatBoostModel, *,
     require_columns(df, spec)
     day = df["race_date"].dt.date
     mask = day <= period_end
-    if spec.stats_history(config) == "window":
-        mask &= day >= train_start
+    start = history_start(train_start, spec.stats_history(config))
+    if start is not None:
+        mask &= day >= start
     history = df[mask]
     features = spec.build_features(history, config)
     rows = history[history["has_result"]

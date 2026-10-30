@@ -270,6 +270,53 @@ def check_extended_asof_sample(history: pd.DataFrame, feature_frame: pd.DataFram
                    checked=int(len(picked)), mismatches=mismatches[:10])
 
 
+def check_form_asof_sample(history: pd.DataFrame, feature_frame: pd.DataFrame, *,
+                           people_shrinkage: float, sample: int = 100, seed: int = 0,
+                           only: pd.Index | None = None) -> dict:
+    """総合モデルの本人の過去走・騎手の特徴量（features.form）を総当たりで検算する。
+
+    無作為の行で、前走の走りの質（``f_pf_last1``）・本人の3着以内 A/E（``f_ae_own``）・
+    騎手の A/E（``h_jockey_ae``）を「その日より前の行だけ」から計算し直して比べる。
+    """
+    from keiba_ml.features.form import OWN_SHRINKAGE
+    from keiba_ml.features.pedigree import beat_fraction, expected_top3
+
+    names = ["f_pf_last1", "f_ae_own", "h_jockey_ae"]
+    absent = [c for c in names if c not in feature_frame.columns]
+    if absent:
+        return _result("form_asof_sample", "warn", f"{absent} がありません。")
+    hist = history[history["has_result"]].copy()
+    hist["_pf"] = beat_fraction(hist)
+    hist["_e3"] = expected_top3(hist["field_size"])
+    jockey = hist["kisyu_code"].fillna("").astype(str).str.strip()
+    candidates = history.index if only is None else history.index.intersection(only)
+    if len(candidates) == 0:
+        return _result("form_asof_sample", "warn", "検算できる行がありません。")
+    rng = np.random.default_rng(seed)
+    picked = rng.choice(candidates, size=min(sample, len(candidates)), replace=False)
+    mismatches = []
+    for idx in picked:
+        row = history.loc[idx]
+        before = hist["race_date"] < row["race_date"]
+        own = hist[before & (hist["ketto_num"] == row["ketto_num"])].sort_values(
+            "race_date", kind="mergesort")
+        last = own["_pf"].iloc[-1] if len(own) else np.nan
+        ae = (own["target_top3"].sum() + OWN_SHRINKAGE) / (own["_e3"].sum() + OWN_SHRINKAGE)
+        code = str(row["kisyu_code"] or "").strip()
+        jk = hist[before & (jockey == code)] if code else hist.iloc[0:0]
+        jae = (jk["target_top3"].sum() + people_shrinkage) / (jk["_e3"].sum() + people_shrinkage)
+        for name, value in (("f_pf_last1", last), ("f_ae_own", ae), ("h_jockey_ae", jae)):
+            got = float(feature_frame.at[idx, name])
+            same = (np.isnan(value) and np.isnan(got)) or \
+                np.isclose(value, got, rtol=1e-4, atol=1e-5)   # 特徴量は float32
+            if not same:
+                mismatches.append({"index": int(idx), "column": name,
+                                   "recomputed": float(value), "feature": got})
+    return _result("form_asof_sample", "ok" if not mismatches else "fail",
+                   f"本人の過去走・騎手の特徴量（{', '.join(names)}）を総当たりで検算して一致するか",
+                   checked=int(len(picked)), mismatches=mismatches[:10])
+
+
 def _distance_m(values) -> pd.Series:
     """距離（m）。features.distance.prepare と同じく 0 以下は欠損とみなす。"""
     m = pd.to_numeric(values, errors="coerce").astype(float)

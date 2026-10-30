@@ -27,6 +27,7 @@ from keiba import console  # noqa: E402
 from keiba_ml import registry  # noqa: E402
 from keiba_ml.config import ML_DATA_DIR, MLConfig, config_from_dict  # noqa: E402
 from keiba_ml.dataset import build  # noqa: E402
+from keiba_ml.dataset.split import history_start  # noqa: E402
 from keiba_ml.experiment import IntegrityError, build_model_features  # noqa: E402
 from keiba_ml.models.catboost_model import CatBoostModel  # noqa: E402
 
@@ -102,8 +103,9 @@ def main(argv: list[str] | None = None, *, expected_model: str | None = None) ->
         print(f"データセット {manifest['dataset_id']} は学習時と違う設定で作られています:"
               f" {mismatches}")
         return 2
-    if spec.stats_history(config) == "window":
-        df = df[df["race_date"].dt.date >= train_start]
+    start = history_start(train_start, spec.stats_history(config))
+    if start is not None:
+        df = df[df["race_date"].dt.date >= start]
     df, targets = live_rows(df)
     if args.race_id:
         targets = targets[targets["race_id"].isin(args.race_id)]

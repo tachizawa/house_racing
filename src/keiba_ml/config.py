@@ -36,7 +36,7 @@ DEFAULT_CONFIG_PATH = CONFIG_DIR / "pedigree.toml"
 
 #: 登録してある個別モデルの名前。registry.MODELS のキーと一致させる（テストで固定）。
 #: config から registry を import すると循環するので、名前だけをここに置く。
-MODEL_KINDS: tuple[str, ...] = ("pedigree", "distance")
+MODEL_KINDS: tuple[str, ...] = ("pedigree", "distance", "combined")
 
 
 def config_path(model: str) -> Path:
@@ -215,6 +215,32 @@ class DistanceConfig:
 
 
 @dataclass(frozen=True)
+class CombinedConfig:
+    """総合モデル（features/combined.py）の設定。
+
+    血統（[pedigree] の設定どおり）・距離適性（[distance] の設定どおり）に、血統以外の情報
+    （本人の過去走・タイム指数・騎手・調教師・直前の条件。features/form.py）を足して1つの
+    モデルで並べる。**オッズ・人気は入れない**（確定オッズは締切後にしか分からない）。
+    """
+
+    #: 履歴の範囲。"lead:N" = 学習開始日の N 年前から（本人の過去走とタイム指数の基準に要る）。
+    stats_history: str = "lead:5"
+    #: タイム指数の基準タイムを作る年数（履歴の最初の N 年。lead の年数以下にする）。
+    speed_standard_years: int = 5
+    #: 騎手・調教師の A/E を縮める強さ（ガンマ・ポアソンの事前分布の a）。2026-10-30 に
+    #: 学習期間（2013〜2022年）から積率で推定すると騎手 5.6・調教師 11.9 で、固定 10 と差は無かった。
+    people_shrinkage: float = 10.0
+    #: 相手関係（過去走のメンバーの強さ。features.form.opponent_strength）を入れるか。
+    opponent: bool = True
+    #: 騎手・調教師の直近の調子（直近 N 日の A/E）。0 なら入れない。縮小は recent_shrinkage 頭ぶん。
+    recent_days: int = 90
+    recent_shrinkage: float = 5.0
+    #: 血統・距離適性の特徴量も入れるか。
+    use_pedigree: bool = True
+    use_distance: bool = True
+
+
+@dataclass(frozen=True)
 class ExperimentConfig:
     #: どの個別モデルの設定か（MODEL_KINDS のどれか）。
     model: str = "pedigree"
@@ -290,6 +316,7 @@ class MLConfig:
     #: 血統モデルの条件の列（この節は血統モデル専用。距離適性は distance.context）。
     features: FeatureConfig = field(default_factory=FeatureConfig)
     distance: DistanceConfig = field(default_factory=DistanceConfig)
+    combined: CombinedConfig = field(default_factory=CombinedConfig)
     split: SplitConfig = field(default_factory=SplitConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     evaluate: EvalConfig = field(default_factory=EvalConfig)
@@ -345,6 +372,7 @@ def _coerce(cls: type, values: dict[str, Any]) -> Any:
 _SECTIONS = {
     "experiment": ExperimentConfig, "data": DataConfig, "codes": CodeConfig,
     "pedigree": PedigreeConfig, "features": FeatureConfig, "distance": DistanceConfig,
+    "combined": CombinedConfig,
     "split": SplitConfig, "model": ModelConfig, "evaluate": EvalConfig,
 }
 
@@ -422,6 +450,19 @@ def validate(config: MLConfig) -> None:
     d = config.distance
     if d.stats_history not in ("window", "all"):
         raise ValueError('distance.stats_history は "window" か "all" です。')
+    c = config.combined
+    lead = c.stats_history[5:] if c.stats_history.startswith("lead:") else ""
+    if not lead.isdigit():
+        raise ValueError('combined.stats_history は "lead:<年数>" です（学習開始日より前の履歴が要る）。')
+    if not 1 <= c.speed_standard_years <= int(lead):
+        raise ValueError("combined.speed_standard_years は 1〜lead の年数にしてください"
+                         "（基準タイムを学習開始日より前のレースだけで作るため）。")
+    for name in ("people_shrinkage", "recent_shrinkage"):
+        value = getattr(c, name)
+        if not (math.isfinite(value) and value > 0):
+            raise ValueError(f"combined.{name} は正の有限の値にしてください。")
+    if c.recent_days < 0:
+        raise ValueError("combined.recent_days は 0 以上にしてください（0 なら使わない）。")
     # TOML の nan / inf は大小の比較をすり抜けて特徴量に入るので、先に有限かを確かめる。
     for name in ("own_shrinkage", "pedigree_shrinkage", "margin_cap_sec", "slope_ridge"):
         if not math.isfinite(getattr(d, name)):

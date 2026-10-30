@@ -1,0 +1,82 @@
+# 総合モデルの設定（血統 + 距離適性 + 近走・タイム指数・騎手・調教師・直前の条件）。
+# キーの意味は src/keiba_ml/config.py の docstring を参照。知らないキーを書くとエラーになる。
+# オッズ・人気は入れない（確定オッズは締切後にしか分からない）。docs/ml/README.md §12。
+
+[experiment]
+model = "combined"
+
+[data]
+# [data] [codes] と [pedigree] の世代数は血統・距離適性と揃える（同じデータセットを共有する）
+race_versions = []
+pedigree_source = "blood"
+pedigree_versions = []
+jra_only = true
+include_jump = false
+
+[codes]
+kazoe_age_until_year = 2000
+
+[pedigree]
+# 血統の特徴量（configs/ml/pedigree.toml と同じ）。stats_history は使わず [combined] の範囲で作る
+generations = 5
+categorical_generations = 0
+categorical_exclude = []
+inbreeding_generations = 5
+stat_paths = ["S", "D", "DS", "SS"]
+shrinkage = 10.0
+exclude_self = true
+stats_history = "window"
+extended_stats = true
+race_relative = true
+parent_racing = true
+breeder_stats = true
+
+[features]
+context = ["track_kind", "kyori_m", "distance_band", "baba_cd", "jyo_cd",
+           "age", "sex_cd", "field_size", "month", "grade_tier", "birth_doy"]
+
+[distance]
+# 距離適性の特徴量（configs/ml/distance.toml と同じ）
+context = ["track_kind", "kyori_m", "distance_band", "jyo_cd", "age", "sex_cd", "field_size"]
+stats_history = "window"
+own_shrinkage = 3.0
+slope_ridge = 0.25
+margin_cap_sec = 3.0
+pedigree_paths = ["S", "DS"]
+pedigree_shrinkage = 30.0
+exclude_self = true
+
+[combined]
+# 履歴は学習開始日の5年前から（本人の過去走とタイム指数の基準に要る）
+stats_history = "lead:5"
+speed_standard_years = 5       # タイム指数の基準タイムは履歴の最初の5年（学習開始日より前）だけ
+# 騎手・調教師の A/E の縮小。階層ベイズ（ガンマ・ポアソン）で学習期間から推定すると
+# 騎手 5.6・調教師 11.9 で、固定 10 と比べて差は無かった（docs/ml/README.md §12）
+people_shrinkage = 10.0
+opponent = true                # 相手関係（過去走のメンバーのタイム指数の強さ）
+recent_days = 90               # 騎手・調教師の直近90日の A/E（0 なら使わない）
+recent_shrinkage = 5.0
+use_pedigree = true
+use_distance = true
+
+[split]
+test_start = "2025-01-01"
+test_end = "2025-12-31"
+valid_years = 1
+train_years = [10, 20, 30, 40]
+
+[model]
+loss_function = "YetiRank"
+iterations = 3000
+learning_rate = 0.05
+depth = 6
+l2_leaf_reg = 3.0
+early_stopping_rounds = 200
+random_seed = 42
+thread_count = -1
+
+[evaluate]
+top_n = 3
+calibration_bins = 10
+bootstrap = 1000
+bootstrap_seed = 0
