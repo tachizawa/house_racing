@@ -26,10 +26,67 @@ from keiba_ml.dataset.pedigree import (
 from keiba_ml.dataset.races import load_runners
 
 #: 2: 結果の列 result_margin_sec（1着馬とのタイム差）と result_weight_kg（馬体重）を足した。
-DATASET_SCHEMA_VERSION = "2"
-#: 読めるスキーマ。列を足しただけなので 1 も読める。足した列を使うモデル（距離適性）は
+#: 3: 父・母・母父自身の中央での成績（その馬が生まれる前のレースだけ。parent_* 列）と
+#:    生産者コード（breeder_code。SK から）を足した。
+DATASET_SCHEMA_VERSION = "3"
+#: 読めるスキーマ。列を足しただけなので 1・2 も読める。足した列を使うモデル（距離適性）は
 #: registry の required_columns で列の有無を確かめ、無ければ作り直しを促す。
-READABLE_SCHEMA_VERSIONS = frozenset({"1", "2"})
+READABLE_SCHEMA_VERSIONS = frozenset({"1", "2", "3"})
+
+#: 自身の競走成績を付ける祖先の位置（父・母・母父）。
+PARENT_RACING_PATHS: tuple[str, ...] = ("S", "D", "DS")
+#: parent_<位置>_<項目> の項目。n 出走数・k3 3着以内数・e3 偶然の期待3着以内数・
+#: pf 走りの質の平均・tier3 3着以内に入った最高の格・tiermax 出走した最高の格・
+#: linked その祖先の血統登録番号が分かったか（1/0。0 なら外国産などで中央の成績を引けない）。
+PARENT_RACING_ITEMS: tuple[str, ...] = ("n", "k3", "e3", "pf", "tier3", "tiermax", "linked")
+
+
+def parent_racing_columns() -> list[str]:
+    return [f"parent_{p}_{k}" for p in PARENT_RACING_PATHS for k in PARENT_RACING_ITEMS]
+
+
+def attach_parent_racing(df: pd.DataFrame, hn: pd.DataFrame) -> pd.DataFrame:
+    """父・母・母父**自身**の中央での成績を、出走馬ごとに付ける（parent_* 列）。
+
+    祖先の繁殖登録番号を HN の血統登録番号に引き、その血統登録番号の出走（データセットの
+    結果のある行）のうち、**その馬の生年月日より前**のレースだけを集計する。馬が走るのは
+    生まれた後なので、どのレースの行から見ても過去の情報になる（同じ日・後の日は入らない）。
+    学習期間（stats_history = "window"）に関係なく全期間から集計する: 母が走ったのは
+    子が走るより何年も前で、学習期間に絞ると大半が消えるため。生年月日の無い馬は集計しない。
+    """
+    from keiba_ml.features.pedigree import beat_fraction, expected_top3
+
+    hn = hn if "ketto_num" in hn.columns else hn.assign(ketto_num="")
+    linked = hn[hn["ketto_num"].fillna("") != ""].drop_duplicates("hansyoku_num", keep="last")
+    num2ketto = dict(zip(linked["hansyoku_num"], linked["ketto_num"]))
+    res = df[df["has_result"]].copy()
+    res["_pf"] = beat_fraction(res)
+    res["_e3"] = expected_top3(res["field_size"])
+    res["_tier"] = pd.to_numeric(res["grade_tier"], errors="coerce").astype(float)
+    res["_tier3"] = res["_tier"].where(res["target_top3"] == 1)
+    res = res[["ketto_num", "race_date", "target_top3", "_e3", "_pf", "_tier", "_tier3"]] \
+        .rename(columns={"ketto_num": "_parent"})
+    horses = df.drop_duplicates("ketto_num")[
+        ["ketto_num", "birth_date", *[f"ped_{p}" for p in PARENT_RACING_PATHS]]].copy()
+    horses["_birth"] = pd.to_datetime(horses["birth_date"], errors="coerce")
+    table = pd.DataFrame(index=pd.Index(horses["ketto_num"], name="ketto_num"))
+    for path in PARENT_RACING_PATHS:
+        parent = horses[f"ped_{path}"].map(num2ketto)
+        q = pd.DataFrame({"ketto_num": horses["ketto_num"].to_numpy(),
+                          "_parent": parent.to_numpy(), "_birth": horses["_birth"].to_numpy()})
+        q = q.dropna(subset=["_parent", "_birth"])
+        m = q.merge(res, on="_parent", how="inner")
+        m = m[m["race_date"] < m["_birth"]]
+        g = m.groupby("ketto_num")
+        agg = pd.DataFrame({"n": g.size().astype(float), "k3": g["target_top3"].sum(),
+                            "e3": g["_e3"].sum(), "pf": g["_pf"].mean(),
+                            "tier3": g["_tier3"].max(), "tiermax": g["_tier"].max()})
+        agg = agg.reindex(table.index)
+        agg[["n", "k3", "e3"]] = agg[["n", "k3", "e3"]].fillna(0.0)
+        agg["linked"] = parent.notna().astype(float).to_numpy()
+        for item in PARENT_RACING_ITEMS:
+            table[f"parent_{path}_{item}"] = agg[item].astype(float)
+    return df.merge(table, left_on="ketto_num", right_index=True, how="left")
 
 
 def attach_pedigree(runners: pd.DataFrame, ped: pd.DataFrame) -> pd.DataFrame:
@@ -43,6 +100,8 @@ def attach_pedigree(runners: pd.DataFrame, ped: pd.DataFrame) -> pd.DataFrame:
     ped_cols = [c for c in ped.columns if c.startswith("ped_")]
     df[ped_cols] = df[ped_cols].fillna("")
     df["pedigree_source"] = df["pedigree_source"].fillna("")
+    if "breeder_code" in df:
+        df["breeder_code"] = df["breeder_code"].fillna("")
     df["inbreeding_f"] = df["inbreeding_f"].astype(float)
     df["n_cross"] = df["n_cross"].astype("Int64")
     by_birth = df["year"] - df["birth_year"].astype("Float64")
@@ -68,6 +127,7 @@ def build(config: MLConfig, *, race_data_dir: Path, ml_data_dir: Path,
         horses=runners["ketto_num"].unique())
     names = ancestor_names(sources["HN"], sources["UM"])
     df = attach_pedigree(runners, ped)
+    df = attach_parent_racing(df, sources["HN"])
     report = {
         "race_versions": runners.attrs.get("race_versions", []),
         "races_dropped_before_fromdate": runners.attrs.get("dropped_before_fromdate", {}),

@@ -164,6 +164,21 @@ class PedigreeConfig:
     #: 手元の全期間を使うか（"all"）。学習期間比較で「データ量の効果」を
     #: 正しく切り分けたいなら "window"。
     stats_history: str = "window"
+    #: 拡張の産駒成績（``stx_``。features.pedigree.extended_stat_features）を足すか。
+    #: 条件を組み合わせた A/E・追加の位置の A/E・産駒の走りの質と到達した格。
+    #: 既定は False（これを足す前の実行の config.json を読むと、前と同じ特徴量になる）。
+    #: 2026-10-30 に実データで決めた値は configs/ml/pedigree.toml（docs/ml/README.md §11）。
+    extended_stats: bool = False
+    #: 主な産駒成績を、同じレースの出走馬の中での差と順位にした列（``rel_``）を足すか。
+    #: 既定は False（理由は extended_stats と同じ）。
+    race_relative: bool = False
+    #: 父・母・母父**自身**の中央での成績（``par_``。その馬が生まれる前のレースだけ）を足すか。
+    #: データセットの schema 3 の parent_* 列を使う。既定は False（理由は extended_stats と同じ）。
+    parent_racing: bool = False
+    #: 生産者の産駒成績（``brd_``。as-of・本人を除く）を足すか。血統ではなく「生まれ」の情報
+    #: なので境界の判断（所有者の確認はまだ）。データセットの schema 3 の breeder_code を使う。
+    #: 既定は False（理由は extended_stats と同じ）。
+    breeder_stats: bool = False
 
 
 @dataclass(frozen=True)
