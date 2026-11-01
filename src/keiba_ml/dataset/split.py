@@ -66,12 +66,24 @@ def split_frame(df: pd.DataFrame, window: Window
     return train, valid, test
 
 
+def history_start(train_start: date, stats_history: str) -> date | None:
+    """履歴の最初の日。"window" = 学習開始日、"all" = 制限なし（None）、
+    "lead:N" = 学習開始日の N 年前（本人の過去走のように、学習期間より前の履歴が要る特徴量用）。
+    """
+    if stats_history == "window":
+        return train_start
+    if stats_history == "all":
+        return None
+    if stats_history.startswith("lead:") and stats_history[5:].isdigit():
+        return _minus_years(train_start, int(stats_history[5:]))
+    raise ValueError(f'stats_history は "window" / "all" / "lead:<年数>" です: {stats_history!r}')
+
+
 def history_frame(df: pd.DataFrame, window: Window, stats_history: str) -> pd.DataFrame:
-    """産駒成績の集計に使ってよい範囲（テスト終了日まで。window なら学習開始日から）。"""
+    """産駒成績の集計に使ってよい範囲（テスト終了日まで。開始は history_start）。"""
     day = df["race_date"].dt.date
     mask = day <= window.test_end
-    if stats_history == "window":
-        mask &= day >= window.train_start
-    elif stats_history != "all":
-        raise ValueError(f'stats_history は "window" か "all" です: {stats_history!r}')
+    start = history_start(window.train_start, stats_history)
+    if start is not None:
+        mask &= day >= start
     return df[mask]

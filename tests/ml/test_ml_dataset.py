@@ -125,6 +125,44 @@ def test_build_runners_entry_only_rows_have_no_target():
     assert pd.isna(df["target_top3"].iloc[0])
 
 
+def test_build_runners_blanks_time_corner_and_last3f_for_stopped_or_disqualified():
+    """競走中止・失格（4/5）の走破タイム・4角・上がりは、着差と同じく走りとして読まない。"""
+    races = _races({"race_id": RID})
+    runners = _runners(
+        {"race_id": RID, "umaban": "01", "ketto_num": "2020100001", "result_kakutei_jyuni": "1"},
+        {"race_id": RID, "umaban": "02", "ketto_num": "2020100002", "result_kakutei_jyuni": "",
+         "result_ijyo_cd": "4", "result_jyuni_4c": "5", "result_last_3f_sec": "38.0"},  # 競走中止
+        {"race_id": RID, "umaban": "03", "ketto_num": "2020100003", "result_kakutei_jyuni": "2",
+         "result_ijyo_cd": "5"},                                                        # 失格
+    )
+    df = build_runners(races, runners, data=DataConfig(), codes_config=CodeConfig()) \
+        .set_index("umaban")
+    assert df.loc["01", "result_time_sec"] == "123.4" and df.loc["01", "result_jyuni_4c"] == "2"
+    for umaban in ("02", "03"):
+        assert (df.loc[umaban, ["result_time_sec", "result_jyuni_4c", "result_last_3f_sec"]]
+                == "").all()
+        assert pd.isna(df.loc[umaban, "result_margin_sec"])
+    # 馬体重は結果ではなく直前の情報なので残る
+    assert df.loc["02", "result_weight_kg"] == 486.0
+
+
+def test_build_runners_keeps_published_weight_on_entry_rows():
+    """馬体重は発走前に発表されるので、出馬表の行に入っていれば残す。000（未発表）は欠損。"""
+    races = _races({"race_id": RID, "data_kubun": "2"})
+    runners = _runners(
+        {"race_id": RID, "umaban": "01", "ketto_num": "2020100001", "data_kubun": "2",
+         "result_kakutei_jyuni": "", "result_ba_taijyu_kg": "000"},
+        {"race_id": RID, "umaban": "02", "ketto_num": "2020100002", "data_kubun": "2",
+         "result_kakutei_jyuni": "", "result_ba_taijyu_kg": "502"},
+    )
+    df = build_runners(races, runners, data=DataConfig(), codes_config=CodeConfig()) \
+        .set_index("umaban")
+    assert not df["has_result"].any()
+    assert pd.isna(df.loc["01", "result_weight_kg"]) and df.loc["02", "result_weight_kg"] == 502.0
+    # 結果の列は出馬表では空のまま
+    assert (df[["result_time_sec", "result_jyuni_4c", "result_last_3f_sec"]] == "").all().all()
+
+
 def test_build_runners_drops_jump_and_non_jra():
     races = _races({"race_id": RID, "track_cd": "51"},
                    {"race_id": "2026032130011101", "jyo_cd": "30"})

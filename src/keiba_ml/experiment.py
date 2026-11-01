@@ -29,7 +29,8 @@ import pandas as pd
 from keiba_ml import registry
 from keiba_ml.config import MLConfig
 from keiba_ml.dataset import integrity
-from keiba_ml.dataset.split import Window, history_frame, make_window, split_frame
+from keiba_ml.dataset.split import (
+    Window, history_frame, history_start, make_window, split_frame)
 from keiba_ml.evaluate import metrics
 from keiba_ml.features.base import FeatureSet
 from keiba_ml.models.catboost_model import CatBoostModel
@@ -79,6 +80,14 @@ def build_model_features(df: pd.DataFrame, config: MLConfig) -> FeatureSet:
     return spec.build_features(df, config)
 
 
+def _history_checks(history: pd.DataFrame, train_start: date, stats_history: str) -> list[dict]:
+    """履歴の開始日の検査。"lead:N" のときだけ（"window" / "all" の切り詰めは Window.truncated が持つ。
+    血統・距離適性の検査一覧を変えない）。"""
+    if not stats_history.startswith("lead:"):
+        return []
+    return [integrity.check_history_start(history, train_start, stats_history)]
+
+
 def run_window(df: pd.DataFrame, config: MLConfig, window: Window, *, out_dir: Path,
                run_id: str, allow_integrity_fail: bool = False,
                log_period: int = 200) -> dict:
@@ -92,6 +101,7 @@ def run_window(df: pd.DataFrame, config: MLConfig, window: Window, *, out_dir: P
     checks = [
         integrity.check_feature_columns(features.columns),
         integrity.check_split(train, valid, test),
+        *_history_checks(history, window.train_start, spec.stats_history(config)),
         *spec.asof_checks(history, features, config, None),
     ]
     write_json(out_dir / "checks.json", checks)
@@ -150,8 +160,9 @@ def evaluate_period(df: pd.DataFrame, config: MLConfig, model: CatBoostModel, *,
     require_columns(df, spec)
     day = df["race_date"].dt.date
     mask = day <= period_end
-    if spec.stats_history(config) == "window":
-        mask &= day >= train_start
+    start = history_start(train_start, spec.stats_history(config))
+    if start is not None:
+        mask &= day >= start
     history = df[mask]
     features = spec.build_features(history, config)
     rows = history[history["has_result"]
@@ -161,6 +172,7 @@ def evaluate_period(df: pd.DataFrame, config: MLConfig, model: CatBoostModel, *,
     # 学習時（run_window）と同じ検査。as-of の検算は評価する期間の行から選ぶ。
     checks = [
         integrity.check_feature_columns(features.columns),
+        *_history_checks(history, train_start, spec.stats_history(config)),
         *spec.asof_checks(history, features, config, rows.index),
     ]
     failed = [c for c in checks if c["status"] == "fail"]

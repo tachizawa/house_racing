@@ -26,7 +26,8 @@ from keiba import config as keiba_config  # noqa: E402
 from keiba import console  # noqa: E402
 from keiba_ml import registry  # noqa: E402
 from keiba_ml.config import ML_DATA_DIR, MLConfig, config_from_dict  # noqa: E402
-from keiba_ml.dataset import build  # noqa: E402
+from keiba_ml.dataset import build, integrity  # noqa: E402
+from keiba_ml.dataset.split import history_start  # noqa: E402
 from keiba_ml.experiment import IntegrityError, build_model_features  # noqa: E402
 from keiba_ml.models.catboost_model import CatBoostModel  # noqa: E402
 
@@ -102,8 +103,15 @@ def main(argv: list[str] | None = None, *, expected_model: str | None = None) ->
         print(f"データセット {manifest['dataset_id']} は学習時と違う設定で作られています:"
               f" {mismatches}")
         return 2
-    if spec.stats_history(config) == "window":
-        df = df[df["race_date"].dt.date >= train_start]
+    start = history_start(train_start, spec.stats_history(config))
+    if start is not None:
+        df = df[df["race_date"].dt.date >= start]
+    # 履歴が学習時と同じ日から始まっていないと、タイム指数の基準タイムが学習時と別の年から作られる
+    history_check = integrity.check_history_start(df, train_start, spec.stats_history(config))
+    if history_check["status"] == "fail":
+        print(integrity.summarize([history_check]))
+        print("データセットの履歴が短すぎます。学習時と同じ期間を含む版で build_dataset.py をやり直してください。")
+        return 2
     df, targets = live_rows(df)
     if args.race_id:
         targets = targets[targets["race_id"].isin(args.race_id)]
@@ -116,6 +124,13 @@ def main(argv: list[str] | None = None, *, expected_model: str | None = None) ->
     except IntegrityError as error:
         print(error)
         return 2
+    # 出馬表（data_kubun 1/2）に馬体重は入っていないので、総合モデルの c_weight / c_zogen は学習時と違い
+    # 全頭欠損で予想することになる。黙って進めず知らせる（docs/ml/README.md §12.3）
+    missing = [c for c in ("c_weight", "c_zogen")
+               if c in features.frame.columns and features.frame.loc[targets.index, c].isna().all()]
+    if missing:
+        print(f"※ {', '.join(missing)} は出馬表に馬体重が無いため全頭欠損のまま予想します（学習時は入っていた）。"
+              " 発走前の馬体重を取り込むか、これらを外して学習し直すかは docs/ml/README.md §12.3。")
     pred = model.predict(features, targets, fold="live")
     reasons = spec.describe(targets, features, names)
     view = pred.merge(targets[["race_id", "umaban", "bamei"]].join(reasons),

@@ -9,6 +9,7 @@ build_dataset.py は fail があっても保存はする（原因を調べるの
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from datetime import date
 
 import numpy as np
 import pandas as pd
@@ -177,6 +178,28 @@ def check_split(train: pd.DataFrame, valid: pd.DataFrame, test: pd.DataFrame) ->
                            for name, p in parts})
 
 
+def check_history_start(history: pd.DataFrame, train_start: date, stats_history: str) -> dict:
+    """履歴が設定どおりの日（"lead:N" なら学習開始日の N 年前）から始まっているか。
+
+    総合モデルのタイム指数は履歴の最初の speed_standard_years 年の1着から基準タイムを作る。
+    データが学習開始日の N 年前まで無いと（40年の窓など）、基準タイムが学習期間の結果から作られ、
+    学習の行自身の結果が特徴量に入る。黙って短い履歴で続けず fail にする。"window" / "all" は
+    見ない（学習期間の切り詰めは split.Window.truncated が持つ）。
+    """
+    from keiba_ml.dataset.split import TRUNCATION_TOLERANCE_DAYS, history_start
+
+    start = history_start(train_start, stats_history)
+    if start is None or not stats_history.startswith("lead:"):
+        return _result("history_start", "ok", "履歴の開始日の確認は lead:N のときだけ",
+                       stats_history=stats_history)
+    first = history["race_date"].min().date() if len(history) else None
+    late = first is None or (first - start).days > TRUNCATION_TOLERANCE_DAYS
+    return _result("history_start", "fail" if late else "ok",
+                   "履歴が学習開始日の lead 年前から始まっているか"
+                   "（タイム指数の基準タイムを学習期間の結果で作らないため）",
+                   expected_start=str(start), actual_start=str(first), stats_history=stats_history)
+
+
 def check_asof_sample(history: pd.DataFrame, feature_frame: pd.DataFrame, *, path: str,
                       shrinkage: float, exclude_self: bool,
                       sample: int = 200, seed: int = 0, only: pd.Index | None = None) -> dict:
@@ -288,6 +311,60 @@ def check_extended_asof_sample(history: pd.DataFrame, feature_frame: pd.DataFram
                                        "recomputed": float(value), "feature": float(feature)})
     return _result("extended_asof_sample", "ok" if not mismatches else "fail",
                    f"拡張の産駒成績（{', '.join(names)}）を総当たりで検算して一致するか",
+                   checked=int(len(picked)), mismatches=mismatches[:10])
+
+
+def check_form_asof_sample(history: pd.DataFrame, feature_frame: pd.DataFrame, *,
+                           people_shrinkage: float, sample: int = 100, seed: int = 0,
+                           only: pd.Index | None = None) -> dict:
+    """総合モデルの本人の過去走・騎手の特徴量（features.form）を総当たりで検算する。
+
+    無作為の行で、前走の走りの質（``f_pf_last1``）・本人の3着以内 A/E（``f_ae_own``）・
+    騎手の A/E（``h_jockey_ae``）を「その日より前の行だけ」から計算し直して比べる。
+    """
+    from keiba_ml.features.base import MISSING
+    from keiba_ml.features.form import OWN_SHRINKAGE
+    from keiba_ml.features.pedigree import beat_fraction, expected_top3
+
+    names = ["f_pf_last1", "f_ae_own", "h_jockey_ae"]
+    absent = [c for c in names if c not in feature_frame.columns]
+    if absent:
+        return _result("form_asof_sample", "warn", f"{absent} がありません。")
+    hist = history[history["has_result"]].copy()
+    hist["_pf"] = beat_fraction(hist)
+    hist["_e3"] = expected_top3(hist["field_size"])
+    jockey = hist["kisyu_code"].fillna("").astype(str).str.strip()
+    # 前走の値は own_history_features と同じく「結果の有無を問わず直前の行」から取る（結果の無い行
+    # が間に挟まれば欠損になる）。結果のある行だけから取ると、その場合に検算が食い違う
+    every = history.assign(_pf=beat_fraction(history))
+    candidates = history.index if only is None else history.index.intersection(only)
+    if len(candidates) == 0:
+        return _result("form_asof_sample", "warn", "検算できる行がありません。")
+    rng = np.random.default_rng(seed)
+    picked = rng.choice(candidates, size=min(sample, len(candidates)), replace=False)
+    mismatches = []
+    for idx in picked:
+        row = history.loc[idx]
+        before = hist["race_date"] < row["race_date"]
+        own = hist[before & (hist["ketto_num"] == row["ketto_num"])]
+        prev = every[(every["race_date"] < row["race_date"])
+                     & (every["ketto_num"] == row["ketto_num"])].sort_values(
+            "race_date", kind="mergesort")
+        last = prev["_pf"].iloc[-1] if len(prev) else np.nan
+        ae = (own["target_top3"].sum() + OWN_SHRINKAGE) / (own["_e3"].sum() + OWN_SHRINKAGE)
+        # 欠損（pd.NA）と MISSING の騎手コードは people_features と同じく「騎手なし」として扱う
+        code = "" if pd.isna(row["kisyu_code"]) else str(row["kisyu_code"]).strip()
+        jk = hist[before & (jockey == code)] if code not in ("", MISSING) else hist.iloc[0:0]
+        jae = (jk["target_top3"].sum() + people_shrinkage) / (jk["_e3"].sum() + people_shrinkage)
+        for name, value in (("f_pf_last1", last), ("f_ae_own", ae), ("h_jockey_ae", jae)):
+            got = float(feature_frame.at[idx, name])
+            same = (np.isnan(value) and np.isnan(got)) or \
+                np.isclose(value, got, rtol=1e-4, atol=1e-5)   # 特徴量は float32
+            if not same:
+                mismatches.append({"index": int(idx), "column": name,
+                                   "recomputed": float(value), "feature": got})
+    return _result("form_asof_sample", "ok" if not mismatches else "fail",
+                   f"本人の過去走・騎手の特徴量（{', '.join(names)}）を総当たりで検算して一致するか",
                    checked=int(len(picked)), mismatches=mismatches[:10])
 
 
