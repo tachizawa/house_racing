@@ -242,6 +242,8 @@ def build_pedigree(sk: pd.DataFrame, hn: pd.DataFrame, um: pd.DataFrame, *,
             "rate": (link_agreed / link_checked) if link_checked else None,
         },
         "filled_from_hn": filled_from_hn,
+        # 生産者コードが埋まっている馬の割合（integrity.check_breeder_code が見る）
+        "breeder_code_fill_rate": float((ped["breeder_code"] != "").mean()) if len(ped) else 0.0,
     }
     return ped, stats
 

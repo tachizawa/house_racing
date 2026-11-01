@@ -85,12 +85,33 @@ def test_own_runs_do_not_enter_quality_features():
     df.loc[~solo & (df["ped_D"] == "solo"), "ped_D"] = "other"
     without = asof_mean(df, ["ped_D"], "_pf", include, prior_n=10.0, exclude_self=True)
     with_self = asof_mean(df, ["ped_D"], "_pf", include, prior_n=10.0, exclude_self=False)
+    # 縮小の先の全体の平均も本人を除いたもの（= 本人以外の全馬の as-of 平均）になる
     overall = asof_mean(df.assign(ped_D="all"), ["ped_D"], "_pf", include, prior_n=1e-12,
-                        exclude_self=False)
+                        exclude_self=True)
     rows = df.index[solo][1:]   # 2走目以降（本人の過去走がある）
     assert len(rows) > 0
     assert np.allclose(without[rows], overall[rows], atol=1e-6)
     assert not np.allclose(with_self[rows], without[rows])
+
+
+def test_own_runs_do_not_enter_the_shrinkage_prior():
+    """本人の過去走の結果を変えても、本人の stx_ の値（縮小の先の全体の平均を含む）は変わらない。"""
+    df = prepare(_random_frame())
+    df["_pf"] = beat_fraction(df)
+    include = df["has_result"] & df["_pf"].notna()
+    horse = df["ketto_num"].iloc[0]
+    own = df["ketto_num"] == horse
+    rows = df.index[own][1:]   # 2走目以降（本人の過去走がある）
+    assert len(rows) > 0
+    changed = df.copy()
+    changed.loc[own, "_pf"] = 1.0 - changed.loc[own, "_pf"]
+    before = asof_mean(df, ["ped_D"], "_pf", include, prior_n=10.0, exclude_self=True)
+    after = asof_mean(changed, ["ped_D"], "_pf", include, prior_n=10.0, exclude_self=True)
+    assert np.allclose(before[rows], after[rows])
+    # 本人を除かない集計では、同じ変更が本人の値を動かす（テストが変更を検出できることの確認）
+    with_self = asof_mean(df, ["ped_D"], "_pf", include, prior_n=10.0, exclude_self=False)
+    with_self2 = asof_mean(changed, ["ped_D"], "_pf", include, prior_n=10.0, exclude_self=False)
+    assert not np.allclose(with_self[rows], with_self2[rows])
 
 
 def test_extended_asof_check_agrees_and_detects_leaks():
@@ -146,6 +167,17 @@ def test_parent_racing_uses_only_races_before_the_foal_was_born():
     assert integrity.check_feature_columns(list(feats.columns))["status"] == "ok"
 
 
+def test_parent_racing_accepts_hn_without_columns():
+    """HN が空（列も無い）でも落ちず、どの祖先も「中央の成績を引けない」になる。"""
+    from keiba_ml.dataset.build import attach_parent_racing, parent_racing_columns
+
+    df = _random_frame(n=24)
+    out = attach_parent_racing(df, pd.DataFrame())
+    assert set(parent_racing_columns()) <= set(out.columns)
+    assert (out["parent_D_n"] == 0).all() and (out["parent_D_linked"] == 0).all()
+    assert len(out) == len(df)
+
+
 def test_parent_racing_requires_schema3_columns():
     import pytest
 
@@ -180,6 +212,22 @@ def test_breeder_stats_require_breeder_code():
 
     with pytest.raises(ValueError, match="breeder_code"):
         build_features(_random_frame(), pedigree=replace(PED, breeder_stats=True), features=CTX)
+
+
+def test_breeder_code_fill_rate_is_reported_and_checked():
+    """SK に生産者コードが無いと brd_* が定数になるので、埋まり具合を統計に残して warn で知らせる。"""
+    from keiba_ml.dataset.pedigree import build_pedigree
+
+    sk = pd.DataFrame({"ketto_num": ["A", "B"], "breeder_code": ["", "X1"]})
+    ped, stats = build_pedigree(sk, pd.DataFrame(), pd.DataFrame(),
+                                generations=3, inbreeding_generations=3)
+    assert stats["breeder_code_fill_rate"] == 0.5
+    assert integrity.check_breeder_code(stats)["status"] == "ok"
+    assert integrity.check_breeder_code({**stats, "breeder_code_fill_rate": 0.0})["status"] == "warn"
+    assert integrity.check_breeder_code({})["status"] == "warn"
+    _, empty = build_pedigree(sk.drop(columns="breeder_code"), pd.DataFrame(), pd.DataFrame(),
+                              generations=3, inbreeding_generations=3)
+    assert empty["breeder_code_fill_rate"] == 0.0
 
 
 def test_birth_doy_is_day_of_year():

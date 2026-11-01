@@ -56,7 +56,10 @@ def attach_parent_racing(df: pd.DataFrame, hn: pd.DataFrame) -> pd.DataFrame:
     """
     from keiba_ml.features.pedigree import beat_fraction, expected_top3
 
-    hn = hn if "ketto_num" in hn.columns else hn.assign(ketto_num="")
+    # HN が空（列も無い）でも通す。_latest は空の版しか無いと列の無い表を返す
+    for col in ("hansyoku_num", "ketto_num"):
+        if col not in hn.columns:
+            hn = hn.assign(**{col: ""})
     linked = hn[hn["ketto_num"].fillna("") != ""].drop_duplicates("hansyoku_num", keep="last")
     num2ketto = dict(zip(linked["hansyoku_num"], linked["ketto_num"]))
     res = df[df["has_result"]].copy()

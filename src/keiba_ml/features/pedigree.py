@@ -226,16 +226,19 @@ def asof_mean(df: pd.DataFrame, keys: Sequence[str], column: str, include: pd.Se
     """keys ごとの column の as-of 平均（レース日より前・exclude_self なら本人を除く）。
 
     全体の平均へ prior_n 件ぶん縮める。全体の平均も as-of（その日より前の include の行
-    すべて）で、履歴が1行も無い日は 0。履歴の無い祖先は全体の平均になる。
+    すべて。exclude_self なら本人の過去走を除く）で、履歴が1行も無い日は 0。
+    履歴の無い祖先は全体の平均になる。
     """
     d = df.assign(_one=1.0, _all="all")
     d[column] = d[column].where(include)
     d["_one"] = d["_one"].where(include & d[column].notna(), 0.0)
     columns = {"s": (column, "sum"), "c": ("_one", "sum")}
     total = asof(d, keys, columns, include=include)
+    overall = asof(d, ["_all"], columns, include=include)
     if exclude_self:
         total = total - asof(d, [*keys, "ketto_num"], columns, include=include)
-    overall = asof(d, ["_all"], columns, include=include)
+        # 縮小の先の全体の平均にも本人の過去走を残さない（残すと薄いが本人の成績が混ざる）
+        overall = overall - asof(d, ["_all", "ketto_num"], columns, include=include)
     prior_mean = (overall["s"] / overall["c"].where(overall["c"] > 0)).fillna(0.0)
     return (total["s"] + prior_n * prior_mean) / (total["c"] + prior_n)
 
@@ -307,12 +310,13 @@ def race_relative_features(frame: pd.DataFrame, race_id: pd.Series) -> pd.DataFr
     out = pd.DataFrame(index=frame.index)
     if not cols:
         return out
-    grouped = frame[cols].groupby(race_id.to_numpy())
-    mean = grouped.transform("mean")
-    pct = grouped.rank(pct=True)
+    # 列ごとに計算して float32 で入れる。表ごとにまとめると、約30列ぶんの平均と百分位（百分位は
+    # float64）を同時に持つことになり、40年ぶんでは数百MB の山ができる。transform / rank は
+    # 列ごとに独立なので、値はまとめて計算したときと同じ。
+    grouped = frame.groupby(race_id.to_numpy())
     for c in cols:
-        out[f"rel_{c}_diff"] = (frame[c] - mean[c]).astype(np.float32)
-        out[f"rel_{c}_pct"] = pct[c].astype(np.float32)
+        out[f"rel_{c}_diff"] = (frame[c] - grouped[c].transform("mean")).astype(np.float32)
+        out[f"rel_{c}_pct"] = grouped[c].rank(pct=True).astype(np.float32)
     return out
 
 

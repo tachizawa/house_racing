@@ -169,7 +169,9 @@ class PedigreeConfig:
     #: 既定は False（これを足す前の実行の config.json を読むと、前と同じ特徴量になる）。
     #: 2026-10-30 に実データで決めた値は configs/ml/pedigree.toml（docs/ml/README.md §11）。
     extended_stats: bool = False
-    #: 主な産駒成績を、同じレースの出走馬の中での差と順位にした列（``rel_``）を足すか。
+    #: 主な産駒成績（``st_`` / ``stx_``）に加えて、親自身の成績（``par_``）・生産者の成績
+    #: （``brd_``）・生まれ日（``birth_doy``）のうち有効な列を、同じレースの出走馬の中での差と
+    #: 順位にした列（``rel_``）を足すか。対象の列は features.pedigree.RELATIVE_SOURCES。
     #: 既定は False（理由は extended_stats と同じ）。
     race_relative: bool = False
     #: 父・母・母父**自身**の中央での成績（``par_``。その馬が生まれる前のレースだけ）を足すか。
