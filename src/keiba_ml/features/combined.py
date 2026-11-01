@@ -22,14 +22,14 @@ DISTANCE_PREFIXES: tuple[str, ...] = ("own_", "dist_", "ped_")
 
 def build_features(df: pd.DataFrame, config: MLConfig) -> FeatureSet:
     c = config.combined
+    # prepare() は補助列を足した表のコピー。血統側と人の特徴量で共有し、1回だけ作る
+    prepared = pedigree_features.prepare(df)
     if c.use_pedigree:
         base = pedigree_features.build_features(df, pedigree=config.pedigree,
-                                                features=config.features)
+                                                features=config.features, prepared=prepared)
         frame, cats, nums = base.frame, list(base.cat_features), list(base.num_features)
     else:
-        prepared = pedigree_features.prepare(df)
         frame, cats, nums = context_columns(prepared, config.features.context)
-    prepared = pedigree_features.prepare(df)
     speed = form.speed_figures(df, standard_years=c.speed_standard_years)
     parts = [
         form.own_history_features(df),

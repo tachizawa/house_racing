@@ -178,6 +178,15 @@ def _combined_checks(history: pd.DataFrame, features: FeatureSet, config: MLConf
                      only: pd.Index | None) -> list[dict]:
     checks = _pedigree_checks(history, features, config, only) if config.combined.use_pedigree \
         else []
+    if config.combined.use_distance:
+        # 距離適性の列は d_ を付けて入れてある（combined_features.DISTANCE_PREFIXES）。検算は
+        # 距離適性モデルの名前で見るので、d_ を外した表を渡す
+        columns = set(features.frame.columns)
+        back = {name: name[2:] for name in columns
+                if name.startswith("d_") and name[2:] not in columns}
+        checks.append(integrity.check_distance_asof_sample(
+            history, features.frame.rename(columns=back), config=config.distance,
+            sample=100, only=only))
     checks.append(integrity.check_form_asof_sample(
         history, features.frame, people_shrinkage=config.combined.people_shrinkage,
         sample=100, only=only))

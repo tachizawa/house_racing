@@ -183,7 +183,10 @@ def build_runners(races: pd.DataFrame, runners: pd.DataFrame, *,
     df["result_margin_sec"] = margin.where(has & can_finish).astype(float)
     weight = pd.to_numeric(df["result_ba_taijyu_kg"].replace("", np.nan), errors="coerce")
     low, high = WEIGHT_RANGE_KG
-    df["result_weight_kg"] = weight.where(has & (weight >= low) & (weight <= high)).astype(float)
+    # 馬体重は発走の約1時間前に発表される直前の情報なので、結果の有無では消さない（出馬表の行に
+    # 入っていれば使う）。範囲外の 000（未発表・取消）と 999（計不）は欠損。2026-09-24 の版の
+    # 出馬表（data_kubun 1/2、622 行）はすべて 000 で、前日予想では欠損になる（docs/ml/README.md §12.3）
+    df["result_weight_kg"] = weight.where((weight >= low) & (weight <= high)).astype(float)
     keep = ["race_id", "race_date", "hasso_at", "year", "month", "jyo_cd", "kyori_m",
             "track_kind", "distance_band", "baba_cd", "grade_tier", "field_size",
             "umaban", "ketto_num", "bamei", "sex_cd", "barei_raw", "age_from_barei",
@@ -193,9 +196,12 @@ def build_runners(races: pd.DataFrame, runners: pd.DataFrame, *,
     for col in _RUNNER_OPTIONAL:
         if col not in df:
             df[col] = ""
-    # 結果の列は、結果の無い行（出馬表）では空にする（確定前の値を過去走として読まない）
+    # 結果の列は、結果の無い行（出馬表）では空にする（確定前の値を過去走として読まない）。
+    # 競走中止・失格（4/5）の走破タイム・4角・上がりも、着差と同じく走りとして読まない
+    # （keiba.models の has_time と同じ扱い。5年版の 4/5 の 6,064 行のうち 4角 2,598・タイム 303・
+    # 上がり 217 行に値が入っていた）
     for col in ("result_time_sec", "result_jyuni_4c", "result_last_3f_sec"):
-        df[col] = df[col].where(has, "")
+        df[col] = df[col].where(has & can_finish, "")
     keep += list(_RUNNER_OPTIONAL)
     df = df[keep].rename(columns={"data_kubun": "runner_data_kubun", **_RUNNER_OPTIONAL_RENAME})
     return df.sort_values(["race_date", "race_id", "umaban"], kind="mergesort").reset_index(drop=True)

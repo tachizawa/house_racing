@@ -113,7 +113,8 @@ def test_form_asof_check_agrees_and_detects_leaks():
                                             sample=40)["status"] == "fail"
 
 
-def test_combined_features_have_no_result_columns_and_no_odds():
+def _pedigree_frame() -> pd.DataFrame:
+    """_frame に、血統・距離適性の特徴量が要る列（祖先・生まれ・近交）を足したもの。"""
     df = _frame()
     for col in ("birth_date", "breeder_code"):
         df[col] = ""
@@ -121,6 +122,11 @@ def test_combined_features_have_no_result_columns_and_no_odds():
               "DDD"):
         df[f"ped_{p}"] = f"{p}1"
     df[["inbreeding_f", "n_cross", "closest_cross"]] = [0.0, 0, np.nan]
+    return df
+
+
+def test_combined_features_have_no_result_columns_and_no_odds():
+    df = _pedigree_frame()
     config = MLConfig(pedigree=PedigreeConfig(generations=3, inbreeding_generations=3),
                       combined=CombinedConfig(stats_history="lead:1", speed_standard_years=1,
                                               use_distance=False))
@@ -138,6 +144,81 @@ def test_history_start_lead_years():
     assert history_start(date(2014, 1, 1), "all") is None
     with pytest.raises(ValueError):
         history_start(date(2014, 1, 1), "lead:x")
+
+
+def test_combined_checks_cover_distance_features_and_detect_leaks():
+    """use_distance のとき、d_ を付けた距離適性の列も未来情報の検算を受ける。"""
+    df = _pedigree_frame()
+    config = MLConfig(pedigree=PedigreeConfig(generations=3, inbreeding_generations=3),
+                      combined=CombinedConfig(stats_history="lead:1", speed_standard_years=1))
+    spec = registry.get("combined")
+    fs = spec.build_features(df, config)
+    assert "d_dist_minus_mean" in fs.columns
+    status = {c["name"]: c["status"] for c in spec.asof_checks(df, fs, config, None)}
+    assert status["distance_asof_sample"] == "ok", status
+    assert set(status.values()) == {"ok"}, status
+    broken = replace(fs, frame=fs.frame.assign(
+        d_dist_minus_mean=fs.frame["d_dist_minus_mean"].astype(float) + 1.0))
+    bad = {c["name"]: c["status"] for c in spec.asof_checks(df, broken, config, None)}
+    assert bad["distance_asof_sample"] == "fail"
+
+
+def test_form_check_mirrors_production_when_an_unresulted_row_is_in_between():
+    """結果の無い行（中止になったレースなど）が挟まると前走の値は欠損。検算も同じ見方をする。"""
+    df = _frame()
+    horse = list(df.index[df["ketto_num"] == "H03"])
+    mid = horse[len(horse) // 2]
+    df.loc[mid, "has_result"] = False
+    df.loc[mid, ["result_rank", "target_top3", "target_win", "result_margin_sec"]] = np.nan
+    df.loc[mid, ["result_time_sec", "result_jyuni_4c", "result_last_3f_sec"]] = ""
+    feats = _all_form(df)
+    nxt = horse[horse.index(mid) + 1]
+    assert np.isnan(feats.at[nxt, "f_pf_last1"])
+    ok = integrity.check_form_asof_sample(df, feats, people_shrinkage=10.0, sample=5,
+                                          only=pd.Index([nxt]))
+    assert ok["status"] == "ok", ok
+
+
+def test_form_check_treats_missing_jockey_codes_like_production():
+    df = _frame()
+    sentinel, blank = df.index[300], df.index[301]
+    df.loc[sentinel, "kisyu_code"] = "NA"
+    df.loc[blank, "kisyu_code"] = ""
+    feats = _all_form(df)
+    assert feats.at[sentinel, "h_jockey_ae"] == 1.0 and feats.at[blank, "h_jockey_ae"] == 1.0
+    rows = pd.Index([sentinel, blank])
+    assert integrity.check_form_asof_sample(df, feats, people_shrinkage=10.0, sample=2,
+                                            only=rows)["status"] == "ok"
+    # 欠損が pd.NA で来ても落ちず、空のコードと同じに扱う
+    na = df.astype({"kisyu_code": object})
+    na.loc[blank, "kisyu_code"] = pd.NA
+    assert integrity.check_form_asof_sample(na, feats, people_shrinkage=10.0, sample=2,
+                                            only=rows)["status"] == "ok"
+
+
+def test_history_start_check_rejects_truncated_lead():
+    from datetime import date
+
+    df = _frame()   # 2018-01-06 から
+    assert integrity.check_history_start(df, date(2019, 1, 1), "lead:1")["status"] == "ok"
+    late = integrity.check_history_start(df, date(2018, 6, 1), "lead:1")   # 2017-06-01 から要る
+    assert late["status"] == "fail" and late["detail"]["expected_start"] == "2017-06-01"
+    assert integrity.check_history_start(df, date(2024, 1, 1), "window")["status"] == "ok"
+    assert integrity.check_history_start(df.iloc[0:0], date(2019, 1, 1), "lead:1")["status"] \
+        == "fail"
+
+
+def test_history_checks_only_apply_to_lead_histories():
+    """学習・評価の検査一覧に history_start が入るのは lead:N のときだけ（血統・距離適性の一覧は変えない）。"""
+    from datetime import date
+
+    from keiba_ml.experiment import _history_checks
+
+    df = _frame()
+    assert _history_checks(df, date(2019, 1, 1), "window") == []
+    assert _history_checks(df, date(2019, 1, 1), "all") == []
+    checks = _history_checks(df, date(2019, 1, 1), "lead:1")
+    assert [c["name"] for c in checks] == ["history_start"] and checks[0]["status"] == "ok"
 
 
 def test_combined_config_validation():

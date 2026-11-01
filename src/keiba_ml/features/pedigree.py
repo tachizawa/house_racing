@@ -377,10 +377,13 @@ def breeder_features(df: pd.DataFrame, pedigree: PedigreeConfig) -> pd.DataFrame
     return out
 
 
-def build_features(df: pd.DataFrame, *, pedigree: PedigreeConfig,
-                   features: FeatureConfig) -> FeatureSet:
-    """特徴量表を作る。df は prepare() 前のデータセットでよい。"""
-    prepared = prepare(df)
+def build_features(df: pd.DataFrame, *, pedigree: PedigreeConfig, features: FeatureConfig,
+                   prepared: pd.DataFrame | None = None) -> FeatureSet:
+    """特徴量表を作る。df は prepare() 前のデータセットでよい。
+
+    prepared に prepare(df) の結果を渡すと作り直さない（総合モデルが同じ表を2回作らないため）。
+    """
+    prepared = prepare(df) if prepared is None else prepared
     generations = pedigree.categorical_generations
     cat_paths = [p for p in (all_paths(generations) if generations else ())
                  if p not in pedigree.categorical_exclude]

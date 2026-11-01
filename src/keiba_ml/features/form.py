@@ -255,10 +255,10 @@ def relative_features(frame: pd.DataFrame, race_id: pd.Series) -> pd.DataFrame:
     out = pd.DataFrame(index=frame.index)
     if not cols:
         return out
-    grouped = frame[cols].groupby(race_id.to_numpy())
-    mean = grouped.transform("mean")
-    pct = grouped.rank(pct=True)
+    # 列ごとに計算して float32 で入れる（features.pedigree.race_relative_features と同じ理由。
+    # 約20列の平均と百分位を float64 で同時に持たない）。値はまとめて計算したときと同じ
+    grouped = frame.groupby(race_id.to_numpy())
     for c in cols:
-        out[f"rel_{c}_diff"] = (frame[c] - mean[c]).astype(np.float32)
-        out[f"rel_{c}_pct"] = pct[c].astype(np.float32)
+        out[f"rel_{c}_diff"] = (frame[c] - grouped[c].transform("mean")).astype(np.float32)
+        out[f"rel_{c}_pct"] = grouped[c].rank(pct=True).astype(np.float32)
     return out
