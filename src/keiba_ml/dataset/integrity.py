@@ -122,6 +122,21 @@ def check_birth_before_race(df: pd.DataFrame) -> dict:
                    "生年がレースの年より前か", violations=count)
 
 
+def check_breeder_code(ped_stats: dict) -> dict:
+    """生産者コードが埋まっているか。
+
+    SK に生産者コードが無いと build_pedigree は全頭 "" にする。列はあるので breeder_features は
+    止まらず、brd_* が全頭 1.0 の定数になって黙って効かなくなる。warn で知らせる（fail にしないのは、
+    生産者を使わない設定でも同じデータセットを使うため）。
+    """
+    rate = ped_stats.get("breeder_code_fill_rate")
+    if rate is None:
+        return _result("breeder_code", "warn", "生産者コードの埋まり具合が統計にありません。")
+    return _result("breeder_code", "ok" if rate > 0 else "warn",
+                   "生産者コード（breeder_code）が埋まっている馬の割合。0 なら pedigree.breeder_stats の"
+                   " brd_* が全頭 1.0 の定数になる", rate=rate)
+
+
 def check_dataset(df: pd.DataFrame, ped_stats: dict, config: MLConfig) -> list[dict]:
     return [
         check_unique_runner(df),
@@ -131,6 +146,7 @@ def check_dataset(df: pd.DataFrame, ped_stats: dict, config: MLConfig) -> list[d
         check_pedigree_coverage(df),
         check_parent_link(ped_stats),
         check_birth_before_race(df),
+        check_breeder_code(ped_stats),
     ]
 
 
@@ -220,6 +236,59 @@ def check_asof_samples(history: pd.DataFrame, feature_frame: pd.DataFrame, *,
                    f"産駒成績の A/E（{', '.join(paths)}）を総当たりで検算して一致するか",
                    by_path={p: {"status": r["status"], "message": r["message"], **r["detail"]}
                             for p, r in by_path.items()})
+
+
+def check_extended_asof_sample(history: pd.DataFrame, feature_frame: pd.DataFrame, *,
+                               paths: Sequence[str], shrinkage: float, exclude_self: bool,
+                               sample: int = 100, seed: int = 0,
+                               only: pd.Index | None = None) -> dict:
+    """拡張の産駒成績（features.pedigree.extended_stat_features）を総当たりで検算する。
+
+    無作為の行で、祖先ごとの産駒の走りの質の平均（``stx_<位置>_pf``）と出走した格の平均
+    （``stx_<位置>_tier_mean``）を「その日より前の行だけ」から計算し直して比べる。
+    縮小の先の全体の平均も、その日より前の行だけから出す（exclude_self なら本人の過去走を除く）。
+    """
+    from keiba_ml.features.pedigree import beat_fraction
+
+    names = [f"stx_{p}_{k}" for p in paths for k in ("pf", "tier_mean")]
+    absent = [c for c in names if c not in feature_frame.columns]
+    if absent:
+        return _result("extended_asof_sample", "warn", f"{absent} がありません。")
+    hist = history[history["has_result"]].copy()
+    hist["_pf"] = beat_fraction(hist)
+    hist["_tier"] = pd.to_numeric(hist["grade_tier"], errors="coerce").astype(float)
+    candidates = history.index if only is None else history.index.intersection(only)
+    if len(candidates) == 0:
+        return _result("extended_asof_sample", "warn", "検算できる行がありません。")
+    rng = np.random.default_rng(seed)
+    picked = rng.choice(candidates, size=min(sample, len(candidates)), replace=False)
+    mismatches = []
+    kinds = (("pf", "_pf"), ("tier_mean", "_tier"))
+    for idx in picked:
+        row = history.loc[idx]
+        before = hist[hist["race_date"] < row["race_date"]]
+        # 縮小の先の全体の平均は祖先の位置によらないので、行ごとに1回だけ出す
+        pool = before[before["ketto_num"] != row["ketto_num"]] if exclude_self else before
+        base = {}
+        for kind, col in kinds:
+            overall = pool[col].dropna()
+            base[kind] = float(overall.mean()) if len(overall) else 0.0
+        for path in paths:
+            key = row[f"ped_{path}"]
+            prior = before[before[f"ped_{path}"] == key] if key not in ("", "NA") \
+                else before.iloc[0:0]
+            if exclude_self:
+                prior = prior[prior["ketto_num"] != row["ketto_num"]]
+            for kind, col in kinds:
+                values = prior[col].dropna()
+                value = (values.sum() + shrinkage * base[kind]) / (len(values) + shrinkage)
+                feature = feature_frame.at[idx, f"stx_{path}_{kind}"]
+                if not np.isclose(value, feature, rtol=1e-4, atol=1e-5):   # 特徴量は float32
+                    mismatches.append({"index": int(idx), "column": f"stx_{path}_{kind}",
+                                       "recomputed": float(value), "feature": float(feature)})
+    return _result("extended_asof_sample", "ok" if not mismatches else "fail",
+                   f"拡張の産駒成績（{', '.join(names)}）を総当たりで検算して一致するか",
+                   checked=int(len(picked)), mismatches=mismatches[:10])
 
 
 def _distance_m(values) -> pd.Series:

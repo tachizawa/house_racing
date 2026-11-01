@@ -82,9 +82,14 @@ def _pedigree_baselines(features: FeatureSet, rows: pd.DataFrame,
 def _pedigree_checks(history: pd.DataFrame, features: FeatureSet, config: MLConfig,
                      only: pd.Index | None) -> list[dict]:
     p = config.pedigree
-    return [integrity.check_asof_samples(history, features.frame, paths=p.stat_paths,
-                                         shrinkage=p.shrinkage, exclude_self=p.exclude_self,
-                                         sample=100, only=only)]
+    checks = [integrity.check_asof_samples(history, features.frame, paths=p.stat_paths,
+                                           shrinkage=p.shrinkage, exclude_self=p.exclude_self,
+                                           sample=100, only=only)]
+    if p.extended_stats:
+        checks.append(integrity.check_extended_asof_sample(
+            history, features.frame, paths=pedigree_features.QUALITY_PATHS,
+            shrinkage=p.shrinkage, exclude_self=p.exclude_self, sample=100, only=only))
+    return checks
 
 
 def _pedigree_describe(rows: pd.DataFrame, features: FeatureSet,
