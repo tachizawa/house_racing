@@ -36,7 +36,7 @@ DEFAULT_CONFIG_PATH = CONFIG_DIR / "pedigree.toml"
 
 #: 登録してある個別モデルの名前。registry.MODELS のキーと一致させる（テストで固定）。
 #: config から registry を import すると循環するので、名前だけをここに置く。
-MODEL_KINDS: tuple[str, ...] = ("pedigree", "distance", "combined")
+MODEL_KINDS: tuple[str, ...] = ("pedigree", "distance", "combined", "course")
 
 
 def config_path(model: str) -> Path:
@@ -243,6 +243,75 @@ class CombinedConfig:
 
 
 @dataclass(frozen=True)
+class CourseConfig:
+    """コース適性モデル（features/course.py）の設定。
+
+    距離適性モデルと同じく「その馬がどれだけ強いか」ではなく「今回のコースがその馬に合うか」だけを
+    見る。本人の特徴量は普段の走りとの差と経験の数だけ（強さの水準は入れない）。
+    """
+
+    #: 条件（レースの条件と馬の性齢）。
+    context: tuple[str, ...] = (
+        "track_kind", "kyori_m", "distance_band", "jyo_cd", "baba_cd", "age", "sex_cd",
+        "field_size",
+    )
+    #: 履歴を学習期間の開始日以降に限るか（"window"）、全期間を使うか（"all"）。
+    stats_history: str = "window"
+    #: 走りの質のどれを使うか（"pf" 負かした割合 / "pm" 1km あたりのタイム差）。
+    qualities: tuple[str, ...] = ("pf", "pm")
+    #: 区分ごとの走りを、比べる相手（本人の同じ芝ダの走りなど）に向けて縮める強さ（何走ぶん）。
+    own_shrinkage: float = 3.0
+    #: タイム差（1着馬との差）の上限（秒）。
+    margin_cap_sec: float = 3.0
+    #: 産駒のコースの傾向を出す祖先の位置（父・母父）。
+    pedigree_paths: tuple[str, ...] = ("S", "DS")
+    #: 産駒の区分ごとの走りを縮める強さ（何走ぶん）。
+    pedigree_shrinkage: float = 30.0
+    #: 産駒の傾向から本人の過去走を除く。
+    exclude_self: bool = True
+    #: コース・距離 × 馬番の位置（内・中・外）の as-of 3着以内 A/E と馬番の位置を入れるか。
+    draw_bias: bool = True
+    #: 本人の相対的な走りに足す分け方（features.course.EXTRA_GROUPS のキー）。
+    #: "venue_dband" 競馬場 × 芝ダ × 距離帯 / "trip" 所属から見た地元・遠征・北海道。
+    extra_groups: tuple[str, ...] = ()
+    #: decay_days > 0 のとき、本人の位置取り（own_style）の平均にも同じ減衰をかけるか。
+    decay_style: bool = False
+    #: 今回の馬場状態（良・稍重・重以上）を使うか。馬場状態は当日に発表されるので、前日の出馬表では
+    #: 欠損になる。False なら going の分け方を作らない（context の baba_cd は別に外すこと）。
+    use_going: bool = True
+    #: 本人の相対的な走りを、古い走りほど軽くする減衰の日数（exp(−経過日数 / decay_days)）。0 なら減衰しない。
+    decay_days: float = 0.0
+    #: 産駒の傾向に足す分け方（features.course.PEDIGREE_EXTRA_GROUPS のキー）。
+    pedigree_extra_groups: tuple[str, ...] = ()
+    #: 馬番・前残りの傾向を馬場状態（良・稍重・重以上）別にも集計するか（bias_*_going_ae）。
+    bias_by_going: bool = False
+    #: 主な列の、同じレースの出走馬の平均との差（rr_）を足すか（features.course.RELATIVE_SOURCES）。
+    race_relative: bool = False
+    #: 馬番の位置（0〜1）を何区分に分けて馬番の A/E を出すか（3 = 内・中・外）。
+    draw_zones: int = 3
+    #: 4角の位置（脚質）とコースの前残りの傾向を入れるか。本人の4角の位置は強さと相関するので既定は False。
+    style: bool = False
+    #: 本人の4角の位置を強さで補正する傾き（pos + slope × (pf − 0.5)）。0 なら補正しない。
+    #: 0.58 は 2013〜2022年の馬ごとの平均の位置と平均の pf の傾き（features/course.py の docstring）。
+    style_strength_slope: float = 0.58
+    #: style のとき、前残りの A/E を同じ芝ダ × 距離帯の全コースの A/E で割った列（bias_front_rel /
+    #: style_fit_rel）も足すか。
+    front_relative: bool = False
+    #: 開催中のトラックバイアス（直近 N 日の同じ競馬場 × 芝ダの馬番・前残り）の日数。0 なら入れない。
+    meeting_days: int = 0
+    #: 開催中のトラックバイアスの A/E を 1 に向けて縮める強さ（期待3着以内数で何頭ぶん）。
+    meeting_shrinkage: float = 10.0
+    #: 末脚（上がり3F のレース内の順位）とコースの末脚の利き方を入れるか（features/course.py の 5b）。
+    kick: bool = False
+    #: 本人の末脚を強さで補正する傾き（kick + slope × (pf − 0.5)）。2013〜2022年の馬ごとの傾き 0.755。
+    kick_strength_slope: float = 0.755
+    #: 4角でこの位置（0 = 先頭、1 = 最後方）以内なら「前の方」として数える。
+    front_threshold: float = 0.25
+    #: コースの傾向（馬番・前残り）の A/E を 1 に向けて縮める強さ（期待3着以内数で何頭ぶん）。
+    bias_shrinkage: float = 20.0
+
+
+@dataclass(frozen=True)
 class ExperimentConfig:
     #: どの個別モデルの設定か（MODEL_KINDS のどれか）。
     model: str = "pedigree"
@@ -319,6 +388,7 @@ class MLConfig:
     features: FeatureConfig = field(default_factory=FeatureConfig)
     distance: DistanceConfig = field(default_factory=DistanceConfig)
     combined: CombinedConfig = field(default_factory=CombinedConfig)
+    course: CourseConfig = field(default_factory=CourseConfig)
     split: SplitConfig = field(default_factory=SplitConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     evaluate: EvalConfig = field(default_factory=EvalConfig)
@@ -374,7 +444,7 @@ def _coerce(cls: type, values: dict[str, Any]) -> Any:
 _SECTIONS = {
     "experiment": ExperimentConfig, "data": DataConfig, "codes": CodeConfig,
     "pedigree": PedigreeConfig, "features": FeatureConfig, "distance": DistanceConfig,
-    "combined": CombinedConfig,
+    "combined": CombinedConfig, "course": CourseConfig,
     "split": SplitConfig, "model": ModelConfig, "evaluate": EvalConfig,
 }
 
@@ -477,6 +547,40 @@ def validate(config: MLConfig) -> None:
     bad = [x for x in d.pedigree_paths if x not in valid_paths]
     if bad:
         raise ValueError(f"distance.pedigree_paths に pedigree.generations を超える位置があります: {bad}")
+    co = config.course
+    if co.stats_history not in ("window", "all"):
+        raise ValueError('course.stats_history は "window" か "all" です。')
+    bad = [q for q in co.qualities if q not in ("pf", "pm")]
+    if bad or not co.qualities:
+        raise ValueError('course.qualities は "pf" / "pm" を1つ以上並べてください。')
+    for name in ("own_shrinkage", "pedigree_shrinkage", "margin_cap_sec", "bias_shrinkage"):
+        value = getattr(co, name)
+        if not (math.isfinite(value) and value > 0):
+            raise ValueError(f"course.{name} は正の有限の値にしてください。")
+    if not (math.isfinite(co.decay_days) and 0 <= co.decay_days) or 0 < co.decay_days < 30:
+        raise ValueError("course.decay_days は 0（減衰なし）か 30 以上にしてください。")
+    if not 2 <= co.draw_zones <= 9:
+        raise ValueError("course.draw_zones は 2〜9 にしてください。")
+    if co.meeting_days < 0:
+        raise ValueError("course.meeting_days は 0 以上にしてください（0 なら使わない）。")
+    if not (math.isfinite(co.meeting_shrinkage) and co.meeting_shrinkage > 0):
+        raise ValueError("course.meeting_shrinkage は正の有限の値にしてください。")
+    if not math.isfinite(co.kick_strength_slope):
+        raise ValueError("course.kick_strength_slope は有限の値にしてください。")
+    if not math.isfinite(co.style_strength_slope):
+        raise ValueError("course.style_strength_slope は有限の値にしてください。")
+    if not (math.isfinite(co.front_threshold) and 0 < co.front_threshold < 1):
+        raise ValueError("course.front_threshold は 0 と 1 の間にしてください。")
+    bad = [g for g in co.extra_groups if g not in ("venue_dband", "trip")]
+    if bad:
+        raise ValueError(f'course.extra_groups は "venue_dband" / "trip" から選んでください: {bad}')
+    bad = [g for g in co.pedigree_extra_groups if g not in ("course", "venue_dband", "course_dist")]
+    if bad:
+        raise ValueError("course.pedigree_extra_groups は \"course\" / \"venue_dband\" /"
+                         f" \"course_dist\" から選んでください: {bad}")
+    bad = [x for x in co.pedigree_paths if x not in valid_paths]
+    if bad:
+        raise ValueError(f"course.pedigree_paths に pedigree.generations を超える位置があります: {bad}")
     s = config.split
     if s.test_end < s.test_start:
         raise ValueError("split.test_end が test_start より前です。")

@@ -447,6 +447,91 @@ def check_distance_asof_sample(history: pd.DataFrame, feature_frame: pd.DataFram
                    checked=int(len(picked)), mismatches=mismatches[:10])
 
 
+def check_course_asof_sample(history: pd.DataFrame, feature_frame: pd.DataFrame, *,
+                             config, sample: int = 100, seed: int = 0,
+                             only: pd.Index | None = None) -> dict:
+    """コース適性の特徴量を、無作為に選んだ行で「その日より前の行だけ」から計算し直して比べる。
+
+    コースの区分のキー（競馬場 × 芝ダなど）は features.course.prepare_course で作る（区分の
+    付け方は日付と関係ない）。集計は素朴に、その行より厳密に前の日の行だけで行う。config は CourseConfig。
+    確かめる列: 本人の競馬場・コース×距離・馬場状態の相対的な走りとコースでの出走数、
+    祖先ごとの産駒の競馬場の相対的な走り、馬番の位置の A/E（draw_bias のとき）。
+    """
+    from keiba_ml.features import course as course_features
+
+    candidates = history.index if only is None else history.index.intersection(only)
+    if len(candidates) == 0:
+        return _result("course_asof_sample", "warn", "検算できる行がありません。")
+    prepared = course_features.prepare_course(history, config)
+    hist = prepared[prepared["has_result"]]
+    rng = np.random.default_rng(seed)
+    picked = rng.choice(candidates, size=min(sample, len(candidates)), replace=False)
+    m, mp = config.own_shrinkage, config.pedigree_shrinkage
+
+    def rel(prior: pd.DataFrame, key: str, base_key: str, row: pd.Series, shrink: float,
+            decay: float = 0.0) -> float:
+        if row[base_key] == "NA":
+            return np.nan
+        base = prior[(prior[base_key] == row[base_key]) & (prior["_perf"] > 0)]
+        if base.empty:
+            return np.nan
+        # 本人の走りは減衰（CourseConfig.decay_days）があれば古いほど軽く数える。
+        age = (row["race_date"] - base["race_date"]).dt.days.astype(float)
+        w = np.exp(-age / decay) if decay > 0 else pd.Series(1.0, index=base.index)
+        # 区分が分からない行（馬場状態の欠損など）は「その区分の走り 0 走」= 相手と同じ（0）。
+        inside = (base[key] == row[key]) if row[key] != "NA" else pd.Series(False, index=base.index)
+        mean = (w * base["_pf"]).sum() / w.sum()
+        return ((w * base["_pf"])[inside].sum() + shrink * mean) / (w[inside].sum() + shrink) - mean
+
+    mismatches = []
+    for idx in picked:
+        row = prepared.loc[idx]
+        earlier = hist[hist["race_date"] < row["race_date"]]
+        prior = earlier[earlier["ketto_num"] == row["ketto_num"]]
+        expected = {
+            "own_rel_pf_venue": rel(prior, "k_venue", "k_surface", row, m, config.decay_days),
+            "own_rel_pf_course_dist": rel(prior, "k_course_dist", "k_surface_dband", row, m,
+                                          config.decay_days),
+            "own_rel_pf_going": rel(prior, "k_going", "k_surface", row, m, config.decay_days),
+            "own_log_runs_course": np.log1p(
+                int(((prior["k_course"] == row["k_course"]) & (prior["_run"] > 0)).sum()))
+            if row["k_course"] != "NA" else 0.0,
+        }
+        if not config.use_going:
+            expected.pop("own_rel_pf_going")
+        if "pf" not in config.qualities:
+            expected = {k: v for k, v in expected.items() if "_rel_pf_" not in k}
+        for path in config.pedigree_paths:
+            col = f"ped_{path}"
+            if row[col] in ("", None, "NA") or pd.isna(row[col]):
+                continue
+            kin = earlier[earlier[col] == row[col]]
+            if config.exclude_self:
+                kin = kin[kin["ketto_num"] != row["ketto_num"]]
+            expected[f"ped_{path}_rel_pf_venue"] = rel(kin, "k_venue", "k_surface", row, mp)
+        if config.draw_bias and "bias_draw_ae" in feature_frame:
+            same = earlier[earlier["k_draw"] == row["k_draw"]] if row["k_draw"] != "NA" \
+                else earlier.iloc[0:0]
+            expected["bias_draw_ae"] = (same["_k3"].sum() + config.bias_shrinkage) / (
+                same["_e3"].sum() + config.bias_shrinkage)
+        if config.meeting_days > 0 and "meet_draw_ae" in feature_frame:
+            # 予想する日の前日までの meeting_days − 1 日（同じ日は入らない）
+            start = row["race_date"] - pd.Timedelta(days=config.meeting_days - 1)
+            recent = earlier[(earlier["race_date"] >= start) & (earlier["k_venue_zone"] == row["k_venue_zone"])] \
+                if row["k_venue_zone"] != "NA" else earlier.iloc[0:0]
+            expected["meet_draw_ae"] = (recent["_k3"].sum() + config.meeting_shrinkage) / (
+                recent["_e3"].sum() + config.meeting_shrinkage)
+        for name, value in expected.items():
+            feature = float(feature_frame.at[idx, name])
+            if not np.isclose(value, feature, rtol=1e-4, atol=1e-4, equal_nan=True):
+                mismatches.append({"index": int(idx), "feature": name,
+                                   "recomputed": float(value), "value": feature})
+    return _result("course_asof_sample", "ok" if not mismatches else "fail",
+                   "コース適性の特徴量（本人のコース別の相対的な走り・経験・産駒の傾向・馬番の A/E）を"
+                   "総当たりで検算して一致するか",
+                   checked=int(len(picked)), mismatches=mismatches[:10])
+
+
 def summarize(checks: Sequence[dict]) -> str:
     lines = []
     for check in checks:

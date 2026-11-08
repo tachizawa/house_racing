@@ -34,6 +34,7 @@ import pandas as pd
 from keiba_ml.config import MODEL_KINDS, MLConfig
 from keiba_ml.dataset import integrity
 from keiba_ml.features import combined as combined_features
+from keiba_ml.features import course as course_features
 from keiba_ml.features import distance as distance_features
 from keiba_ml.features import form as form_features
 from keiba_ml.features import pedigree as pedigree_features
@@ -203,6 +204,67 @@ def _combined_describe(rows: pd.DataFrame, features: FeatureSet,
     return out
 
 
+# --- コース適性 ---------------------------------------------------------------
+
+def _course_features(df: pd.DataFrame, config: MLConfig) -> FeatureSet:
+    return course_features.build_features(df, config.course)
+
+
+def _course_baselines(features: FeatureSet, rows: pd.DataFrame,
+                      fold: str) -> dict[str, pd.DataFrame]:
+    """学習しないコースの目安。
+
+    - course_rel_venue: 本人の「この競馬場 × 芝ダの走り − 同じ芝ダの普段の走り」だけで並べる
+      （過去走が無い馬は 0 = 普段どおり）
+    - course_draw: このコース・距離での馬番の位置（内・中・外）の as-of 3着以内 A/E だけ
+    """
+    frame = features.frame.loc[rows.index]
+    columns = {"course_rel_venue": frame["own_rel_pf_venue"].astype(float).fillna(0.0)}
+    if "bias_draw_ae" in frame:
+        columns["course_draw"] = frame["bias_draw_ae"].astype(float).fillna(1.0)
+    return _heuristics(features, rows, fold, columns)
+
+
+def _course_checks(history: pd.DataFrame, features: FeatureSet, config: MLConfig,
+                   only: pd.Index | None) -> list[dict]:
+    return [integrity.check_course_asof_sample(history, features.frame, config=config.course,
+                                               sample=100, only=only)]
+
+
+def _course_describe(rows: pd.DataFrame, features: FeatureSet,
+                     names: dict[str, str]) -> pd.DataFrame:
+    frame = features.frame.loc[rows.index]
+
+    def runs(col: str) -> pd.Series:
+        return np.expm1(frame[col].astype(float)).round(0).astype("Int64")
+
+    def value(col: str) -> pd.Series:
+        if col not in frame:
+            return pd.Series(np.nan, index=rows.index)
+        return frame[col].astype(float).round(3)
+
+    columns = {
+        "この競馬場の出走": runs("own_log_runs_venue"),
+        "このコースの出走": runs("own_log_runs_course"),
+        # 正なら普段（同じ芝ダ）より走れている。負かした馬の割合の差
+        "競馬場の相対": value("own_rel_pf_venue"),
+        "コース×距離の相対": value("own_rel_pf_course_dist"),
+        "遠征の相対": value("own_rel_pf_trip"),
+        "馬場状態の相対": value("own_rel_pf_going"),
+        "位置取り": value("own_style"),
+        "馬番A/E": value("bias_draw_ae"),
+        "父": rows["ped_S"].map(names).fillna("") if "ped_S" in rows else "",
+        "父産駒の競馬場": value("ped_S_rel_pf_venue"),
+    }
+    # 設定で作らない列（use_going = false の馬場状態など）は表に出さない
+    optional = {"遠征の相対": "own_rel_pf_trip", "馬場状態の相対": "own_rel_pf_going",
+                "位置取り": "own_style", "馬番A/E": "bias_draw_ae"}
+    for label, col in optional.items():
+        if col not in frame:
+            columns.pop(label)
+    return pd.DataFrame(columns, index=rows.index)
+
+
 MODELS: dict[str, ModelSpec] = {
     "pedigree": ModelSpec(
         name="pedigree", model_name="pedigree_catboost", title="血統",
@@ -224,6 +286,13 @@ MODELS: dict[str, ModelSpec] = {
         baselines=_combined_baselines, asof_checks=_combined_checks,
         required_columns=("result_margin_sec", *form_features.REQUIRED_COLUMNS),
         describe=_combined_describe),
+    "course": ModelSpec(
+        name="course", model_name="course_catboost", title="コース適性",
+        build_features=_course_features,
+        stats_history=lambda config: config.course.stats_history,
+        baselines=_course_baselines, asof_checks=_course_checks,
+        required_columns=("result_margin_sec", "track_cd"),
+        describe=_course_describe),
 }
 
 assert tuple(MODELS) == MODEL_KINDS, "config.MODEL_KINDS と registry.MODELS を揃えてください"
