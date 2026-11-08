@@ -346,3 +346,91 @@ def test_meeting_bias_passes_the_asof_check_and_detects_tampering():
     tampered["meet_draw_ae"] = tampered["meet_draw_ae"] + 0.1
     assert integrity.check_course_asof_sample(df, tampered, config=config,
                                               sample=28)["status"] == "fail"
+
+
+def test_race_relative_subtracts_a_non_constant_race_mean():
+    df = _nakayama_specialist()
+    df.loc[df["race_id"] == "y1", "race_id"] = "X2020-01-0506"     # Y を X の1走目と同じレースに
+    df = pd.concat([df, pd.DataFrame([
+        _run("Y", "2020-06-05", 0, jyo="06", track_cd="17", has=False, race="t06"),
+    ])], ignore_index=True)
+    config = CourseConfig(race_relative=True)
+    frame = course.build_features(df, config).frame
+    rows = frame.index[df["race_id"] == "t06"]
+    assert len(rows) == 2
+    for src in ("own_rel_pf_venue", "own_rel_pf_course"):
+        values = frame.loc[rows, src].astype(float)
+        assert values.nunique() == 2                            # 2頭の値は違う
+        expected = values - values.mean()
+        assert np.allclose(frame.loc[rows, f"rr_{src}"].astype(float), expected, atol=1e-6)
+        assert frame.loc[rows, f"rr_{src}"].abs().min() > 1e-3   # 差は 0 でない
+    assert integrity.check_course_asof_sample(df, frame, config=config, sample=8)["status"] == "ok"
+
+
+def test_meeting_window_includes_its_first_day():
+    rows = []
+    # 前日（1日前）: 外が全部3着以内。meeting_days=1 なら前日だけが窓に入る
+    for i, day in enumerate(("2020-01-04", "2020-01-05")):
+        for u in range(1, 10):
+            rows.append(_run(f"H{i}{u}", day, 10 - u, n=9, umaban=f"{u:02d}", race=f"r{i}"))
+    df = pd.DataFrame(rows)
+    config = CourseConfig(meeting_days=1, meeting_shrinkage=1.0)
+    frame = course.build_features(df, config).frame
+    q = frame.index[(df["race_id"] == "r1") & (df["umaban"] == "09")][0]
+    assert frame.at[q, "meet_draw_ae"] == pytest.approx((3 + 1) / (1 + 1))
+    assert integrity.check_course_asof_sample(df, frame, config=config, sample=18)["status"] == "ok"
+
+
+def _many_runs() -> pd.DataFrame:
+    rows = []
+    days = ("2020-01-05", "2020-01-12", "2020-02-02", "2020-02-09", "2020-03-01")
+    for i, day in enumerate(days):
+        jyo, tcd = ("06", "17") if i % 2 == 0 else ("05", "11")
+        for u in range(1, 8):
+            rows.append(_run(f"H{u}", day, (u + 2 * i) % 7 + 1, n=7, umaban=f"{u:02d}",
+                             race=f"r{i}", jyo=jyo, track_cd=tcd, baba="1" if i < 3 else "3",
+                             c4=(u + i) % 7 + 1, sire=f"S{u % 3}"))
+    df = pd.DataFrame(rows)
+    df["result_last_3f_sec"] = [str(34.0 + (k * 7) % 5 * 0.3) for k in range(len(df))]
+    df["tozai_cd"] = ["1" if k % 2 else "2" for k in range(len(df))]
+    return df
+
+
+def test_asof_check_covers_every_feature_column_and_detects_tampering():
+    df = _many_runs()
+    config = CourseConfig(extra_groups=("venue_dband", "trip"), decay_days=60.0, style=True,
+                          decay_style=True, front_relative=True, kick=True, bias_by_going=True,
+                          pedigree_extra_groups=("course", "venue_dband"), meeting_days=14,
+                          race_relative=True)
+    frame = course.build_features(df, config).frame
+    check = integrity.check_course_asof_sample(df, frame, config=config, sample=len(df))
+    assert check["status"] == "ok", check
+    assert check["detail"]["unchecked"] == []
+    for col in ("own_rel_pm_dir", "own_log_runs_trip", "ped_DS_rel_pf_venue_dband", "own_style",
+                "bias_front_going_ae", "style_fit_rel", "kick_fit", "meet_front_rel",
+                "rr_style_fit"):
+        tampered = frame.copy()
+        tampered[col] = tampered[col] + 0.1
+        bad = integrity.check_course_asof_sample(df, tampered, config=config, sample=len(df))
+        assert bad["status"] == "fail", col
+    extra = frame.assign(mystery=0.0)
+    bad = integrity.check_course_asof_sample(df, extra, config=config, sample=5)
+    assert bad["status"] == "fail" and bad["detail"]["unchecked"] == ["mystery"]
+
+
+def test_baseline_works_with_pm_only_qualities():
+    df = _nakayama_specialist()
+    features = course.build_features(df, CourseConfig(qualities=("pm",)))
+    rows = df[~df["has_result"]]
+    preds = registry.get("course").baselines(features, rows, "live")
+    assert set(preds) == {"course_rel_venue", "course_draw"}
+
+
+def test_course_config_rejects_unknown_context_and_going_contradictions():
+    for raw in ({"course": {"context": ["track_kind", "kyori"]}},
+                {"course": {"use_going": False}},                       # 既定の context に baba_cd
+                {"course": {"use_going": False, "bias_by_going": True,
+                            "context": ["track_kind", "kyori_m"]}}):
+        with pytest.raises(ValueError):
+            config_from_dict(raw)
+    config_from_dict({"course": {"use_going": False, "context": ["track_kind", "month"]}})

@@ -136,6 +136,7 @@ def _layout_for_straight(jyo: str, kind: str, layout: str) -> str:
 
 
 def straight_band(jyo: str, kind: str, layout: str, direction: str) -> str:
+    """直線の長さの区分（short / mid / long、直線コースは straight）。分からなければ空文字。"""
     if direction == "S":
         return "straight"
     meters = STRAIGHT_M.get((jyo, kind, _layout_for_straight(jyo, kind, layout)))
@@ -149,6 +150,7 @@ def straight_band(jyo: str, kind: str, layout: str, direction: str) -> str:
 
 
 def going_class(baba_cd) -> str:
+    """馬場状態コード（baba_cd）を firm / soft / heavy にまとめる。欠損は空文字。"""
     value = "" if baba_cd is None or (isinstance(baba_cd, float) and np.isnan(baba_cd)) \
         else str(baba_cd).strip()
     return {"1": "firm", "2": "soft", "3": "heavy", "4": "heavy"}.get(value, "")
@@ -306,6 +308,7 @@ def _decayed(prepared: pd.DataFrame, days: float) -> tuple[pd.DataFrame, pd.Seri
 
 
 def own_features(prepared: pd.DataFrame, config: CourseConfig) -> pd.DataFrame:
+    """本人の区分ごとの相対的な走り（own_rel_*）と区分ごとの出走数（own_log_runs_*）。強さの水準は入れない。"""
     m = config.own_shrinkage
     names = {"n_p": "_perf", "s_pf": "_pf", "s_pm": "_pm", "n_r": "_run"}
     out = pd.DataFrame(index=prepared.index)
@@ -317,6 +320,7 @@ def own_features(prepared: pd.DataFrame, config: CourseConfig) -> pd.DataFrame:
         weighted, now = prepared, None
 
     def sums(key: str) -> pd.DataFrame:
+        """キーごとの as-of の合計（キャッシュする）。"""
         if key not in cache:
             total = _sums(weighted, ["ketto_num", key], names)
             if now is not None:
@@ -338,6 +342,7 @@ def own_features(prepared: pd.DataFrame, config: CourseConfig) -> pd.DataFrame:
 
 
 def pedigree_features(prepared: pd.DataFrame, config: CourseConfig) -> pd.DataFrame:
+    """祖先（pedigree_paths）ごとの産駒の区分ごとの相対的な走り（ped_*_rel_pf_*）。"""
     m = config.pedigree_shrinkage
     names = {"n_p": "_perf", "s_pf": "_pf"}
     out = pd.DataFrame(index=prepared.index)
@@ -346,6 +351,7 @@ def pedigree_features(prepared: pd.DataFrame, config: CourseConfig) -> pd.DataFr
         cache: dict[str, pd.DataFrame] = {}
 
         def sums(key: str) -> pd.DataFrame:
+            """キーごとの as-of の合計（キャッシュする）。"""
             if key not in cache:
                 cache[key] = _sums(prepared, [col, key], names, exclude_self=config.exclude_self)
             return cache[key]
@@ -365,6 +371,7 @@ def _ae(k3: pd.Series, e3: pd.Series, shrinkage: float) -> pd.Series:
 
 
 def bias_features(prepared: pd.DataFrame, config: CourseConfig) -> pd.DataFrame:
+    """コースの傾向（馬番・前残り・末脚の A/E）と、本人の位置取り・末脚との相性。"""
     out = pd.DataFrame(index=prepared.index)
     include = prepared["has_result"].to_numpy(dtype=bool)
     if config.draw_bias:
@@ -425,6 +432,7 @@ RELATIVE_SOURCES: tuple[str, ...] = (
 
 
 def race_relative(stats: pd.DataFrame, race_id: pd.Series) -> pd.DataFrame:
+    """RELATIVE_SOURCES の列を、同じレースの全頭の平均との差（rr_*）にする。"""
     out = pd.DataFrame(index=stats.index)
     for col in RELATIVE_SOURCES:
         if col in stats:
@@ -441,7 +449,7 @@ def window_sums(prepared: pd.DataFrame, keys: list[str], columns: dict, days: in
     include = prepared["has_result"].to_numpy(dtype=bool)
     full = asof(prepared, keys, columns, include=include)
     shifted = prepared.copy()
-    shifted["race_date"] = shifted["race_date"] - pd.Timedelta(days=days - 1)
+    shifted["race_date"] = shifted["race_date"] - pd.Timedelta(days=days)
     both = pd.concat([prepared, shifted], ignore_index=True)
     mask = np.concatenate([include, np.zeros(len(prepared), dtype=bool)])
     lag = asof(both, keys, columns, include=mask).iloc[len(prepared):]
@@ -451,6 +459,7 @@ def window_sums(prepared: pd.DataFrame, keys: list[str], columns: dict, days: in
 
 def meeting_features(prepared: pd.DataFrame, config: CourseConfig,
                      own_style: pd.Series | None) -> pd.DataFrame:
+    """開催中のトラックバイアス（直近 meeting_days 日の馬番・前残りの A/E）と本人の位置取りとの相性。"""
     out = pd.DataFrame(index=prepared.index)
     days, s = config.meeting_days, config.meeting_shrinkage
     cols = {"k3": ("_k3", "sum"), "e3": ("_e3", "sum")}

@@ -207,6 +207,7 @@ def _combined_describe(rows: pd.DataFrame, features: FeatureSet,
 # --- コース適性 ---------------------------------------------------------------
 
 def _course_features(df: pd.DataFrame, config: MLConfig) -> FeatureSet:
+    """コース適性の特徴量表を作る。"""
     return course_features.build_features(df, config.course)
 
 
@@ -219,7 +220,9 @@ def _course_baselines(features: FeatureSet, rows: pd.DataFrame,
     - course_draw: このコース・距離での馬番の位置（内・中・外）の as-of 3着以内 A/E だけ
     """
     frame = features.frame.loc[rows.index]
-    columns = {"course_rel_venue": frame["own_rel_pf_venue"].astype(float).fillna(0.0)}
+    # qualities が pm だけなら pf の列が無いので pm の列を使う
+    rel_col = "own_rel_pf_venue" if "own_rel_pf_venue" in frame else "own_rel_pm_venue"
+    columns = {"course_rel_venue": frame[rel_col].astype(float).fillna(0.0)}
     if "bias_draw_ae" in frame:
         columns["course_draw"] = frame["bias_draw_ae"].astype(float).fillna(1.0)
     return _heuristics(features, rows, fold, columns)
@@ -227,12 +230,14 @@ def _course_baselines(features: FeatureSet, rows: pd.DataFrame,
 
 def _course_checks(history: pd.DataFrame, features: FeatureSet, config: MLConfig,
                    only: pd.Index | None) -> list[dict]:
+    """コース適性の特徴量の未来情報の検算。"""
     return [integrity.check_course_asof_sample(history, features.frame, config=config.course,
                                                sample=100, only=only)]
 
 
 def _course_describe(rows: pd.DataFrame, features: FeatureSet,
                      names: dict[str, str]) -> pd.DataFrame:
+    """予想時に表示するコース適性の材料の表。"""
     frame = features.frame.loc[rows.index]
 
     def runs(col: str) -> pd.Series:

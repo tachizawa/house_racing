@@ -242,6 +242,13 @@ class CombinedConfig:
     use_distance: bool = True
 
 
+#: コース適性モデルの条件（CourseConfig.context）に使える列（データセットの runners にある条件の列）。
+COURSE_CONTEXT_COLUMNS = frozenset({
+    "track_kind", "kyori_m", "distance_band", "jyo_cd", "baba_cd", "age", "sex_cd",
+    "field_size", "month", "grade_tier",
+})
+
+
 @dataclass(frozen=True)
 class CourseConfig:
     """コース適性モデル（features/course.py）の設定。
@@ -277,7 +284,7 @@ class CourseConfig:
     #: decay_days > 0 のとき、本人の位置取り（own_style）の平均にも同じ減衰をかけるか。
     decay_style: bool = False
     #: 今回の馬場状態（良・稍重・重以上）を使うか。馬場状態は当日に発表されるので、前日の出馬表では
-    #: 欠損になる。False なら going の分け方を作らない（context の baba_cd は別に外すこと）。
+    #: 欠損になる。False なら going の分け方を作らない（context の baba_cd も外すこと。validate が確かめる）。
     use_going: bool = True
     #: 本人の相対的な走りを、古い走りほど軽くする減衰の日数（exp(−経過日数 / decay_days)）。0 なら減衰しない。
     decay_days: float = 0.0
@@ -548,6 +555,16 @@ def validate(config: MLConfig) -> None:
     if bad:
         raise ValueError(f"distance.pedigree_paths に pedigree.generations を超える位置があります: {bad}")
     co = config.course
+    bad = [c for c in co.context if c not in COURSE_CONTEXT_COLUMNS]
+    if bad:
+        raise ValueError(f"course.context に使えない列があります: {bad}"
+                         f"（使える列: {sorted(COURSE_CONTEXT_COLUMNS)}）")
+    if not co.use_going:
+        # 前日の出馬表では馬場状態が全頭欠損なので、学習と予想で入力が食い違う
+        if "baba_cd" in co.context:
+            raise ValueError("course.use_going = false のときは course.context から baba_cd を外してください。")
+        if co.bias_by_going:
+            raise ValueError("course.bias_by_going は course.use_going = true が必要です。")
     if co.stats_history not in ("window", "all"):
         raise ValueError('course.stats_history は "window" か "all" です。')
     bad = [q for q in co.qualities if q not in ("pf", "pm")]

@@ -405,7 +405,7 @@ Logloss、最良の反復 1122、学習は約6分）。学習 2014〜2023 / 検�
 |---|---|---|---|---|---|
 | `pedigree` | `pedigree_catboost` | 血統（祖先の産駒成績・早熟/晩成・近交） | `configs/ml/pedigree.toml` | `features/pedigree.py` | `sire_ae` / `sire_cond_ae` |
 | `distance` | `distance_catboost` | 距離適性（今回の距離がその馬に合うか。強さは見ない。§4.4） | `configs/ml/distance.toml` | `features/distance.py` | `dist_rel_band` / `dist_gap` |
-| `course` | `course_catboost` | コース適性（今回の競馬場・回り・直線・坂・馬場状態がその馬に合うか。強さは見ない。§13） | `configs/ml/course.toml` | `features/course.py` | `course_rel_venue` / `course_draw` |
+| `course` | `course_catboost` | コース適性（今回の競馬場・回り・直線・坂がその馬に合うか。馬場状態は使わない。強さは見ない。§13） | `configs/ml/course.toml` | `features/course.py` | `course_rel_venue` / `course_draw` |
 
 どのモデルも予測を共通の形式（`models/base.py` の `PREDICTION_COLUMNS`）で
 `runs/<model>/<run_id>/<window>/predictions_*.parquet` に保存する。統合モデル（Phase 4）はこの表を
@@ -685,8 +685,10 @@ dist_rel_band に対して +0.360 [+0.323, +0.395]。較正: brier 0.1594（基�
   本人の強さではないが、純粋な「コースの合い方」だけでもない
 - **馬場状態は使わない。** 当日の発表なので、前日の出馬表（データセットの結果の無い 905 行）では全頭欠損になる。
   使った場合との差は選択用の区切りで −0.010 [−0.023, +0.003]（当日朝に予想するなら少し上がる余地がある）
-- 未来情報の検査 `course_asof_sample`（本人の競馬場・コース×距離・馬場状態の相対的な走り、コースでの出走数、
-  産駒の競馬場の傾向、馬番の A/E、開催中のバイアスを、無作為の100行で総当たりに計算し直して比べる。減衰にも対応）
+- 未来情報の検査 `course_asof_sample`（条件の列と馬番の位置を除く**全列**——本人・産駒の区分ごとの相対的な走り、
+  出走数、馬番・前残り・末脚の A/E、位置取り、開催中のバイアス、レース内の差——を、無作為の100行で総当たりに
+  計算し直して比べる。減衰にも対応。検算の仕方を知らない列が表にあれば fail。最終モデルの設定で実データ 100 行が一致、
+  2026-11-08 の PR #7 のレビュー対応で全列に広げた）
 - 比較用の基準（学習しない）: `course_rel_venue`（本人の競馬場×芝ダの相対的な走りの順）、`course_draw`（馬番の A/E の順）
 
 ### 13.1 選び方と結果（選択用の区切り: 学習 2013〜2022 / early stopping 2023 / 比較 2024。§11.2 と同じ）
@@ -766,5 +768,6 @@ dist_rel_band に対して +0.360 [+0.323, +0.395]。較正: brier 0.1594（基�
   （差は確認できていない）
 - 総合モデル（§12）にコース適性の列を入れるかは未検討（所有者の方針は「個別モデルは独立に作る」）
 - 開催中のトラックバイアス・末脚・馬場状態別の傾向・産駒の追加区分は、設定（`meeting_days` / `kick` / `bias_by_going` /
-  `pedigree_extra_groups`）として残してある（既定 off。どれも選択用の区切りで差なし）
+  `pedigree_extra_groups`）として残してある（既定 off。どれも選択用の区切りで差なし）。開催中のバイアスの窓は
+  PR #7 のレビュー対応で「meeting_days 日前〜前日」に直した（選択の表の 14日 / 28日は1日短い窓で測ったもの）
 - 次の改善の根拠には 2026-10-19 以降の新しい期間を使う（2026年の 10-18 まではこのモデルでも使った）
