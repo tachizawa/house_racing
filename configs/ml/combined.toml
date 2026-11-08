@@ -58,6 +58,10 @@ recent_days = 90               # 騎手・調教師の直近90日の A/E（0 な
 recent_shrinkage = 5.0
 use_pedigree = true
 use_distance = true
+# 近走の深掘り（x_）とレースレベル（z_）。features/form_extra.py。2026-11-08 に選択用の区切りで
+# 比較（docs/ml/README.md §14）。学習・評価の前に切り詰め検査（form_extra_truncation）を通す
+extra_form = true
+race_level = true
 
 [split]
 test_start = "2025-01-01"

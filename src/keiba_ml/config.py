@@ -245,6 +245,10 @@ class CombinedConfig:
     extra_form: bool = False
     #: レースレベル（features.form_extra.race_level_features。z_）。2026-11-08 に追加。
     race_level: bool = False
+    #: 馬体重と増減（c_weight・c_zogen・x_weight_vs_mean）を入れるか。発走の約1時間前に発表される値で、
+    #: 前日の出馬表（SE）には無い。前日に予想するなら false にして学習する（学習時だけ入っていると
+    #: 予想時に全頭欠損になり、学習と予想で入力が食い違う。docs/ml/README.md §14.4）。
+    use_weight: bool = True
 
 
 #: コース適性モデルの条件（CourseConfig.context）に使える列（データセットの runners にある条件の列）。

@@ -130,7 +130,8 @@ def main(argv: list[str] | None = None, *, expected_model: str | None = None) ->
                if c in features.frame.columns and features.frame.loc[targets.index, c].isna().all()]
     if missing:
         print(f"※ {', '.join(missing)} は出馬表に馬体重が無いため全頭欠損のまま予想します（学習時は入っていた）。"
-              " 発走前の馬体重を取り込むか、これらを外して学習し直すかは docs/ml/README.md §12.3。")
+              " 前日に予想するなら combined.use_weight = false で学習したモデルを使う"
+              "（docs/ml/README.md §14.4）。")
     pred = model.predict(features, targets, fold="live")
     reasons = spec.describe(targets, features, names)
     view = pred.merge(targets[["race_id", "umaban", "bamei"]].join(reasons),

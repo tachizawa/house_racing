@@ -125,6 +125,18 @@ def test_combined_with_extras_builds_and_passes_checks():
     assert bad["form_extra_truncation"] == "fail"
 
 
+def test_use_weight_false_drops_weight_columns():
+    df = _pedigree_frame()
+    config = MLConfig(pedigree=PedigreeConfig(generations=3, inbreeding_generations=3),
+                      combined=CombinedConfig(stats_history="lead:1", speed_standard_years=1,
+                                              use_distance=False, extra_form=True,
+                                              use_weight=False))
+    fs = registry.get("combined").build_features(df, config)
+    assert not {"c_weight", "c_zogen", "x_weight_vs_mean"} & set(fs.columns)
+    assert {"c_futan", "x_fig_ewm"} <= set(fs.columns)
+    assert set(fs.columns) <= set(fs.frame.columns)
+
+
 def test_extra_form_requires_opponent():
     with pytest.raises(ValueError, match="opponent"):
         validate(replace(MLConfig(), combined=CombinedConfig(extra_form=True, opponent=False)))
