@@ -147,8 +147,10 @@ def build_runners(races: pd.DataFrame, runners: pd.DataFrame, *,
     races["distance_band"] = races["kyori_m"].map(
         lambda v: codes.distance_band(None if pd.isna(v) else int(v)))
     races = races.rename(columns={"data_kubun": "race_data_kubun"})
-    race_cols = ["race_id", "race_date", "hasso_at", "jyo_cd", "kyori_m", "track_kind",
-                 "distance_band", "baba_cd", "grade_tier", "race_data_kubun"]
+    # トラックコード（2009。回り・内外回り・直線）。コース適性モデル（schema 5）が使う。
+    races["track_cd"] = races["track_cd"].astype(str).str.strip()
+    race_cols = ["race_id", "race_date", "hasso_at", "jyo_cd", "kyori_m", "track_cd",
+                 "track_kind", "distance_band", "baba_cd", "grade_tier", "race_data_kubun"]
 
     df = runners.merge(races[race_cols], on="race_id", how="inner")
     df["ketto_num"] = df["ketto_num"].str.strip()
@@ -188,7 +190,7 @@ def build_runners(races: pd.DataFrame, runners: pd.DataFrame, *,
     # 出馬表（data_kubun 1/2、622 行）はすべて 000 で、前日予想では欠損になる（docs/ml/README.md §12.3）
     df["result_weight_kg"] = weight.where((weight >= low) & (weight <= high)).astype(float)
     keep = ["race_id", "race_date", "hasso_at", "year", "month", "jyo_cd", "kyori_m",
-            "track_kind", "distance_band", "baba_cd", "grade_tier", "field_size",
+            "track_cd", "track_kind", "distance_band", "baba_cd", "grade_tier", "field_size",
             "umaban", "ketto_num", "bamei", "sex_cd", "barei_raw", "age_from_barei",
             "has_result", "result_ijyo_cd", "result_rank", "result_margin_sec",
             "result_weight_kg", "target_top3", "target_win",

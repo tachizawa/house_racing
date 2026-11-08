@@ -25,7 +25,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `src/keiba/evaluate/{top3_metrics,top3_backtest,coverage}.py` | 3着内の採点・比較・データ充足度 |
 | `src/keiba/store/top3_records.py` | 3着内予想の記録（`data/top3/`） |
 | `scripts/` | `update_data` / `predict` / `fit_weights` / `backtest` / `smoke_test` / `dossier` / `backtest_top3` / `data_coverage` |
-| `src/keiba_ml/` | **機械学習系（血統・距離適性の CatBoost ほか）。既存モデルとは独立**。モデルは `registry.py` で束ねる。説明は `docs/ml/README.md` |
+| `src/keiba_ml/` | **機械学習系（血統・距離適性・コース適性の CatBoost ほか）。既存モデルとは独立**。モデルは `registry.py` で束ねる。説明は `docs/ml/README.md` |
 | `scripts/ml/` / `configs/ml/` / `tests/ml/` | 機械学習系の CLI・設定・テスト |
 | `vendor/jravan-sdk-500-64bit/` | JRA-VAN SDK 5.0.0（64bit）の展開物。再配布不可のため `.gitignore` 済み |
 | `data/` | 取得したデータ版・予想記録・重み。再配布不可のため `.gitignore` 済み |
@@ -301,6 +301,14 @@ Phase 2（血統モデル）。**2026-10-19 に実データで端から端まで
   距離適性の列の検算）の前の特徴量で最終モデルは学習している（差の大きさは README §12）。
   近走があると血統の上乗せは確認できない。階層ベイズ（縮小の強さの推定・入れ子の部分プーリング）・学習期間20年・深さ8も差なし。
   詳細は `docs/ml/README.md` §12
+- **コース適性モデル（2026-11-08、`--model course`）** は「今回のコース（競馬場・回り・内外回り・直線の長さ・坂・遠征）が
+  その馬に合うか」だけを見る**独立モデル**（総合モデルには混ぜない）。距離適性と同じく強さは入れない（`tests/ml/test_ml_course.py`）。
+  特徴量 `features/course.py`、設定 `configs/ml/course.toml`。データセットは **schema 5**（`track_cd` を足した。現在の CURRENT
+  `20261107T221221Z` は 40年版に 2026-10-17〜11-08 の版 `data/_40y/versions/20261107T214702Z` を束ねたもの。`data/_40y/CURRENT` は
+  40年版のまま）。最終モデル `data/ml/runs/course/20261108_final/10y`、**2025年 1.171 [1.145, 1.196]・2026年（01-04〜10-18、
+  2,706レース。1回だけ）1.186 [1.158, 1.215]**（偶然 0.69）。効いたのは YetiRank・強さで補正した位置取り・遠征などの区分・
+  **古い走りほど軽くする減衰（730日）**。4角の位置は強さと相関（−0.47）するのでそのまま入れない（+0.050 の大半が強さだった）。
+  **馬場状態は使わない**（前日の出馬表では全頭欠損）。選択の表・不採用の案は `docs/ml/README.md` §13
 - **距離適性モデル（2026-10-20、`--model distance`）** は「今回の距離がその馬に合うか」だけを見る。
   **強さの水準は特徴量に入れない**（強さだけが違う2頭は本人の特徴量が完全に一致する。
   `tests/ml/test_ml_distance.py` が固定）。最初の版は「3着以内に入った距離の平均」の欠損が強さを表して
@@ -617,7 +625,7 @@ venv は `.venv`（Python 3.13.3 / 64bit）。コマンドは `.venv` の python
 # 依存（初回のみ）
 .venv/Scripts/python.exe -m pip install -r requirements.txt
 
-# テスト全体（2026-11-01 実行: 1759 passed。catboost を入れると skip は 0）
+# テスト全体（2026-11-08 実行: 1785 passed。catboost を入れると skip は 0）
 .venv/Scripts/python.exe -m pytest
 
 # テスト1件だけ

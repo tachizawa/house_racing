@@ -30,10 +30,11 @@ from keiba_ml.dataset.races import load_runners
 #:    生産者コード（breeder_code。SK から）を足した。
 #: 4: 総合モデル（combined）用に、枠・斤量・騎手・調教師・所属・ブリンカー・馬体重の増減と、
 #:    過去走として使う結果（走破タイム・4角の位置・上がり3F）を足した（dataset.races._RUNNER_OPTIONAL）。
-DATASET_SCHEMA_VERSION = "4"
-#: 読めるスキーマ。列を足しただけなので 1〜3 も読める。足した列を使うモデル（距離適性・総合）は
-#: registry の required_columns で列の有無を確かめ、無ければ作り直しを促す。
-READABLE_SCHEMA_VERSIONS = frozenset({"1", "2", "3", "4"})
+#: 5: コース適性モデル（course）用に、トラックコード（track_cd。回り・内外回り・直線）を足した。
+DATASET_SCHEMA_VERSION = "5"
+#: 読めるスキーマ。列を足しただけなので 1〜4 も読める。足した列を使うモデル（距離適性・総合・
+#: コース適性）は registry の required_columns で列の有無を確かめ、無ければ作り直しを促す。
+READABLE_SCHEMA_VERSIONS = frozenset({"1", "2", "3", "4", "5"})
 
 #: 自身の競走成績を付ける祖先の位置（父・母・母父）。
 PARENT_RACING_PATHS: tuple[str, ...] = ("S", "D", "DS")

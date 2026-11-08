@@ -1,0 +1,70 @@
+# コース適性モデルの設定。キーの意味は src/keiba_ml/config.py の CourseConfig を参照。
+# 知らないキーを書くとエラーになる（誤記を黙って無視しないため）。
+#
+# コース適性モデルは「今回のコース（競馬場・芝ダ・回り・内外回り・直線・坂・馬場状態）がその馬に
+# 合うか」だけを見る。馬の強さそのもの（全体の着順・A/E）は特徴量に入れない。
+# 特徴量の中身は src/keiba_ml/features/course.py。データセットは schema 5 以上（track_cd が要る）。
+
+[experiment]
+model = "course"
+
+# [data] [codes] と [pedigree] の世代数は他のモデルと揃える（同じデータセットを共有する）。
+[data]
+race_versions = []
+pedigree_source = "blood"
+pedigree_versions = []
+jra_only = true
+include_jump = false
+
+[codes]
+kazoe_age_until_year = 2000
+
+[pedigree]
+generations = 5
+inbreeding_generations = 5
+
+[course]
+# 馬場状態（baba_cd・going の区分）は使わない。当日に発表されるので前日の出馬表では全頭欠損になり、
+# 学習と予想で入力が食い違う（選択用の区切りで、使う場合との差は −0.010 [−0.023, +0.003]）。
+context = ["track_kind", "kyori_m", "distance_band", "jyo_cd", "age", "sex_cd", "field_size"]
+use_going = false
+stats_history = "window"
+qualities = ["pf", "pm"]
+own_shrinkage = 3.0
+decay_days = 730.0             # 本人の相対的な走りを、古い走りほど軽くする（2年で 1/e）
+margin_cap_sec = 3.0
+pedigree_paths = ["S", "DS"]
+pedigree_shrinkage = 30.0
+exclude_self = true
+extra_groups = ["venue_dband", "trip"]
+race_relative = true
+draw_bias = true
+draw_zones = 3
+bias_shrinkage = 20.0
+style = true                   # 位置取りは強さで補正する（style_strength_slope。features/course.py の docstring）
+style_strength_slope = 0.58
+front_threshold = 0.25
+
+[split]
+# 選択は 学習 2013〜2022 / 検証 2023 / 比較 2024 で行い（test_start を 2024 にした別の設定）、
+# 決めた設定でここ（テスト 2025年）の最終モデルを学習する。
+test_start = "2025-01-01"
+test_end = "2025-12-31"
+valid_years = 1
+train_years = [10]
+
+[model]
+loss_function = "YetiRank"   # 確率が要るなら Logloss（選択用の区切りで的中数の差は無い）
+iterations = 3000
+learning_rate = 0.05
+depth = 6
+l2_leaf_reg = 3.0
+early_stopping_rounds = 400   # 選択用の区切りで 200 より +0.006（種 3つの平均）
+random_seed = 42
+thread_count = -1
+
+[evaluate]
+top_n = 3
+calibration_bins = 10
+bootstrap = 1000
+bootstrap_seed = 0
