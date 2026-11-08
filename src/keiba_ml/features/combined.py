@@ -12,7 +12,7 @@ import pandas as pd
 
 from keiba_ml.config import MLConfig
 from keiba_ml.features import distance as distance_features
-from keiba_ml.features import form
+from keiba_ml.features import form, form_extra
 from keiba_ml.features import pedigree as pedigree_features
 from keiba_ml.features.base import FeatureSet, context_columns
 
@@ -52,4 +52,13 @@ def build_features(df: pd.DataFrame, config: MLConfig) -> FeatureSet:
     relative = form.relative_features(frame, df["race_id"])
     frame = frame.join(relative)
     nums.extend(relative.columns)
+    extra = []
+    if c.extra_form:
+        extra.append(form_extra.extra_form_features(
+            df, frame[list(form_extra.BASE_COLUMNS)], standard_years=c.speed_standard_years))
+    if c.race_level:
+        extra.append(form_extra.race_level_features(df, standard_years=c.speed_standard_years))
+    for part in extra:
+        frame = frame.join(part)
+        nums.extend(part.columns)
     return FeatureSet(frame=frame, cat_features=tuple(cats), num_features=tuple(nums))

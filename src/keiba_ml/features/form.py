@@ -128,8 +128,12 @@ def own_history_features(df: pd.DataFrame) -> pd.DataFrame:
     return out.reindex(df.index).astype(np.float32)
 
 
-def speed_figures(df: pd.DataFrame, *, standard_years: int) -> pd.DataFrame:
-    """タイム指数（s_）。基準タイムは df の最初の standard_years 年ぶんの1着から作る。"""
+def race_figures(df: pd.DataFrame, *, standard_years: int) -> pd.Series:
+    """各出走の、**そのレースの**タイム指数（秒/km、大きいほど速い。結果の無い行は欠損）。
+
+    その日の結果から作る値なので、特徴量には「馬ごとに1つずらして」過去走としてだけ使う
+    （speed_figures・features.form_extra）。
+    """
     d = df[["race_id", "race_date", "jyo_cd", "track_kind", "kyori_m", "ketto_num",
             "has_result", "result_rank"]].copy()
     d["_t"] = _num(df["result_time_sec"]).where(lambda s: s > 30)
@@ -144,7 +148,13 @@ def speed_figures(df: pd.DataFrame, *, standard_years: int) -> pd.DataFrame:
     variant = d.loc[win.index].groupby(["race_date", "jyo_cd", "track_kind"])["_dev"] \
         .mean().rename("_var")
     d = d.join(variant, on=["race_date", "jyo_cd", "track_kind"])
-    d["_fig"] = -(d["_dev"] - d["_var"]).where(d["has_result"].astype(bool)).clip(-5, 5)
+    return -(d["_dev"] - d["_var"]).where(d["has_result"].astype(bool)).clip(-5, 5)
+
+
+def speed_figures(df: pd.DataFrame, *, standard_years: int) -> pd.DataFrame:
+    """タイム指数（s_）。基準タイムは df の最初の standard_years 年ぶんの1着から作る。"""
+    d = df[["race_id", "race_date", "ketto_num"]].copy()
+    d["_fig"] = race_figures(df, standard_years=standard_years)
     d = d.sort_values(["ketto_num", "race_date", "race_id"], kind="mergesort")
     key = d["ketto_num"]
     g = d.groupby(key, sort=False)["_fig"]
@@ -158,7 +168,7 @@ def speed_figures(df: pd.DataFrame, *, standard_years: int) -> pd.DataFrame:
     out["s_fig_best5"] = best5.reset_index(level=0, drop=True).reindex(d.index)
     best = prev.groupby(key, sort=False).cummax()
     out["s_fig_best"] = best.groupby(key, sort=False).ffill()
-    by_surface = [d["ketto_num"], d["track_kind"]]
+    by_surface = [d["ketto_num"], df.loc[d.index, "track_kind"]]
     out["s_fig_surface_last"] = d.groupby(by_surface, sort=False)["_fig"].shift(1) \
         .groupby(by_surface, sort=False).ffill()
     return out.reindex(df.index).astype(np.float32)

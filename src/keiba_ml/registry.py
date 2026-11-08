@@ -37,6 +37,7 @@ from keiba_ml.features import combined as combined_features
 from keiba_ml.features import course as course_features
 from keiba_ml.features import distance as distance_features
 from keiba_ml.features import form as form_features
+from keiba_ml.features import form_extra as form_extra_features
 from keiba_ml.features import pedigree as pedigree_features
 from keiba_ml.features.base import FeatureSet
 from keiba_ml.models.base import make_predictions
@@ -191,7 +192,35 @@ def _combined_checks(history: pd.DataFrame, features: FeatureSet, config: MLConf
     checks.append(integrity.check_form_asof_sample(
         history, features.frame, people_shrinkage=config.combined.people_shrinkage,
         sample=100, only=only))
+    c = config.combined
+    if c.extra_form or c.race_level:
+        columns = [col for col in features.frame.columns if col.startswith(("x_", "z_"))]
+        if c.extra_form:
+            columns += list(form_extra_features.BASE_COLUMNS)
+        checks.append(integrity.check_truncation_sample(
+            history, features.frame, name="form_extra_truncation", columns=columns,
+            builder=lambda part: _form_extra_rebuild(part, config), only=only))
     return checks
+
+
+def _form_extra_rebuild(history: pd.DataFrame, config: MLConfig) -> pd.DataFrame:
+    """切り詰め検査用に、追加特徴量（x_ / z_）とその材料の列を履歴から作り直す。"""
+    c = config.combined
+    parts = []
+    if c.extra_form:
+        speed = form_features.speed_figures(history, standard_years=c.speed_standard_years)
+        base = pd.concat([
+            form_features.own_history_features(history), speed,
+            form_features.people_features(pedigree_features.prepare(history),
+                                          shrinkage=c.people_shrinkage),
+            form_features.opponent_strength(history, speed["s_fig_best"]),
+        ], axis=1)[list(form_extra_features.BASE_COLUMNS)]
+        parts += [base, form_extra_features.extra_form_features(
+            history, base, standard_years=c.speed_standard_years)]
+    if c.race_level:
+        parts.append(form_extra_features.race_level_features(
+            history, standard_years=c.speed_standard_years))
+    return pd.concat(parts, axis=1)
 
 
 def _combined_describe(rows: pd.DataFrame, features: FeatureSet,
