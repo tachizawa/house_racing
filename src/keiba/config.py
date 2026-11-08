@@ -141,6 +141,10 @@ BLOOD_DATA_DIR = DATA_DIR / "blood"
 # 片方の取り直しがもう片方を巻き込む。
 DEFAULT_MARKET_DATASPECS: tuple[str, ...] = ("RACE",)
 MARKET_DATA_DIR = DATA_DIR / "market"
+# 調教（坂路 HC・ウッドチップ WC）。レース・血統・払戻とは別の系統（ingest/store.py の
+# TRAINING_FILES）。過去ぶんはセットアップ取得（option 4。ダイアログ操作が要る）。
+DEFAULT_TRAINING_DATASPECS: tuple[str, ...] = ("SLOP", "WOOD")
+TRAINING_DATA_DIR = DATA_DIR / "training"
 
 # 入力の距離が現実的か判定するための幅。中央の平地はおよそ 1000m〜3600m だが、
 # 障害・特殊条件の余地を残して広めに取る。
