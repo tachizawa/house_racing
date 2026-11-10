@@ -148,6 +148,25 @@ def run_window(df: pd.DataFrame, config: MLConfig, window: Window, *, out_dir: P
     return summary
 
 
+def period_checks(history: pd.DataFrame, features: FeatureSet, config: MLConfig, *,
+                  train_start: date, rows_index: pd.Index) -> list[dict]:
+    """学習済みのモデルを期間で評価する前の検査（学習時の run_window と同じもの）。
+
+    as-of の検算は評価する期間の行（rows_index）から選ぶ。FAIL があれば IntegrityError。
+    evaluate_period と scripts/ml/compare_models.py が使う。
+    """
+    spec = registry.for_config(config)
+    checks = [
+        integrity.check_feature_columns(features.columns),
+        *_history_checks(history, train_start, spec.stats_history(config)),
+        *spec.asof_checks(history, features, config, rows_index),
+    ]
+    failed = [c for c in checks if c["status"] == "fail"]
+    if failed:
+        raise IntegrityError("整合性検査に失敗しました:\n" + integrity.summarize(failed))
+    return checks
+
+
 def evaluate_period(df: pd.DataFrame, config: MLConfig, model: CatBoostModel, *,
                     train_start: date, period_start: date, period_end: date) -> dict:
     """学習済みのモデルを、学習・検証・テストのどれにも使っていない期間で評価する。
@@ -169,15 +188,8 @@ def evaluate_period(df: pd.DataFrame, config: MLConfig, model: CatBoostModel, *,
                    & (history["race_date"].dt.date >= period_start)]
     if rows.empty:
         raise IntegrityError(f"{period_start}〜{period_end} に結果のあるレースがありません。")
-    # 学習時（run_window）と同じ検査。as-of の検算は評価する期間の行から選ぶ。
-    checks = [
-        integrity.check_feature_columns(features.columns),
-        *_history_checks(history, train_start, spec.stats_history(config)),
-        *spec.asof_checks(history, features, config, rows.index),
-    ]
-    failed = [c for c in checks if c["status"] == "fail"]
-    if failed:
-        raise IntegrityError("整合性検査に失敗しました:\n" + integrity.summarize(failed))
+    checks = period_checks(history, features, config, train_start=train_start,
+                           rows_index=rows.index)
     ev = config.evaluate
     kwargs = dict(top_n=ev.top_n, bins=ev.calibration_bins, n_boot=ev.bootstrap,
                   seed=ev.bootstrap_seed)

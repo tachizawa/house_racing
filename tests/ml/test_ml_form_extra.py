@@ -57,6 +57,16 @@ def test_last_rank_and_runs_in_year_come_from_earlier_races():
     assert feats.at[third, "x_runs_365"] == 2   # 1日1レース・週1回なので2走とも365日以内
 
 
+def test_runs_in_year_does_not_count_rows_without_results():
+    df = _frame()
+    horse = df[df["ketto_num"] == "H03"].sort_values("race_date")
+    first, second, third = horse.index[:3]
+    df.loc[first, "has_result"] = False      # 結果の無い行（出馬表だけ）は出走に数えない
+    feats = form_extra.extra_form_features(df, _base(df), standard_years=1)
+    assert feats.at[second, "x_runs_365"] == 0
+    assert feats.at[third, "x_runs_365"] == 1
+
+
 def test_gap_to_third_is_zero_for_the_third_best_horse():
     df = _frame()
     base = _base(df)
@@ -86,8 +96,9 @@ def test_race_level_counts_only_next_runs_before_the_day():
             continue
         day = df.at[idx, "race_date"]
         members = order.index[order["race_id"] == race]
+        # 走りの質が欠損の次走は数えない（race_level_features は欠損を除いて平均する）
         vals = [nxt_pf.loc[m] for m in members
-                if pd.notna(nxt_date.loc[m]) and nxt_date.loc[m] < day]
+                if pd.notna(nxt_date.loc[m]) and nxt_date.loc[m] < day and pd.notna(nxt_pf.loc[m])]
         expected = np.mean(vals) if vals else np.nan
         got = float(lvl.at[idx, "z_lvl1_npf"])
         assert (np.isnan(expected) and np.isnan(got)) or np.isclose(expected, got, rtol=1e-5)

@@ -6,7 +6,8 @@
     .venv/Scripts/python.exe scripts/dump_raw.py --dataspec SLOP --fromdate 20030101000000 --option 4
     .venv/Scripts/python.exe scripts/update_data.py --kind training --from-raw data/raw/<dir>
 
-出力は data/raw/<UTC時刻>_<dataspec>/（<種別>.bin.gz と manifest.json、進み具合は progress.log）。
+出力は data/raw/<UTC時刻>_<dataspec>/（<種別>.bin.gz と manifest.json）。進み具合は同じ階層の
+<UTC時刻>_<dataspec>.progress.log（JVOpen の前、出力のフォルダができる前から書くので外に置く）。
 """
 
 from __future__ import annotations
@@ -50,16 +51,16 @@ def main(argv: list[str] | None = None) -> int:
         log("セットアップ取得です。スタートキットのダイアログが出たら「持っていない」を選んで OK を押してください。")
     link = jvlink.open_link()
     started = time.time()
-    open_code, download_count = jvlink.open_dataspec(link, args.dataspec, args.fromdate,
-                                                     args.option)
-    log(f"JVOpen {args.dataspec} {args.fromdate} option={args.option} → {open_code}、"
-        f"ダウンロード {download_count} ファイル（{time.time() - started:.0f}秒）")
-    if open_code != 0:
-        link.JVClose()
-        log("中止: " + jvlink.describe_open_code(open_code, args.dataspec))
-        return 1
     count = 0
+    # JVOpen が例外で落ちても JVClose する（開いたままだと次の JVOpen が失敗しうる）
     try:
+        open_code, download_count = jvlink.open_dataspec(link, args.dataspec, args.fromdate,
+                                                         args.option)
+        log(f"JVOpen {args.dataspec} {args.fromdate} option={args.option} → {open_code}、"
+            f"ダウンロード {download_count} ファイル（{time.time() - started:.0f}秒）")
+        if open_code != 0:
+            log("中止: " + jvlink.describe_open_code(open_code, args.dataspec))
+            return 1
         with RawDumpWriter(out, dataspec=args.dataspec, fromdate=args.fromdate,
                            option=args.option) as writer:
             for raw in jvlink.read_open_dataspec(link, download_count):
