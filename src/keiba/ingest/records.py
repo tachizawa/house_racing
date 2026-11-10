@@ -529,8 +529,69 @@ def parse_o6(raw: bytes) -> Iterator[tuple[str, dict]]:
     return _combination_odds(raw, O6_LENGTH, "sanrentan", 4896, 6, 7, 4, True, False, 83273)
 
 
+# --- 調教（HC 坂路・WC ウッドチップ。dataspec SLOP / WOOD） ----------------------------
+#
+# 仕様書 フォーマット 22（HC、60バイト）と 32（WC、105バイト）。どちらも
+# データ区分は 1:初期値 / 0:該当レコード削除（提供ミスなど）。0 は読む側で捨てる。
+# ハロンタイム合計は 999.9 秒形式（4桁・0.1秒単位）、ラップは 99.9 秒形式（3桁）。
+# 0000 / 000 は測定不良、WC の 9999 / 999 は 999.9 秒・99.9 秒以上。どれも欠損にする。
+# 提供範囲: 坂路は 2003年以降（美浦の坂路は 2004-11-29 以前は 600m 計測で、4ハロンが無い）、
+# ウッドチップは美浦 2021-07-27・栗東 2021-12-07 以降（美浦 2000m・栗東 1800m 計測）。
+
+HC_LENGTH = 60
+WC_LENGTH = 105
+#: WC のハロン（10〜2）とラップ（10〜1）の位置。ハロン合計 4桁 + ラップ 3桁の繰り返し。
+_WC_FURLONGS = tuple(range(10, 1, -1))
+
+
+def training_sec(value: str) -> float | None:
+    """調教のハロンタイム合計（999.9 秒形式、4桁）。0000 と 9999 は欠損。"""
+    value = value.strip()
+    if len(value) != 4 or not value.isdigit() or value in ("0000", "9999"):
+        return None
+    return int(value) / 10.0
+
+
+def _training_head(raw: bytes) -> dict:
+    return {
+        "tresen_kubun": _text(raw, 12, 1), "chokyo_date": _ymd(_text(raw, 13, 8)),
+        "chokyo_time": _text(raw, 21, 4), "ketto_num": _text(raw, 25, 10),
+    }
+
+
+def parse_hc(raw: bytes) -> dict:
+    """坂路調教。"""
+    _require_length(raw, HC_LENGTH)
+    row = _training_head(raw)
+    row.update({
+        "time_4f": training_sec(_text(raw, 35, 4)), "lap_4": tenth_sec(_text(raw, 39, 3)),
+        "time_3f": training_sec(_text(raw, 42, 4)), "lap_3": tenth_sec(_text(raw, 46, 3)),
+        "time_2f": training_sec(_text(raw, 49, 4)), "lap_2": tenth_sec(_text(raw, 53, 3)),
+        "lap_1": tenth_sec(_text(raw, 56, 3)),
+        "data_kubun": _text(raw, 3, 1), "make_date": _text(raw, 4, 8),
+    })
+    return row
+
+
+def parse_wc(raw: bytes) -> dict:
+    """ウッドチップ調教。コースは 0:A〜4:E、馬場周りは 0:右 1:左。"""
+    _require_length(raw, WC_LENGTH)
+    row = _training_head(raw)
+    row.update({"course": _text(raw, 35, 1), "baba_around": _text(raw, 36, 1)})
+    pos = 38
+    for furlong in _WC_FURLONGS:
+        row[f"time_{furlong}f"] = training_sec(_text(raw, pos, 4))
+        row[f"lap_{furlong}"] = tenth_sec(_text(raw, pos + 4, 3))
+        pos += 7
+    row["lap_1"] = tenth_sec(_text(raw, pos, 3))
+    row["data_kubun"] = _text(raw, 3, 1)
+    row["make_date"] = _text(raw, 4, 8)
+    return row
+
+
 _PARSERS = {"RA": parse_ra, "SE": parse_se, "UM": parse_um,
-            "SK": parse_sk, "HN": parse_hn, "BT": parse_bt}
+            "SK": parse_sk, "HN": parse_hn, "BT": parse_bt,
+            "HC": parse_hc, "WC": parse_wc}
 
 #: 1レコードが複数の表の行になる種別。値は (パーサ, 書き込む表のキー)。
 _ROW_PARSERS: dict[str, tuple[Callable[[bytes], Iterator[tuple[str, dict]]],

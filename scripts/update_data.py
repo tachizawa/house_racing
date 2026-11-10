@@ -34,6 +34,10 @@ _KINDS: dict[str, dict] = {
     # 払戻・オッズも RACE が運ぶが、レースの版とは別の系統に置く（config.MARKET_DATA_DIR）。
     "market": {"dataspecs": config.DEFAULT_MARKET_DATASPECS,
                "data_dir": config.MARKET_DATA_DIR, "files": store.MARKET_FILES},
+    # 調教（坂路・ウッドチップ）。生レコードは dataspec ごとに取る（scripts/dump_raw.py）。
+    # --from-raw を繰り返すと、fromdate・option が同じ SLOP と WOOD の生レコードを1つの版にまとめる。
+    "training": {"dataspecs": config.DEFAULT_TRAINING_DATASPECS,
+                 "data_dir": config.TRAINING_DATA_DIR, "files": store.TRAINING_FILES},
 }
 
 
@@ -53,9 +57,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                               "（既定: race は RACE DIFF、blood は BLDN）")
     parser.add_argument("--fromdate",
                          help="取得開始日時。例: 20260801000000（--from-raw 以外では必須）")
-    parser.add_argument("--from-raw", type=Path, default=None, metavar="DIR",
+    parser.add_argument("--from-raw", type=Path, action="append", default=None, metavar="DIR",
                          help="JV-Link を呼ばず、保存した生レコード（keiba.ingest.rawdump の形式）"
-                              "から版を作る。dataspec・fromdate・option はその manifest から取る")
+                              "から版を作る。dataspec・fromdate・option はその manifest から取る。"
+                              "繰り返すと dataspec の違う生レコード（fromdate・option は同じもの）を"
+                              "1つの版にまとめる（--kind training の SLOP と WOOD など）")
     # 既定は None にして、--from-raw と一緒に明示されたかを見分ける（既定の 1 は下で当てる）。
     parser.add_argument("--option", type=int, default=None,
                          help="JVOpen の option（既定 1）")
@@ -146,44 +152,81 @@ def _verify_time_fields(se_rows: list[dict]) -> int:
     return 1 if mismatches else 0
 
 
+def _read_raw_manifests(args: argparse.Namespace) -> list[tuple[Path, dict]]:
+    """--from-raw の生レコードの manifest を読み、1つの版にまとめてよいか確かめる。
+
+    複数のときは dataspec が重ならず、fromdate と option がすべて同じものに限る
+    （版の manifest には fromdate・option を1つしか書けない。違う値をまとめると、版が
+    どこからどこまでを持つかを偽ることになる）。
+    """
+    wanted = _resolve_dataspecs(args)
+    out = []
+    for directory in args.from_raw:
+        try:
+            manifest = rawdump.read_manifest(directory)
+        except rawdump.RawDumpError as error:
+            raise SystemExit(f"生レコードを使えません: {error}") from error
+        if manifest["dataspec"] not in wanted:
+            raise SystemExit(f"生レコード {directory} の dataspec は {manifest['dataspec']} ですが、"
+                             f"--kind {args.kind} は {'/'.join(wanted)} を読みます。"
+                             "取り違えていないか確かめてください。")
+        out.append((directory, manifest))
+    dataspecs = [m["dataspec"] for _, m in out]
+    if len(set(dataspecs)) != len(dataspecs):
+        raise SystemExit(f"同じ dataspec の生レコードが複数あります: {dataspecs}")
+    if len({(m["fromdate"], m["option"]) for _, m in out}) > 1:
+        raise SystemExit("fromdate か option の違う生レコードは1つの版にできません: "
+                         + ", ".join(f"{m['dataspec']}={m['fromdate']}/option {m['option']}"
+                                     for _, m in out))
+    return out
+
+
 def _from_raw(args: argparse.Namespace) -> int:
     """保存した生レコードから版を作る。JV-Link は呼ばない。"""
-    try:
-        raw_manifest = rawdump.read_manifest(args.from_raw)
-    except rawdump.RawDumpError as error:
-        raise SystemExit(f"生レコードを使えません: {error}") from error
-    dataspec = raw_manifest["dataspec"]
-    wanted = _resolve_dataspecs(args)
-    if dataspec not in wanted:
-        raise SystemExit(f"生レコードの dataspec は {dataspec} ですが、--kind {args.kind} は"
-                         f" {'/'.join(wanted)} を読みます。取り違えていないか確かめてください。")
+    raws = _read_raw_manifests(args)
+    first = raws[0][1]
     files = _KINDS[args.kind]["files"]
     version_id = store.new_version_id()
+    if len(raws) == 1:
+        source = {"raw_dir": str(raws[0][0]), "raw_started_at": first.get("started_at"),
+                  "raw_counts": first.get("counts")}
+    else:
+        source = {"raw": [{"raw_dir": str(d), "dataspec": m["dataspec"],
+                           "raw_started_at": m.get("started_at"), "raw_counts": m.get("counts")}
+                          for d, m in raws]}
     writer = store.VersionWriter(
-        _resolve_data_dir(args), version_id, dataspecs=[dataspec],
-        fromdate=raw_manifest["fromdate"], option=raw_manifest["option"], files=files,
-        source={"raw_dir": str(args.from_raw), "raw_started_at": raw_manifest.get("started_at"),
-                "raw_counts": raw_manifest.get("counts")},
+        _resolve_data_dir(args), version_id, dataspecs=[m["dataspec"] for _, m in raws],
+        fromdate=first["fromdate"], option=first["option"], files=files, source=source,
     )
     counts: Counter[str] = Counter()
     se_rows: list[dict] | None = [] if args.verify_time_fields else None
     try:
-        # 表に書かれない種別（JG など）はパースもしないので、組に関係する種別だけ読む。
-        specs = [spec for spec in raw_manifest.get("counts", {})
-                 if _needs_parse(spec, files, se_rows)]
-        try:
-            for raw in rawdump.iter_records(args.from_raw, specs):
-                _consume(raw, counts, writer, se_rows, files)
-        except rawdump.RawDumpError as error:
-            raise SystemExit(f"生レコードを使えません: {error}") from error
-        print(f"生レコード {args.from_raw} から読んだレコード数:")
-        for spec in sorted(raw_manifest.get("counts", {})):
-            note = "" if _is_saved(spec, files) else "（保存対象外）"
-            print(f"  {spec}: {counts.get(spec, raw_manifest['counts'][spec])}{note}")
+        expected: Counter[str] = Counter()
+        for directory, raw_manifest in raws:
+            # 表に書かれない種別（JG など）はパースもしないので、組に関係する種別だけ読む。
+            specs = [spec for spec in raw_manifest.get("counts", {})
+                     if _needs_parse(spec, files, se_rows)]
+            for spec in specs:
+                expected[spec] += raw_manifest["counts"][spec]
+            read: Counter[str] = Counter()
+            try:
+                for raw in rawdump.iter_records(directory, specs):
+                    _consume(raw, read, writer, se_rows, files)
+            except rawdump.RawDumpError as error:
+                raise SystemExit(f"生レコードを使えません: {error}") from error
+            counts.update(read)
+            print(f"生レコード {directory} から読んだレコード数:")
+            for spec in sorted(raw_manifest.get("counts", {})):
+                if spec in specs:
+                    note = "" if _is_saved(spec, files) else "（保存対象外）"
+                    print(f"  {spec}: {read.get(spec, 0)}{note}")
+                else:
+                    print(f"  {spec}: 読んでいない（保存対象外。manifest では"
+                          f" {raw_manifest['counts'][spec]} 件）")
         # ファイルが途中で終わっていても長さの欄の切れ目なら iter_records は気づけない。
         # manifest の件数と合わなければ、欠けたまま版を作らない。
-        short = {spec: (counts.get(spec, 0), raw_manifest["counts"][spec]) for spec in specs
-                 if counts.get(spec, 0) != raw_manifest["counts"][spec]}
+        short = {spec: (counts.get(spec, 0), n) for spec, n in expected.items()
+                 if counts.get(spec, 0) != n}
         if short:
             raise SystemExit("生レコードの件数が manifest と合いません（読んだ件数, manifest）: "
                              f"{short}。取り直してください。")
@@ -191,7 +234,8 @@ def _from_raw(args: argparse.Namespace) -> int:
         if required is not None and not counts.get(required):
             # DIFF だけの生レコードなどは RA を運ばない。レースの無い版に CURRENT を
             # 切り替えると予想が壊れる。
-            raise SystemExit(f"生レコードに {required} が1件もありません（dataspec {dataspec}）。"
+            raise SystemExit(f"生レコードに {required} が1件もありません"
+                             f"（dataspec {'/'.join(m['dataspec'] for _, m in raws)}）。"
                              f" --kind {args.kind} の版にはできません。")
         if args.dry_run:
             writer.abort()

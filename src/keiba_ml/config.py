@@ -240,6 +240,15 @@ class CombinedConfig:
     #: 血統・距離適性の特徴量も入れるか。
     use_pedigree: bool = True
     use_distance: bool = True
+    #: 近走の深掘り（features.form_extra.extra_form_features。x_）。2026-11-08 に追加。
+    #: opponent = true が要る（3番手との差に相手関係の列を使う）。
+    extra_form: bool = False
+    #: レースレベル（features.form_extra.race_level_features。z_）。2026-11-08 に追加。
+    race_level: bool = False
+    #: 馬体重と増減（c_weight・c_zogen・x_weight_vs_mean）を入れるか。発走の約1時間前に発表される値で、
+    #: 前日の出馬表（SE）には無い。前日に予想するなら false にして学習する（学習時だけ入っていると
+    #: 予想時に全頭欠損になり、学習と予想で入力が食い違う。docs/ml/README.md §14.4）。
+    use_weight: bool = True
 
 
 #: コース適性モデルの条件（CourseConfig.context）に使える列（データセットの runners にある条件の列）。
@@ -542,6 +551,9 @@ def validate(config: MLConfig) -> None:
             raise ValueError(f"combined.{name} は正の有限の値にしてください。")
     if c.recent_days < 0:
         raise ValueError("combined.recent_days は 0 以上にしてください（0 なら使わない）。")
+    if c.extra_form and not c.opponent:
+        raise ValueError("combined.extra_form は opponent = true のときだけ使えます"
+                         "（3番手との差に相手関係の列を使う）。")
     # TOML の nan / inf は大小の比較をすり抜けて特徴量に入るので、先に有限かを確かめる。
     for name in ("own_shrinkage", "pedigree_shrinkage", "margin_cap_sec", "slope_ridge"):
         if not math.isfinite(getattr(d, name)):

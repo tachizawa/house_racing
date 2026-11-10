@@ -12,12 +12,14 @@ import pandas as pd
 
 from keiba_ml.config import MLConfig
 from keiba_ml.features import distance as distance_features
-from keiba_ml.features import form
+from keiba_ml.features import form, form_extra
 from keiba_ml.features import pedigree as pedigree_features
 from keiba_ml.features.base import FeatureSet, context_columns
 
 #: 距離適性の特徴量のうち、総合モデルに入れる列の接頭辞（条件の列は血統側と重なるので除く）。
 DISTANCE_PREFIXES: tuple[str, ...] = ("own_", "dist_", "ped_")
+#: 馬体重から作る列（発走の約1時間前に発表。前日の出馬表には無い）。CombinedConfig.use_weight。
+WEIGHT_COLUMNS: tuple[str, ...] = ("c_weight", "c_zogen", "x_weight_vs_mean")
 
 
 def build_features(df: pd.DataFrame, config: MLConfig) -> FeatureSet:
@@ -52,4 +54,17 @@ def build_features(df: pd.DataFrame, config: MLConfig) -> FeatureSet:
     relative = form.relative_features(frame, df["race_id"])
     frame = frame.join(relative)
     nums.extend(relative.columns)
+    extra = []
+    if c.extra_form:
+        extra.append(form_extra.extra_form_features(
+            df, frame[list(form_extra.BASE_COLUMNS)], standard_years=c.speed_standard_years))
+    if c.race_level:
+        extra.append(form_extra.race_level_features(df, standard_years=c.speed_standard_years))
+    for part in extra:
+        frame = frame.join(part)
+        nums.extend(part.columns)
+    if not c.use_weight:
+        drop = [col for col in WEIGHT_COLUMNS if col in frame.columns]
+        frame = frame.drop(columns=drop)
+        nums = [n for n in nums if n not in drop]
     return FeatureSet(frame=frame, cat_features=tuple(cats), num_features=tuple(nums))

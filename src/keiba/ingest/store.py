@@ -95,6 +95,24 @@ BLOOD_FILES: FileSet = {
     "BT": ("lineages.csv", LINEAGE_COLUMNS),
 }
 
+# --- 調教（HC 坂路・WC ウッドチップ。dataspec SLOP / WOOD）。別の系統
+# （config.TRAINING_DATA_DIR）に置く。調教はレースより前に行われる情報なので、読む側は
+# 予想するレースの日より前（発走前日まで）の調教だけを使うこと。データ区分 0（削除）は読む側で捨てる。
+_TRAINING_HEAD: tuple[str, ...] = ("tresen_kubun", "chokyo_date", "chokyo_time", "ketto_num")
+SLOPE_COLUMNS: tuple[str, ...] = (
+    *_TRAINING_HEAD, "time_4f", "lap_4", "time_3f", "lap_3", "time_2f", "lap_2", "lap_1",
+    "data_kubun", "make_date",
+)
+WOOD_COLUMNS: tuple[str, ...] = (
+    *_TRAINING_HEAD, "course", "baba_around",
+    *(name for f in range(10, 1, -1) for name in (f"time_{f}f", f"lap_{f}")), "lap_1",
+    "data_kubun", "make_date",
+)
+TRAINING_FILES: FileSet = {
+    "HC": ("slope.csv.gz", SLOPE_COLUMNS),
+    "WC": ("wood.csv.gz", WOOD_COLUMNS),
+}
+
 # --- 払戻（HR）・オッズ（O1〜O6）。別の系統（config.MARKET_DATA_DIR）に置く。
 # キーはレコード種別ではなく records.table_keys() の表のキー（1レコードが複数の表の
 # 行になるため）。名前が .gz で終わる表は gzip で書く。5年ぶんで馬連・ワイド各約160万行、

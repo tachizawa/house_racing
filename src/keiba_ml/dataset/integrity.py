@@ -599,6 +599,64 @@ def check_course_asof_sample(history: pd.DataFrame, feature_frame: pd.DataFrame,
                    checked=int(len(picked)), mismatches=mismatches[:10], unchecked=unchecked)
 
 
+#: 切り詰め検査で、その日の結果として消す列（発走前に分からない値）。
+RESULT_COLUMNS_TEXT: tuple[str, ...] = (
+    "result_time_sec", "result_jyuni_4c", "result_last_3f_sec", "result_ijyo_cd")
+
+
+def blank_results(history: pd.DataFrame, mask: pd.Series) -> pd.DataFrame:
+    """mask の行を「結果がまだ無い」状態にした写し（馬体重は発走前に発表されるので残す）。"""
+    out = history.copy()
+    out.loc[mask, "has_result"] = False
+    for col in RESULT_COLUMNS_TEXT:
+        if col in out:
+            out.loc[mask, col] = ""
+    out.loc[mask, "result_rank"] = 0
+    for col in ("result_margin_sec", "target_top3", "target_win"):
+        out.loc[mask, col] = np.nan
+    return out
+
+
+def check_truncation_sample(history: pd.DataFrame, feature_frame: pd.DataFrame, *, name: str,
+                            columns: Sequence[str], builder, days: int = 2, seed: int = 0,
+                            only: pd.Index | None = None) -> dict:
+    """切り詰め検査: 無作為の日 D について、D より後の行を捨て D の結果を消した履歴で
+    ``builder`` を作り直し、D の行の ``columns`` が feature_frame と一致するか。
+
+    一致すれば、その列は D より後の情報も D の結果も使っていない（行ごとの再計算を書かずに
+    列の全体をまとめて確かめられる）。builder は履歴 → columns を持つ表。
+    """
+    absent = [c for c in columns if c not in feature_frame.columns]
+    if absent:
+        return _result(name, "fail", f"{absent} が特徴量にありません。")
+    rows = history[history["has_result"].astype(bool)]
+    if only is not None:
+        rows = rows[rows.index.isin(only)]
+    dates = np.sort(rows["race_date"].unique())
+    if len(dates) == 0:
+        return _result(name, "warn", "検算できる日がありません。")
+    rng = np.random.default_rng(seed)
+    picked = rng.choice(dates, size=min(days, len(dates)), replace=False)
+    mismatches, checked = [], 0
+    for day in picked:
+        part = history[history["race_date"] <= day]
+        part = blank_results(part, part["race_date"] == day)
+        rebuilt = builder(part)
+        index = part.index[part["race_date"] == day]
+        checked += len(index)
+        for col in columns:
+            a = feature_frame.loc[index, col].to_numpy(dtype=float)
+            b = rebuilt.loc[index, col].to_numpy(dtype=float)
+            same = np.isclose(a, b, rtol=1e-4, atol=1e-5, equal_nan=True)
+            if not same.all():
+                mismatches.append({"date": str(pd.Timestamp(day).date()), "column": col,
+                                   "rows": int((~same).sum())})
+    return _result(name, "ok" if not mismatches else "fail",
+                   f"{len(columns)} 列を、その日より後の行とその日の結果を消した履歴で作り直して一致するか",
+                   days=[str(pd.Timestamp(d).date()) for d in picked], checked=checked,
+                   mismatches=mismatches[:10])
+
+
 def summarize(checks: Sequence[dict]) -> str:
     lines = []
     for check in checks:
