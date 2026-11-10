@@ -249,6 +249,10 @@ class CombinedConfig:
     #: 前日の出馬表（SE）には無い。前日に予想するなら false にして学習する（学習時だけ入っていると
     #: 予想時に全頭欠損になり、学習と予想で入力が食い違う。docs/ml/README.md §14.4）。
     use_weight: bool = True
+    #: 調教の特徴量（features.training.training_features。t_）。2026-11-09 に追加。
+    #: レースの日より前の調教だけを使う。training_version が空なら data/training/CURRENT の版。
+    training: bool = False
+    training_version: str = ""
 
 
 #: コース適性モデルの条件（CourseConfig.context）に使える列（データセットの runners にある条件の列）。

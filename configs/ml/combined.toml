@@ -64,6 +64,8 @@ use_distance = true
 # この設定で学習したので再現できるよう on にしている。外すかは所有者の判断（§14.6。コードの既定は off）
 extra_form = true
 race_level = true
+# 調教（坂路・ウッド）の特徴量（t_）。レースの日より前の調教だけ。features/training.py
+training = true
 
 [split]
 test_start = "2025-01-01"
