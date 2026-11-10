@@ -62,6 +62,8 @@ use_distance = true
 # 比較（docs/ml/README.md §14）。学習・評価の前に切り詰め検査（form_extra_truncation）を通す
 extra_form = true
 race_level = true
+# 調教（坂路・ウッド）の特徴量（t_）。レースの日より前の調教だけ。features/training.py
+training = true
 
 [split]
 test_start = "2025-01-01"

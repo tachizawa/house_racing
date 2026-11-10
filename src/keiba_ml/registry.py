@@ -39,6 +39,7 @@ from keiba_ml.features import distance as distance_features
 from keiba_ml.features import form as form_features
 from keiba_ml.features import form_extra as form_extra_features
 from keiba_ml.features import pedigree as pedigree_features
+from keiba_ml.features import training as training_features
 from keiba_ml.features.base import FeatureSet
 from keiba_ml.models.base import make_predictions
 
@@ -193,6 +194,12 @@ def _combined_checks(history: pd.DataFrame, features: FeatureSet, config: MLConf
         history, features.frame, people_shrinkage=config.combined.people_shrinkage,
         sample=100, only=only))
     c = config.combined
+    if c.training:
+        columns = [col for col in features.frame.columns if col.startswith("t_")]
+        workouts = training_features.load_workouts(c.training_version)
+        checks.append(integrity.check_truncation_sample(
+            history, features.frame, name="training_truncation", columns=columns,
+            builder=lambda part: training_features.training_features(part, workouts), only=only))
     if c.extra_form or c.race_level:
         columns = [col for col in features.frame.columns if col.startswith(("x_", "z_"))]
         if c.extra_form:
