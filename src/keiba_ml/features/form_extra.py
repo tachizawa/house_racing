@@ -110,14 +110,18 @@ def extra_form_features(df: pd.DataFrame, base: pd.DataFrame, *,
     out["x_rank_mean3"] = _roll(r1, key, 3, "mean", idx)
     out["x_top3_rate5"] = _roll(g["_top3"].shift(1), key, 5, "mean", idx)
     out["x_margin_best5"] = _roll(g["_margin"].shift(1), key, 5, "min", idx)
-    # 直近365日の出走数（その日より前。馬ごとに日付で二分探索）
+    # 直近365日の出走数（その日より前。馬ごとに日付で二分探索）。結果の無い行（出馬表だけの行）は
+    # 走っていないので数えない（結果のある行の累積数の差で数える）
     runs = np.zeros(len(d))
     kv = key.to_numpy()
     days = d["race_date"].to_numpy().astype("datetime64[D]").astype(np.int64)
+    ran = has.reindex(idx).to_numpy(dtype=np.int64)
     starts = np.r_[0, np.flatnonzero(kv[1:] != kv[:-1]) + 1, len(d)]
     for s0, s1 in zip(starts[:-1], starts[1:]):
         seg = days[s0:s1]
-        runs[s0:s1] = np.arange(s1 - s0) - np.searchsorted(seg, seg - 365, side="left")
+        before = np.r_[0, np.cumsum(ran[s0:s1])]   # before[i] = i 番目より前の結果のある行の数
+        lo = np.searchsorted(seg, seg - 365, side="left")
+        runs[s0:s1] = before[:-1] - before[lo]
     out["x_runs_365"] = runs
     firstup = d["f_days_since"] >= FIRSTUP_DAYS
     pf_fu = d["_pf"].where(firstup).groupby(key, sort=False).shift(1)

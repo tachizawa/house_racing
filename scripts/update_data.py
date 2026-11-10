@@ -34,8 +34,8 @@ _KINDS: dict[str, dict] = {
     # 払戻・オッズも RACE が運ぶが、レースの版とは別の系統に置く（config.MARKET_DATA_DIR）。
     "market": {"dataspecs": config.DEFAULT_MARKET_DATASPECS,
                "data_dir": config.MARKET_DATA_DIR, "files": store.MARKET_FILES},
-    # 調教（坂路・ウッドチップ）。dataspec ごとに生レコードを取るので、--from-raw は
-    # 1つの dataspec の版になる（坂路とウッドチップを1つの版にするなら JV-Link から直接取る）。
+    # 調教（坂路・ウッドチップ）。生レコードは dataspec ごとに取る（scripts/dump_raw.py）。
+    # --from-raw を繰り返すと、fromdate・option が同じ SLOP と WOOD の生レコードを1つの版にまとめる。
     "training": {"dataspecs": config.DEFAULT_TRAINING_DATASPECS,
                  "data_dir": config.TRAINING_DATA_DIR, "files": store.TRAINING_FILES},
 }
@@ -208,15 +208,21 @@ def _from_raw(args: argparse.Namespace) -> int:
                      if _needs_parse(spec, files, se_rows)]
             for spec in specs:
                 expected[spec] += raw_manifest["counts"][spec]
+            read: Counter[str] = Counter()
             try:
                 for raw in rawdump.iter_records(directory, specs):
-                    _consume(raw, counts, writer, se_rows, files)
+                    _consume(raw, read, writer, se_rows, files)
             except rawdump.RawDumpError as error:
                 raise SystemExit(f"生レコードを使えません: {error}") from error
+            counts.update(read)
             print(f"生レコード {directory} から読んだレコード数:")
             for spec in sorted(raw_manifest.get("counts", {})):
-                note = "" if _is_saved(spec, files) else "（保存対象外）"
-                print(f"  {spec}: {raw_manifest['counts'][spec]}{note}")
+                if spec in specs:
+                    note = "" if _is_saved(spec, files) else "（保存対象外）"
+                    print(f"  {spec}: {read.get(spec, 0)}{note}")
+                else:
+                    print(f"  {spec}: 読んでいない（保存対象外。manifest では"
+                          f" {raw_manifest['counts'][spec]} 件）")
         # ファイルが途中で終わっていても長さの欄の切れ目なら iter_records は気づけない。
         # manifest の件数と合わなければ、欠けたまま版を作らない。
         short = {spec: (counts.get(spec, 0), n) for spec, n in expected.items()

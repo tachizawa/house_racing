@@ -59,7 +59,9 @@ recent_shrinkage = 5.0
 use_pedigree = true
 use_distance = true
 # 近走の深掘り（x_）とレースレベル（z_）。features/form_extra.py。2026-11-08 に選択用の区切りで
-# 比較（docs/ml/README.md §14）。学習・評価の前に切り詰め検査（form_extra_truncation）を通す
+# 比較（docs/ml/README.md §14）。学習・評価の前に切り詰め検査（form_extra_truncation）を通す。
+# 暫定: 選択に使っていない期間では上乗せを確認できなかった（§14.5）。最終モデル（20261108_final*）を
+# この設定で学習したので再現できるよう on にしている。外すかは所有者の判断（§14.6。コードの既定は off）
 extra_form = true
 race_level = true
 # 調教（坂路・ウッド）の特徴量（t_）。レースの日より前の調教だけ。features/training.py

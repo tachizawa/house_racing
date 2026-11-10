@@ -853,6 +853,7 @@ dist_rel_band に対して +0.360 [+0.323, +0.395]。較正: brier 0.1594（基�
 - **前日に予想するなら `configs/ml/combined_noweight.toml`（`use_weight = false`）で学習したモデルを使う**。
   発走直前に馬体重を取り込んで予想するなら `configs/ml/combined.toml` のモデル
 - `use_weight = false` は `c_weight`・`c_zogen`・`x_weight_vs_mean` を特徴量から外す
+- 上の表の「予想時だけ欠損」の行で、馬体重から作る `x_weight_vs_mean` も欠損にしたかは記録が残っていない。欠損にしていなかったなら馬体重ありのモデルを甘く測っており、馬体重なしの利点は過小に出ている。`scripts/ml/compare_models.py` の `--blank` は 2026-11-10 から、馬体重の列を1つでも指定すると `features.combined.WEIGHT_COLUMNS` をすべて欠損にする（§14.5 の比較は旧モデルが `x_` 列を持たないので影響しない）
 
 ### 14.5 最終モデルと結果
 
