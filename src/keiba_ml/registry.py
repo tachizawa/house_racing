@@ -199,7 +199,7 @@ def _combined_checks(history: pd.DataFrame, features: FeatureSet, config: MLConf
         workouts = training_features.load_workouts(c.training_version)
         checks.append(integrity.check_truncation_sample(
             history, features.frame, name="training_truncation", columns=columns,
-            builder=lambda part: training_features.training_features(part, workouts), only=only))
+            builder=lambda part: _training_rebuild(part, workouts), only=only))
     if c.extra_form or c.race_level:
         columns = [col for col in features.frame.columns if col.startswith(("x_", "z_"))]
         if c.extra_form:
@@ -208,6 +208,15 @@ def _combined_checks(history: pd.DataFrame, features: FeatureSet, config: MLConf
             history, features.frame, name="form_extra_truncation", columns=columns,
             builder=lambda part: _form_extra_rebuild(part, config), only=only))
     return checks
+
+
+def _training_rebuild(history: pd.DataFrame, workouts: pd.DataFrame) -> pd.DataFrame:
+    """切り詰め検査用に、調教の特徴量（t_）を作り直す。調教もその日より前（前日まで）のものだけを渡す。
+
+    全期間の調教を渡すと、その日以降の調教を読む漏れがあっても作り直した値が同じになり、検査を通ってしまう。
+    """
+    day = history["race_date"].max()
+    return training_features.training_features(history, workouts[workouts["day"] < day])
 
 
 def _form_extra_rebuild(history: pd.DataFrame, config: MLConfig) -> pd.DataFrame:

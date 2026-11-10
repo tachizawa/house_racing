@@ -3,6 +3,8 @@
 import numpy as np
 import pandas as pd
 
+from keiba_ml import registry
+from keiba_ml.dataset import integrity
 from keiba_ml.features import training
 
 
@@ -27,7 +29,8 @@ def _runners(rows):
 
 RUNNERS = _runners([("R1", "2024-05-05", "A", "T1"), ("R1", "2024-05-05", "B", "T1"),
                     ("R1", "2024-05-05", "C", "T2"), ("R1", "2024-05-05", "D", "T2")])
-BASE = [("A", "2024-05-01", -1.0), ("A", "2024-04-25", 0.5), ("B", "2024-05-02", -0.2),
+# A の 04-25（10日前）は 05-01（4日前）より速い。追い切りは「7日以内で最速」なので 05-01 を選ぶ
+BASE = [("A", "2024-05-01", -1.0), ("A", "2024-04-25", -1.5), ("B", "2024-05-02", -0.2),
         ("C", "2024-05-03", 0.3), ("A", "2024-03-01", -0.5)]
 
 
@@ -89,3 +92,27 @@ def test_day_z_needs_enough_workouts_and_lower_is_faster():
     fastest = table.loc[table["ketto_num"] == "0", "z"].item()
     assert fastest == table["z"].min() and fastest < 0
     assert training.normalize_workouts(slope.head(n - 1), wood).empty
+
+
+def test_truncation_check_catches_same_day_workouts(monkeypatch):
+    workouts = _workouts(BASE + [("A", "2024-05-05", -3.9), ("B", "2024-05-05", -3.8)])
+    honest = training.training_features(RUNNERS, workouts)
+    columns = ["t_oi_z", "t_n_7"]
+    ok = integrity.check_truncation_sample(
+        RUNNERS, honest, name="t", columns=columns,
+        builder=lambda part: registry._training_rebuild(part, workouts))
+    assert ok["status"] == "ok", ok
+
+    # 当日の調教まで読む「漏れた」作り方（1日後のレースとして数える）。作り直しにも同じ関数を使うので、
+    # 作り直しに渡す調教をその日より前に絞らないと、同じように漏れて一致してしまう
+    real = training.training_features
+
+    def leaky(df, w):
+        return real(df.assign(race_date=df["race_date"] + pd.Timedelta(days=1)), w)
+
+    monkeypatch.setattr(training, "training_features", leaky)
+    leaked = leaky(RUNNERS, workouts)
+    bad = integrity.check_truncation_sample(
+        RUNNERS, leaked, name="t", columns=columns,
+        builder=lambda part: registry._training_rebuild(part, workouts))
+    assert bad["status"] == "fail", bad
